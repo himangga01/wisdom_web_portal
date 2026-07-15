@@ -71,3 +71,16 @@
 - 환경 계약: `PII_ENCRYPTION_KEY`; 3개 운영 비밀값별 누락·약한 값·test-only 값 거부
 - 루트 오케스트레이션: `packages/*` → `apps/*`, 소비 명령 전 `@wisdom/shared` 빌드
 - clean checkout 증거: `packages/shared/dist` 삭제 후 `npm.cmd run verify` 통과 (Node test 3/3, Vitest 31/31)
+
+## 2026-07-16 · 운영 상세 Task 3 상담 접수 제어 서비스
+
+- 기준 HEAD: `321d487`; 기존 루트 테스트 Node 4/4, shared 31/31, site 22/22 통과 후 시작
+- 의존성: Hono 4.12.30, `@hono/node-server` 2.0.9, Drizzle ORM 0.45.2, `better-sqlite3` 12.11.1 고정
+- 플랫폼 확인: Node.js 24.18.0에서 `better-sqlite3` 로드 및 SQLite 3.53.2 쿼리 성공
+- 스키마: 상담·동의문/이벤트·멱등성·남용 버킷·알림 아웃박스/설정·관리자/세션·글/리비전·작업·릴리스·감사 테이블과 필수 인덱스 구성
+- 보안: 버전형 AES-256-GCM, 엄격한 봉투 파서, 독립 `CONTROL_HMAC_SECRET`, HKDF 목적 분리, 전화/이메일 HMAC 블라인드 인덱스 적용
+- API: 동의문 GET, JSON 상담 POST, live/ready; no-store/request ID, 원본 허용 목록, 정확한 32KiB 스트림 제한, 오류 계약 적용
+- 원자성: 두 파일 연결 중복 제출, 재시작 replay, 만료 키 교체, 동의문 변경·토큰 만료 후 기존 replay, 중간 장애 전체 rollback 검증
+- 남용 방지: honeypot, 2초 최소 작성, 2시간 배타 만료, IP 5/10분·20/일, 연락처 3/10분·10/일, 신뢰 프록시 체인 검증
+- 보존기간: 일반 12개월·마케팅 24개월, dry-run 무쓰기, 정확 경계, 아웃박스 취소, 멱등 재실행, 장애 rollback 검증
+- 현재 집중 검증: control typecheck 통과, Vitest 10파일 35/35 통과

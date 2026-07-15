@@ -54,3 +54,32 @@ npm run verify
 - 운영 비밀값을 누락 허용하지 않는 환경 파서
 
 상담 요청의 전체 HTTP 본문 크기 제한과 저장·암호화는 Task 3에서 서버 경계에 추가합니다.
+
+## 로컬 상담 제어 서비스
+
+`apps/control`은 Hono와 SQLite를 사용하는 로컬 전용 상담 접수 서비스입니다. 서버는 항상 `127.0.0.1`에만 바인딩하며 외부 공개는 이후 Caddy와 Cloudflare Tunnel을 통해 구성합니다. SQLite는 WAL, 외래 키, `synchronous=FULL`, 5초 busy timeout, secure delete를 모든 연결에 적용합니다.
+
+운영 환경에서는 기존 비밀값과 함께 다음 설정이 필요합니다.
+
+- `CONTROL_HMAC_SECRET`: 암호화 키와 독립적인 32바이트 이상 HMAC 루트
+- `PII_ACTIVE_KEY_ID`: 현재 PII 암호화 키 버전 ID
+- `PII_PREVIOUS_KEYS_JSON`: 이전 PII 키 ID와 값의 JSON 객체
+- `PUBLIC_ORIGINS`: 쉼표로 구분한 HTTPS 원본 허용 목록
+- `CONTROL_HOST=127.0.0.1`, `CONTROL_PORT=8787`
+
+`CONTROL_HMAC_SECRET`을 교체하면 기존 폼 토큰, 멱등성 키, 요청 지문 및 블라인드 인덱스가 함께 바뀝니다. HMAC 루트 회전은 Task 7 운영 절차에서 점검·배치 재색인과 함께 수행하며 임의로 즉시 교체하지 않습니다.
+
+Windows PowerShell 운영 명령은 다음과 같습니다. macOS에서는 `npm.cmd` 대신 `npm`을 사용합니다.
+
+```powershell
+npm.cmd run db:migrate --workspace @wisdom/control
+npm.cmd run consent:seed --workspace @wisdom/control -- --file .\consent-bundle.json
+npm.cmd run consent:activate --workspace @wisdom/control -- --bundle bundle-2026-01 --confirm-sha <seed-output-sha>
+npm.cmd run retention:purge --workspace @wisdom/control
+npm.cmd run retention:purge --workspace @wisdom/control -- --apply --batch-size 100
+npm.cmd run dev --workspace @wisdom/control
+```
+
+동의문 seed 파일은 개인정보·마케팅 문서 각각 4개 언어, 총 8개 문서를 포함해야 합니다. seed는 draft만 만들고 명령 출력의 묶음 SHA-256을 다시 입력해야 활성화됩니다. 보존기간 정리는 기본적으로 dry-run이며 `--apply`가 있을 때만 암호문과 정확검색 인덱스를 제거하고 미발송 아웃박스를 취소합니다.
+
+`better-sqlite3@12.11.1`은 Node.js 24에서 사용하는 네이티브 모듈입니다. Windows와 Apple Silicon macOS 사이에서 `node_modules`를 복사하지 말고 대상 장비에서 설치해야 하며, 사전 빌드 파일이 없으면 Windows Build Tools 또는 Xcode Command Line Tools가 필요할 수 있습니다.

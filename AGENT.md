@@ -42,3 +42,12 @@
 - `privacyConsentSchema`, `marketingConsentSchema`와 추론 타입을 `@wisdom/shared` 공개 진입점에서 제공한다.
 - 루트 명령은 `packages/*`를 `apps/*`보다 먼저 처리하고 소비 명령 전에 shared 산출물을 생성하도록 변경했다.
 - 운영 PII 키 이름을 `PII_ENCRYPTION_KEY`로 통일하고 3개 운영 비밀값의 누락·약한 값·test-only 값 거부를 매개변수 테스트로 검증했다.
+
+## 2026-07-16
+
+- Task 3에서 `apps/control` Hono·Drizzle·better-sqlite3 워크스페이스를 추가하고 Node.js 24에서 네이티브 모듈을 직접 로드해 확인했다.
+- 상담 PII는 AES-256-GCM 버전 봉투로만 저장하고 전화·이메일 정확검색은 독립 HMAC 루트 기반 블라인드 인덱스로 제한했다.
+- 4개 언어의 개인정보·마케팅 동의문 8개 묶음을 불변 draft로 seed하고 SHA-256 재확인 후 원자적으로 활성화하도록 구성했다.
+- 상담 접수는 단일 `BEGIN IMMEDIATE` 안에서 멱등성, 속도 제한, 상담·동의 이벤트·아웃박스·감사·응답 저장을 함께 처리한다.
+- 32KiB 원시 바이트 제한, 2초/2시간 폼 토큰, 10분·일일 제한, 12/24개월 dry-run 우선 보존기간 정리를 테스트로 검증했다.
+- 실제 알림 발송과 관리자 UI는 후속 Task 범위로 남기고 테이블과 메타데이터 아웃박스만 준비했다.
