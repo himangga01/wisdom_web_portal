@@ -12,6 +12,15 @@ export function initializeRevealMotion(
   const mediaQuery = windowRef.matchMedia("(prefers-reduced-motion: reduce)");
   let observer: IntersectionObserver | undefined;
   let eventsAttached = false;
+  let preparationFrame: number | undefined;
+  let observationFrame: number | undefined;
+
+  const cancelPreparation = (): void => {
+    if (preparationFrame !== undefined) windowRef.cancelAnimationFrame(preparationFrame);
+    if (observationFrame !== undefined) windowRef.cancelAnimationFrame(observationFrame);
+    preparationFrame = undefined;
+    observationFrame = undefined;
+  };
 
   const reveal = (target: HTMLElement): void => {
     if (target.dataset.revealed === "true") return;
@@ -20,7 +29,8 @@ export function initializeRevealMotion(
   };
 
   const revealAll = (): void => {
-    root.classList.remove("motion-enabled");
+    cancelPreparation();
+    root.classList.remove("motion-enabled", "motion-preparing");
     targets.forEach(reveal);
     observer?.disconnect();
   };
@@ -110,14 +120,25 @@ export function initializeRevealMotion(
 
     for (const target of targets) {
       target.dataset.revealed = "false";
-      if (target.getBoundingClientRect().bottom < 0) reveal(target);
-      else createdObserver.observe(target);
     }
     revealHashTarget();
     attachEvents();
     root.classList.add("motion-enabled", "motion-preparing");
-    root.getBoundingClientRect();
-    root.classList.remove("motion-preparing");
+    preparationFrame = windowRef.requestAnimationFrame(() => {
+      preparationFrame = undefined;
+      root.getBoundingClientRect();
+      observationFrame = windowRef.requestAnimationFrame(() => {
+        observationFrame = undefined;
+        if (!root.classList.contains("motion-enabled")) return;
+
+        root.classList.remove("motion-preparing");
+        for (const target of targets) {
+          if (target.dataset.revealed === "true") continue;
+          if (target.getBoundingClientRect().bottom < 0) reveal(target);
+          else createdObserver.observe(target);
+        }
+      });
+    });
   } catch {
     detachEvents();
     revealAll();

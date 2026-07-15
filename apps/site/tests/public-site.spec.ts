@@ -40,14 +40,66 @@ test("renders semantic navigation and real language alternatives", async ({ brow
 
 test("applies the exact C1 reveal contract once", async ({ page }) => {
   await page.addInitScript(() => {
-    class DeferredObserver {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
+    const observed = new Set<Element>();
+    const everObserved = new Set<Element>();
+    const revealCounts: Record<string, number> = {};
+    let callback: IntersectionObserverCallback | undefined;
+    let callbackCount = 0;
+    let observer: IntersectionObserver | undefined;
+
+    new MutationObserver((records) => {
+      for (const record of records) {
+        const target = record.target as HTMLElement;
+        const key = target.dataset.revealKey;
+        if (key && target.dataset.revealed === "true") {
+          revealCounts[key] = (revealCounts[key] ?? 0) + 1;
+        }
+      }
+    }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-revealed"] });
+
+    class ControlledObserver {
+      constructor(nextCallback: IntersectionObserverCallback) {
+        callback = nextCallback;
+        observer = this as unknown as IntersectionObserver;
+      }
+
+      observe(target: Element) {
+        observed.add(target);
+        everObserved.add(target);
+      }
+
+      unobserve(target: Element) {
+        observed.delete(target);
+      }
+
+      disconnect() {
+        observed.clear();
+      }
     }
+
+    Object.defineProperty(window, "__c1Observer", {
+      configurable: true,
+      value: {
+        trigger() {
+          callbackCount += 1;
+          callback?.(
+            Array.from(everObserved, (target) => ({ isIntersecting: true, target }) as IntersectionObserverEntry),
+            observer!,
+          );
+        },
+        snapshot() {
+          return {
+            callbackCount,
+            observedCount: observed.size,
+            everObservedCount: everObserved.size,
+            revealCounts: { ...revealCounts },
+          };
+        },
+      },
+    });
     Object.defineProperty(window, "IntersectionObserver", {
       configurable: true,
-      value: DeferredObserver,
+      value: ControlledObserver,
     });
   });
   await page.goto("/en");
@@ -55,10 +107,18 @@ test("applies the exact C1 reveal contract once", async ({ page }) => {
   const targets = page.locator("[data-reveal]");
   await expect(targets).toHaveCount(18);
   await expect(page.locator("html")).toHaveClass(/motion-enabled/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as Window & {
+      __c1Observer: { snapshot(): { everObservedCount: number } };
+    }
+  ).__c1Observer.snapshot().everObservedCount)).toBe(18);
+
   const initial = await targets.evaluateAll((elements) => elements.map((element) => {
     const style = getComputedStyle(element);
     return {
       key: (element as HTMLElement).dataset.revealKey,
+      revealed: (element as HTMLElement).dataset.revealed,
+      direction: (element as HTMLElement).dataset.revealDirection,
       delay: style.transitionDelay.split(",")[0],
       duration: style.transitionDuration.split(",")[0],
       translate: style.translate,
@@ -66,11 +126,48 @@ test("applies the exact C1 reveal contract once", async ({ page }) => {
   }));
   expect(initial).toHaveLength(18);
   expect(new Set(initial.map(({ key }) => key)).size).toBe(18);
+  expect(initial.every(({ revealed }) => revealed === "false")).toBe(true);
   expect(initial.every(({ duration }) => duration === "0.5s")).toBe(true);
   expect(new Set(initial.map(({ delay }) => delay))).toEqual(new Set(["0s", "0.06s", "0.12s"]));
-  const translations = initial.map(({ translate }) => translate);
-  expect(translations.some((translate) => translate === "-64px"), JSON.stringify(translations)).toBe(true);
-  expect(translations.some((translate) => translate === "64px"), JSON.stringify(translations)).toBe(true);
+  expect(initial.every(({ direction, translate }) => (
+    direction === "left" ? translate === "-64px"
+      : direction === "right" ? translate === "64px"
+        : translate === "none"
+  )), JSON.stringify(initial)).toBe(true);
+
+  const controlledObserver = () => page.evaluate(() => (
+    window as unknown as Window & {
+      __c1Observer: {
+        trigger(): void;
+        snapshot(): {
+          callbackCount: number;
+          observedCount: number;
+          revealCounts: Record<string, number>;
+        };
+      };
+    }
+  ).__c1Observer.snapshot());
+  await page.evaluate(() => (
+    window as unknown as Window & { __c1Observer: { trigger(): void } }
+  ).__c1Observer.trigger());
+  await expect.poll(() => targets.evaluateAll((elements) => elements.every((element) => {
+    const style = getComputedStyle(element);
+    return (element as HTMLElement).dataset.revealed === "true"
+      && style.opacity === "1"
+      && style.translate === "none";
+  }))).toBe(true);
+  await expect.poll(async () => Object.values((await controlledObserver()).revealCounts)).toEqual(
+    Array.from({ length: 18 }, () => 1),
+  );
+
+  await page.evaluate(() => (
+    window as unknown as Window & { __c1Observer: { trigger(): void } }
+  ).__c1Observer.trigger());
+  expect(await controlledObserver()).toMatchObject({
+    callbackCount: 2,
+    observedCount: 0,
+    revealCounts: Object.fromEntries(initial.map(({ key }) => [key, 1])),
+  });
 });
 
 test("falls back to visible content for reduced motion and observer failures", async ({ page }) => {
