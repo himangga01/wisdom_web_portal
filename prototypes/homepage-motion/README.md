@@ -27,12 +27,14 @@ npm test
 npm run test:e2e
 npm run build
 npm run capture
+npm run standalone
 ```
 
 - `test`: 모션 상태와 홈페이지 정적 계약 검사
 - `test:e2e`: Chromium 반응형·접근성·오류 복구·성능 회귀 검사
 - `build`: TypeScript 검사와 Vite 운영 빌드
 - `capture`: 데스크톱·모바일 PNG와 모바일 스크롤 WebM 생성
+- `standalone`: 별도 서버 없이 바로 열 수 있는 단일 HTML 생성
 
 ## 시안 범위
 

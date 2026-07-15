@@ -28,3 +28,4 @@
 - 렌더 산출물: 데스크톱 PNG 479,665바이트, 모바일 PNG 171,526바이트, 스크롤 WebM 937,096바이트
 - 시각 확인: 1440px 데스크톱과 390px 모바일에서 텍스트·CTA·대표 사진 크롭·업무 카드 배치 확인
 - 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체하고 AVIF·WebP·JPEG 파생 파일 생성
+- 단일 파일 전달본: `.superpowers/brainstorm/renders/wisdom-homepage-motion-sample.html` (138,668바이트, 외부 자산 의존성 없음)
