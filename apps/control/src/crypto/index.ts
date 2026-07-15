@@ -6,6 +6,8 @@ import {
   randomBytes,
 } from "node:crypto";
 
+import { normalizePhone } from "@wisdom/shared";
+
 export interface KeyMaterial {
   id: string;
   secret: Uint8Array;
@@ -45,8 +47,10 @@ const PURPOSES = [
 ] as const;
 export type KeyPurpose = (typeof PURPOSES)[number];
 
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 function copyMaterial(material: KeyMaterial): KeyMaterial {
-  if (!material.id.trim()) throw new Error("Key ID is required");
+  if (!KEY_ID_PATTERN.test(material.id)) throw new Error("Key ID must use the encrypted-envelope grammar");
   if (material.secret.byteLength < 32) throw new Error("Key material must contain at least 32 bytes");
   return { id: material.id, secret: Buffer.from(material.secret) };
 }
@@ -132,7 +136,7 @@ function parseEnvelope(serialized: string): EnvelopeV1 {
     envelope.v !== 1 ||
     envelope.alg !== "A256GCM" ||
     typeof envelope.keyId !== "string" ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(envelope.keyId) ||
+    !KEY_ID_PATTERN.test(envelope.keyId) ||
     typeof envelope.iv !== "string" ||
     typeof envelope.ciphertext !== "string" ||
     typeof envelope.tag !== "string"
@@ -190,12 +194,6 @@ export function decryptPii(
   };
 }
 
-function normalizePhone(value: string): string {
-  const trimmed = value.trim();
-  const prefix = trimmed.startsWith("+") ? "+" : "";
-  return `${prefix}${trimmed.replace(/\D/g, "")}`;
-}
-
 function normalizeExact(kind: "phone" | "email", value: string): string {
   return kind === "phone" ? normalizePhone(value) : value.trim().normalize("NFKC").toLowerCase();
 }
@@ -211,6 +209,22 @@ export function blindIndex(
   return createHmac("sha256", deriveKey(provider, material, "blind-index"))
     .update(`wisdom:bidx:v1\0${kind}\0${normalizeExact(kind, value)}`, "utf8")
     .digest();
+}
+
+export interface BlindIndexCandidate {
+  keyId: string;
+  index: Buffer;
+}
+
+export function blindIndexCandidates(
+  provider: KeyProvider,
+  kind: "phone" | "email",
+  value: string,
+): BlindIndexCandidate[] {
+  return provider.all().map((material) => ({
+    keyId: material.id,
+    index: blindIndex(provider, kind, value, material.id),
+  }));
 }
 
 export function keyedDigest(

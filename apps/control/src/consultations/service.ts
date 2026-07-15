@@ -6,6 +6,7 @@ import { verifyFormToken } from "../abuse/form-token.js";
 import { applyRateLimitsInTransaction } from "../abuse/rate-limit.js";
 import {
   blindIndex,
+  blindIndexCandidates,
   encryptPii,
   keyedDigest,
   type KeyProvider,
@@ -58,6 +59,23 @@ interface ConsentRow {
   version: string;
   content_sha256: Buffer;
   retention_months: 12 | 24;
+}
+
+export function findConsultationIdsByContact(
+  db: ControlDatabase,
+  provider: KeyProvider,
+  kind: "phone" | "email",
+  value: string,
+): string[] {
+  const column = kind === "phone" ? "phone_blind_index" : "email_blind_index";
+  const find = db.sqlite.prepare(`
+    SELECT id FROM consultations
+    WHERE purged_at_ms IS NULL AND blind_index_key_id = ? AND ${column} = ?
+    ORDER BY received_at_ms DESC, id
+  `);
+  return blindIndexCandidates(provider, kind, value).flatMap((candidate) =>
+    (find.all(candidate.keyId, candidate.index) as Array<{ id: string }>).map((row) => row.id)
+  );
 }
 
 function canonicalRequest(request: ConsultationRequest): string {

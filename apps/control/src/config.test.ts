@@ -62,4 +62,19 @@ describe("control environment", () => {
     expect(config.keyProvider.active().id).toBe("pii-v2");
     expect(config.keyProvider.get("pii-v1")).toBeDefined();
   });
+
+  it("rejects active and previous key IDs that cannot round-trip through encrypted envelopes", () => {
+    expect(() => parseControlConfig({
+      NODE_ENV: "test",
+      PII_ACTIVE_KEY_ID: "pii v2",
+    })).toThrow(/key id/i);
+    expect(() => parseControlConfig({
+      NODE_ENV: "test",
+      PII_PREVIOUS_KEYS_JSON: JSON.stringify({ "pii v1": "d".repeat(32) }),
+    })).toThrow(/key id/i);
+    expect(() => parseControlConfig({
+      NODE_ENV: "test",
+      PII_ACTIVE_KEY_ID: " pii-v2 ",
+    })).toThrow(/key id/i);
+  });
 });

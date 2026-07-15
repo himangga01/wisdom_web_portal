@@ -11,6 +11,12 @@ function requestSchema(): ZodType {
   return candidate as ZodType;
 }
 
+function phoneNormalizer(): (value: string) => string {
+  const candidate = consultation.normalizePhone;
+  expect(candidate, "normalizePhone must be exported").toBeTypeOf("function");
+  return candidate as (value: string) => string;
+}
+
 function validRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     locale: "ko",
@@ -68,6 +74,19 @@ describe("consultation request validation", () => {
     expect(issuePaths(rejected)).toContain("privacyConsent.accepted");
     expect(missingVersion.success).toBe(false);
     expect(issuePaths(missingVersion)).toContain("privacyConsent.version");
+  });
+
+  it("rejects consent versions that are non-canonical, overlong, or contain unsupported characters", () => {
+    for (const version of [" 2026-07-15", "2026-07-15 ", "v".repeat(65), "2026/07/15"] as const) {
+      const privacy = requestSchema().safeParse(validRequest({
+        privacyConsent: { version, accepted: true },
+      }));
+      const marketing = requestSchema().safeParse(validRequest({
+        marketingConsent: { version, accepted: false },
+      }));
+      expect(privacy.success, `privacy ${version}`).toBe(false);
+      expect(marketing.success, `marketing ${version}`).toBe(false);
+    }
   });
 
   it("requires email when email is the preferred contact method", () => {
@@ -134,5 +153,11 @@ describe("consultation request validation", () => {
     if (result.success) {
       expect(result.data).toMatchObject({ phone: "+821012345678" });
     }
+  });
+
+  it("exports the same strict phone normalizer used by the consultation schema", () => {
+    expect(phoneNormalizer()("+82 (10) 1234-5678")).toBe("+821012345678");
+    expect(() => phoneNormalizer()("010/1234/5678")).toThrow();
+    expect(() => phoneNormalizer()("123-4567")).toThrow();
   });
 });

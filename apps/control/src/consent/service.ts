@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
-import { LOCALES, type Locale } from "@wisdom/shared";
+import { consentVersionSchema, LOCALES, type Locale } from "@wisdom/shared";
 
 import type { ControlDatabase } from "../db/client.js";
 
@@ -56,9 +56,17 @@ function contentDigest(document: ConsentDocumentSeed): Buffer {
 }
 
 function assertSeed(document: ConsentDocumentSeed): void {
+  if (!consentVersionSchema.safeParse(document.version).success) {
+    throw new Error("Invalid consent document version");
+  }
+  if (
+    (document.kind === "privacy" && document.retentionMonths !== 12) ||
+    (document.kind === "marketing" && document.retentionMonths !== 24)
+  ) {
+    throw new Error("Invalid consent document retention");
+  }
   if (
     !document.bundleId.trim() ||
-    !document.version.trim() ||
     !document.title.trim() ||
     !document.bodyMarkdown.trim() ||
     !LOCALES.includes(document.locale) ||
@@ -173,6 +181,14 @@ function hasCompletePairs(rows: readonly ConsentRow[]): boolean {
     pairs.has(`privacy\0${locale}`) && pairs.has(`marketing\0${locale}`));
 }
 
+function hasRequiredRetention(rows: readonly ConsentRow[]): boolean {
+  return rows.every((row) => row.retention_months === (row.kind === "privacy" ? 12 : 24));
+}
+
+function hasCanonicalVersions(rows: readonly ConsentRow[]): boolean {
+  return rows.every((row) => consentVersionSchema.safeParse(row.version).success);
+}
+
 function digestRows(rows: readonly ConsentRow[]): string {
   return createHash("sha256").update(JSON.stringify(rows.map((row) => ({
     kind: row.kind,
@@ -202,6 +218,8 @@ export function activateConsentBundle(
       "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale",
     ).all(bundleId) as ConsentRow[];
     if (!hasCompletePairs(rows)) throw new Error("Consent activation requires a complete bundle");
+    if (!hasRequiredRetention(rows)) throw new Error("Consent activation requires fixed retention roles");
+    if (!hasCanonicalVersions(rows)) throw new Error("Consent activation requires canonical versions");
     if (confirmSha !== undefined) {
       const actual = digestRows(rows);
       const suppliedBytes = Buffer.from(confirmSha, "hex");
@@ -236,7 +254,7 @@ export function getActiveConsentBundle(db: ControlDatabase): ActiveConsentBundle
   const rows = db.sqlite.prepare(
     "SELECT * FROM consent_documents WHERE state = 'active' ORDER BY kind, locale",
   ).all() as ConsentRow[];
-  if (!hasCompletePairs(rows)) return undefined;
+  if (!hasCompletePairs(rows) || !hasRequiredRetention(rows) || !hasCanonicalVersions(rows)) return undefined;
   const bundleId = rows[0]?.bundle_id;
   if (!bundleId || rows.some((row) => row.bundle_id !== bundleId)) return undefined;
   return { bundleId, documents: rows.map(toStored) };

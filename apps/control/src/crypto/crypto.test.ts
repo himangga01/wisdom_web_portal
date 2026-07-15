@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   blindIndex,
+  blindIndexCandidates,
   createStaticKeyProvider,
   decryptPii,
   encryptPii,
@@ -19,7 +20,21 @@ const pii = {
 const active = { id: "pii-v2", secret: Buffer.alloc(32, 2) };
 const previous = { id: "pii-v1", secret: Buffer.alloc(32, 1) };
 
+function flipFirstEncodedByte(value: string): string {
+  const bytes = Buffer.from(value, "base64url");
+  bytes[0] = (bytes[0] ?? 0) ^ 1;
+  return bytes.toString("base64url");
+}
+
 describe("versioned consultation cryptography", () => {
+  it("rejects every active or previous key ID the envelope grammar cannot parse", () => {
+    for (const id of ["pii v1", " pii-v1", "pii-v1 ", "pii/v1", "x".repeat(65)] as const) {
+      expect(() => createStaticKeyProvider({ id, secret: Buffer.alloc(32, 1) }), id).toThrow(/key id/i);
+      expect(() => createStaticKeyProvider(active, [{ id, secret: Buffer.alloc(32, 1) }]), id).toThrow(/key id/i);
+    }
+    expect(() => createStaticKeyProvider({ id: "A.z_9-1", secret: Buffer.alloc(32, 1) })).not.toThrow();
+  });
+
   it("round-trips a versioned AES-256-GCM envelope with random IVs", () => {
     const provider = createStaticKeyProvider(active, [previous]);
     const first = encryptPii(provider, "consultation-1", pii);
@@ -32,13 +47,17 @@ describe("versioned consultation cryptography", () => {
 
   it("rejects ciphertext/tag tampering, wrong AAD and unavailable keys", () => {
     const provider = createStaticKeyProvider(active, [previous]);
-    const envelope = JSON.parse(encryptPii(provider, "consultation-1", pii)) as {
+    const serialized = encryptPii(provider, "consultation-1", pii);
+    const envelope = JSON.parse(serialized) as {
       ciphertext: string;
+      tag: string;
       keyId: string;
     };
-    envelope.ciphertext = `${envelope.ciphertext.slice(0, -2)}AA`;
 
-    expect(() => decryptPii(provider, "consultation-1", JSON.stringify(envelope))).toThrow();
+    for (const field of ["ciphertext", "tag"] as const) {
+      const tampered = { ...envelope, [field]: flipFirstEncodedByte(envelope[field]) };
+      expect(() => decryptPii(provider, "consultation-1", JSON.stringify(tampered)), field).toThrow();
+    }
     expect(() => decryptPii(provider, "consultation-2", encryptPii(provider, "consultation-1", pii))).toThrow();
 
     const oldProvider = createStaticKeyProvider(previous);
@@ -77,6 +96,17 @@ describe("versioned consultation cryptography", () => {
     expect(keyedDigest(provider, "idempotency", "same-value")).not.toEqual(
       keyedDigest(provider, "request-fingerprint", "same-value"),
     );
+    expect(() => blindIndex(provider, "phone", "010/1234/5678")).toThrow();
+  });
+
+  it("builds active and previous blind-index candidates with their key IDs", () => {
+    const provider = createStaticKeyProvider(active, [previous], Buffer.alloc(32, 10));
+    const candidates = blindIndexCandidates(provider, "phone", "+82 (10) 1234-5678");
+
+    expect(candidates).toEqual([
+      { keyId: "pii-v2", index: blindIndex(provider, "phone", "+821012345678", "pii-v2") },
+      { keyId: "pii-v1", index: blindIndex(provider, "phone", "+821012345678", "pii-v1") },
+    ]);
   });
 
   it("keeps encryption rooted in PII keys and every HMAC purpose rooted independently", () => {

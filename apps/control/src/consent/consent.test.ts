@@ -14,6 +14,67 @@ let testDatabase: TestDatabase | undefined;
 afterEach(() => testDatabase?.close());
 
 describe("immutable consent bundles", () => {
+  it("enforces privacy 12-month and marketing 24-month retention roles", () => {
+    testDatabase = createTestDatabase();
+    const reversed = consentBundle().map((document) => ({
+      ...document,
+      retentionMonths: document.kind === "privacy" ? 24 as const : 12 as const,
+    }));
+    expect(() => seedConsentDocuments(testDatabase!.db, reversed, 1_000)).toThrow(
+      /retention/i,
+    );
+
+    const nonstandard = consentBundle().map((document, index) => index === 0
+      ? { ...document, retentionMonths: 18 as unknown as 12 }
+      : document);
+    expect(() => seedConsentDocuments(testDatabase!.db, nonstandard, 1_000)).toThrow(
+      /retention/i,
+    );
+    expect(testDatabase.db.sqlite.prepare("SELECT count(*) count FROM consent_documents").get()).toEqual({ count: 0 });
+  });
+
+  it("refuses activation when persisted retention roles are reversed", () => {
+    testDatabase = createTestDatabase();
+    seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consent_documents
+      SET retention_months = CASE kind WHEN 'privacy' THEN 24 ELSE 12 END
+      WHERE bundle_id = ?
+    `).run("bundle-2026-07-16");
+
+    expect(() => activateConsentBundle(testDatabase!.db, "bundle-2026-07-16", 2_000)).toThrow(
+      /retention/i,
+    );
+    expect(getActiveConsentBundle(testDatabase.db)).toBeUndefined();
+  });
+
+  it("refuses activation when a persisted consent version is non-canonical", () => {
+    testDatabase = createTestDatabase();
+    seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consent_documents SET version = ?
+      WHERE bundle_id = ? AND kind = 'privacy' AND locale = 'ko'
+    `).run(" privacy-2026-07-16 ", "bundle-2026-07-16");
+
+    expect(() => activateConsentBundle(testDatabase!.db, "bundle-2026-07-16", 2_000)).toThrow(
+      /version/i,
+    );
+    expect(getActiveConsentBundle(testDatabase.db)).toBeUndefined();
+  });
+
+  it("rejects non-canonical, overlong, or unsupported consent versions before persistence", () => {
+    testDatabase = createTestDatabase();
+    for (const version of [" privacy-2026-07-16", "privacy-2026-07-16 ", "v".repeat(65), "privacy/2026"] as const) {
+      const invalid = consentBundle().map((document, index) => index === 0
+        ? { ...document, version }
+        : document);
+      expect(() => seedConsentDocuments(testDatabase!.db, invalid, 1_000), version).toThrow(
+        /version/i,
+      );
+    }
+    expect(testDatabase.db.sqlite.prepare("SELECT count(*) count FROM consent_documents").get()).toEqual({ count: 0 });
+  });
+
   it("rejects an incomplete production seed before writing any document", () => {
     testDatabase = createTestDatabase();
     expect(() => seedCompleteConsentBundles(

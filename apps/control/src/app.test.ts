@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import { consultationRequestSchema } from "@wisdom/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../test/helpers.js";
 import { createControlApp, type RedactedLogEvent } from "./app.js";
 import { activateConsentBundle, seedConsentDocuments } from "./consent/service.js";
+import type { IntakeFaultPoint } from "./consultations/service.js";
 import { createStaticKeyProvider } from "./crypto/index.js";
 import { closeDatabase, openDatabase } from "./db/client.js";
 
@@ -15,7 +16,17 @@ const cleanup: Array<() => void> = [];
 
 afterEach(() => {
   while (cleanup.length > 0) cleanup.pop()?.();
+  vi.restoreAllMocks();
 });
+
+const INTAKE_FAULT_POINTS = [
+  "after-rate-limits",
+  "after-consultation",
+  "after-consent-events",
+  "after-outbox",
+  "after-audit",
+  "after-idempotency",
+] as const satisfies readonly IntakeFaultPoint[];
 
 interface Fixture {
   app: ReturnType<typeof createControlApp>;
@@ -27,8 +38,9 @@ interface Fixture {
 
 function fixture(options: {
   activeConsent?: boolean;
-  faultInjector?: (point: string) => void;
+  faultInjector?: (point: IntakeFaultPoint) => void;
   peerAddress?: string;
+  useDefaultLogger?: boolean;
 } = {}): Fixture {
   const database = createTestDatabase();
   cleanup.push(() => database.close());
@@ -45,7 +57,7 @@ function fixture(options: {
     enforceOrigin: true,
     now: () => now,
     peerAddress: () => options.peerAddress ?? "203.0.113.10",
-    logger: { write: (event) => logs.push(event) },
+    ...(options.useDefaultLogger ? {} : { logger: { write: (event: RedactedLogEvent) => logs.push(event) } }),
     ...(options.faultInjector ? { faultInjector: options.faultInjector } : {}),
   });
   return {
@@ -103,8 +115,22 @@ function post(app: Fixture["app"], body: string, idempotencyKey: string, origin 
   });
 }
 
+function expectNoRequestCanaries(output: string, body: string, idempotencyKey: string): void {
+  for (const canary of [
+    idempotencyKey,
+    body,
+    "Hong Gildong",
+    "+821012345678",
+    "client@example.com",
+    "Wisdom Co.",
+    "public procurement registration plan",
+  ]) {
+    expect(output).not.toContain(canary);
+  }
+}
+
 describe("public control API", () => {
-  it("serves adapter-compatible consent metadata and fail-closed health", async () => {
+  it("serves adapter-compatible consent metadata, round-trips it through shared parsing, and fails health closed", async () => {
     const ready = fixture();
     const consentResponse = await ready.app.request(
       "http://localhost/api/v1/consent-documents?locale=en",
@@ -112,7 +138,8 @@ describe("public control API", () => {
     expect(consentResponse.status).toBe(200);
     expect(consentResponse.headers.get("cache-control")).toBe("no-store");
     expect(consentResponse.headers.get("x-request-id")).toBeTruthy();
-    expect(await consentResponse.json()).toMatchObject({
+    const configuration = await consentResponse.json() as Awaited<ReturnType<typeof consentConfiguration>>;
+    expect(configuration).toMatchObject({
       locale: "en",
       documents: {
         privacy: { version: "privacy-2026-07-16", required: true },
@@ -120,6 +147,14 @@ describe("public control API", () => {
       },
       formToken: expect.any(String),
     });
+    ready.now += 2_000;
+    const roundTrip = submission(configuration);
+    expect(consultationRequestSchema.parse(roundTrip.consultation)).toEqual(roundTrip.consultation);
+    expect((await post(
+      ready.app,
+      JSON.stringify(roundTrip),
+      "consent-roundtrip-key-0001",
+    )).status).toBe(201);
     expect((await ready.app.request("http://localhost/health/live")).status).toBe(200);
     expect((await ready.app.request("http://localhost/health/ready")).status).toBe(200);
 
@@ -202,10 +237,10 @@ describe("public control API", () => {
     expect(current.database.db.sqlite.prepare("SELECT count(*) count FROM consultations").get()).toEqual({ count: 1 });
   });
 
-  it("rolls back rate, consultation, consent, outbox, audit and replay rows on a mid-write fault", async () => {
+  it.each(INTAKE_FAULT_POINTS)("rolls back every intake table at fault point %s", async (faultPoint) => {
     const current = fixture({
       faultInjector: (point) => {
-        if (point === "after-consent-events") throw new Error("injected write fault");
+        if (point === faultPoint) throw new Error("injected write fault");
       },
     });
     const consent = await consentConfiguration(current.app);
@@ -425,6 +460,61 @@ describe("public control API", () => {
     for (const secret of ["Hong Gildong", "+821012345678", "client@example.com", "Wisdom Co.", "public procurement registration plan"]) {
       expect(bytes.some((buffer) => buffer.includes(Buffer.from(secret)))).toBe(false);
       expect(JSON.stringify(current.logs)).not.toContain(secret);
+    }
+  });
+
+  it.each(["success", "validation", "injected-storage"] as const)(
+    "keeps raw request canaries out of the injected logger on %s",
+    async (mode) => {
+      const current = fixture({
+        ...(mode === "injected-storage"
+          ? { faultInjector: () => { throw new Error("injected storage failure"); } }
+          : {}),
+      });
+      const consent = await consentConfiguration(current.app);
+      current.now += 2_000;
+      const valid = submission(consent);
+      const body = JSON.stringify(mode === "validation"
+        ? { ...valid, consultation: { ...valid.consultation, message: "short" } }
+        : valid);
+      const idempotencyKey = `injected-log-${mode}-key-0001`;
+
+      const response = await post(current.app, body, idempotencyKey);
+      expect(response.status).toBe(mode === "success" ? 201 : mode === "validation" ? 422 : 503);
+      expectNoRequestCanaries(JSON.stringify(current.logs), body, idempotencyKey);
+    },
+  );
+
+  it("keeps raw request canaries out of default logger stdout and stderr on every outcome", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => stdout.push(values.map(String).join(" ")));
+    vi.spyOn(console, "error").mockImplementation((...values: unknown[]) => stderr.push(values.map(String).join(" ")));
+    const canaries: Array<{ body: string; idempotencyKey: string }> = [];
+
+    for (const mode of ["success", "validation", "injected-storage"] as const) {
+      const current = fixture({
+        useDefaultLogger: true,
+        ...(mode === "injected-storage"
+          ? { faultInjector: () => { throw new Error("injected storage failure"); } }
+          : {}),
+      });
+      const consent = await consentConfiguration(current.app);
+      current.now += 2_000;
+      const valid = submission(consent);
+      const body = JSON.stringify(mode === "validation"
+        ? { ...valid, consultation: { ...valid.consultation, message: "short" } }
+        : valid);
+      const idempotencyKey = `default-log-${mode}-key-0001`;
+      canaries.push({ body, idempotencyKey });
+
+      const response = await post(current.app, body, idempotencyKey);
+      expect(response.status).toBe(mode === "success" ? 201 : mode === "validation" ? 422 : 503);
+    }
+
+    const output = JSON.stringify({ stdout, stderr });
+    for (const canary of canaries) {
+      expectNoRequestCanaries(output, canary.body, canary.idempotencyKey);
     }
   });
 });

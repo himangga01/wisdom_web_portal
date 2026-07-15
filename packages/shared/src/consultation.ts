@@ -6,7 +6,12 @@ import {
   preferredContactSchema,
 } from "./contracts.js";
 
-const consentVersionSchema = z.string().trim().min(1);
+export const consentVersionSchema = z
+  .string()
+  .refine((value) => value.trim() === value, "Consent version must be canonical")
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Consent version contains unsupported characters");
 
 export const privacyConsentSchema = z
   .object({
@@ -49,6 +54,10 @@ const normalizedPhoneSchema = z
     },
     { message: "Phone must contain between 8 and 20 digits" },
   );
+
+export function normalizePhone(value: string): string {
+  return normalizedPhoneSchema.parse(value);
+}
 
 export const consultationRequestSchema = z
   .object({

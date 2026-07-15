@@ -79,7 +79,7 @@ export function parseControlConfig(source: EnvironmentSource): ControlConfig {
   if (shared.nodeEnv === "production" && controlHmacSecret === shared.piiEncryptionKey) {
     throw new Error("CONTROL_HMAC_SECRET must be independent from PII_ENCRYPTION_KEY");
   }
-  const activeId = source.PII_ACTIVE_KEY_ID?.trim() || "pii-v1";
+  const activeId = source.PII_ACTIVE_KEY_ID === undefined ? "pii-v1" : source.PII_ACTIVE_KEY_ID;
   const keyProvider = createStaticKeyProvider({
     id: activeId,
     secret: Buffer.from(shared.piiEncryptionKey, "utf8"),
