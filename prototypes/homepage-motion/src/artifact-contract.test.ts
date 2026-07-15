@@ -6,7 +6,7 @@ const capture = readFileSync(resolve(process.cwd(), "scripts/capture-motion.mjs"
 const standalone = readFileSync(resolve(process.cwd(), "scripts/build-standalone.mjs"), "utf8");
 const verifier = readFileSync(resolve(process.cwd(), "scripts/verify-standalone.mjs"), "utf8");
 const playwrightConfig = readFileSync(resolve(process.cwd(), "playwright.config.ts"), "utf8");
-const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
+const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8").replace(/\r\n/g, "\n");
 
 describe("homepage demo artifact contract", () => {
   it("writes captures to the dynamic c1 artifact names", () => {
