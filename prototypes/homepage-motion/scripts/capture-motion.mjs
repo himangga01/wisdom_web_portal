@@ -8,9 +8,9 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const prototypeRoot = resolve(scriptDir, "..");
 const workspaceRoot = resolve(prototypeRoot, "../..");
 const renderDir = resolve(workspaceRoot, ".superpowers/brainstorm/renders");
-const desktopPng = resolve(renderDir, "wisdom-homepage-cinematic-desktop.png");
-const mobilePng = resolve(renderDir, "wisdom-homepage-cinematic-mobile.png");
-const scrollVideo = resolve(renderDir, "wisdom-homepage-cinematic-scroll.webm");
+const desktopPng = resolve(renderDir, "wisdom-homepage-dynamic-c1-desktop.png");
+const mobilePng = resolve(renderDir, "wisdom-homepage-dynamic-c1-mobile.png");
+const scrollVideo = resolve(renderDir, "wisdom-homepage-dynamic-c1-scroll.webm");
 const url = "http://127.0.0.1:4173";
 
 await mkdir(renderDir, { recursive: true });
@@ -42,7 +42,7 @@ try {
   const desktop = await browser.newContext({ viewport: { width: 1440, height: 2200 } });
   const desktopPage = await desktop.newPage();
   await desktopPage.goto(url, { waitUntil: "networkidle" });
-  await desktopPage.waitForTimeout(1050);
+  await desktopPage.waitForTimeout(650);
   await desktopPage.screenshot({ path: desktopPng, fullPage: false });
   await desktop.close();
 
@@ -53,12 +53,12 @@ try {
   const mobilePage = await mobile.newPage();
   const video = mobilePage.video();
   await mobilePage.goto(url, { waitUntil: "networkidle" });
-  await mobilePage.waitForTimeout(1050);
+  await mobilePage.waitForTimeout(650);
   await mobilePage.screenshot({ path: mobilePng, fullPage: false });
   const scrollHeight = await mobilePage.evaluate(() => document.documentElement.scrollHeight);
   for (let y = 0; y <= scrollHeight; y += 520) {
     await mobilePage.evaluate((nextY) => window.scrollTo({ top: nextY, behavior: "smooth" }), y);
-    await mobilePage.waitForTimeout(1050);
+    await mobilePage.waitForTimeout(650);
   }
   await mobile.close();
   if (video) await video.saveAs(scrollVideo);

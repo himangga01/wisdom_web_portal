@@ -120,10 +120,14 @@
     transition-delay: 0ms !important;
   }
 
-  [data-reveal],
-  [data-reveal] * {
+  [data-reveal] {
     opacity: 1 !important;
     filter: none !important;
     translate: none !important;
+  }
+
+  .primary:hover,
+  .header-cta:hover {
+    transform: none;
   }
 }

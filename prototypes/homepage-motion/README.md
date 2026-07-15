@@ -8,6 +8,7 @@
 
 ```powershell
 npm install
+npx playwright install chromium
 npm run dev -- --host 0.0.0.0
 ```
 
@@ -15,6 +16,7 @@ Windows PowerShell 실행 정책으로 `npm.ps1`이 차단되면 `npm` 대신 `n
 
 ```powershell
 npm.cmd install
+npx.cmd playwright install chromium
 npm.cmd run dev -- --host 0.0.0.0
 ```
 
@@ -34,12 +36,17 @@ npm.cmd run verify:standalone
 - `test`: 모션 상태와 홈페이지 정적 계약 검사
 - `test:e2e`: Chromium 반응형·접근성·오류 복구·성능 회귀 검사
 - `build`: TypeScript 검사와 Vite 운영 빌드
-- `capture`: 데스크톱·모바일 PNG와 모바일 스크롤 WebM 생성
+- `capture`: `wisdom-homepage-dynamic-c1-desktop.png`, `wisdom-homepage-dynamic-c1-mobile.png`, `wisdom-homepage-dynamic-c1-scroll.webm` 생성
 - `standalone`: 별도 서버 없이 바로 열 수 있는 단일 HTML 생성
 
 `verify:standalone`은 운영 빌드 후 CSS·JavaScript·대표 사진을 포함한
 `.superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html`을 만들고,
-Chromium에서 서버 없이 직접 열어 18개 좌우 모션과 모바일 너비를 검사합니다.
+실행·렌더링 리소스가 모두 파일 안에 포함됐는지 먼저 검사합니다. 일반 `https`,
+`mailto`, `tel`, 해시 내비게이션 링크는 허용합니다. 이어 Chromium에서 서버 없이
+직접 열어 스크롤 전에 18개 대상의 정확한 key·direction·delay 순서와
+`500ms`·`±64px`·`60ms` 모션 토큰, 좌우 미노출 상태를 확인합니다. 390px 화면의
+가로 넘침은 스크롤 전·각 reveal 중·완료 후마다 검사하며, `console.error`·`pageerror`·
+`requestfailed`가 하나라도 발생하면 검증을 실패시킵니다.
 기존 `wisdom-homepage-cinematic-demo.html`은 비교용으로 보존합니다.
 
 ## 시안 범위

@@ -54,6 +54,90 @@ test("shows final state from the first frame for reduced motion", async ({ page 
   )).toBe(true);
 });
 
+test("keeps native choice inputs visually hidden for reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+
+  const inputs = page.locator('.finder-panel > input[type="radio"]');
+  await expect(inputs).toHaveCount(4);
+  const states = await inputs.evaluateAll((elements) => elements.map((element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      opacity: style.opacity,
+      width: rect.width,
+      height: rect.height,
+    };
+  }));
+
+  expect(states.every(({ opacity, width, height }) => (
+    opacity === "0" && width <= 1 && height <= 1
+  ))).toBe(true);
+});
+
+test("keeps cta hover feedback stationary for reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+
+  const primary = page.locator(".primary").first();
+  const primaryBackground = await primary.evaluate((element) => getComputedStyle(element).backgroundColor);
+  await primary.hover();
+  await expect.poll(() => primary.evaluate((element) => getComputedStyle(element).transform)).toBe("none");
+  expect(await primary.evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe(primaryBackground);
+
+  const headerCta = page.locator(".header-cta");
+  await headerCta.hover();
+  await expect.poll(() => headerCta.evaluate((element) => getComputedStyle(element).transform)).toBe("none");
+});
+
+test("uses contrasting focus outlines on dark brown surfaces", async ({ page }) => {
+  await page.goto("/");
+
+  const focusState = async (selector: string, surfaceSelector: string) => {
+    const target = page.locator(selector);
+    await target.focus();
+    await expect(target).toBeFocused();
+    return target.evaluate((element, closestSurface) => {
+      const parseRgb = (color: string) => color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
+      const luminance = (color: string) => {
+        const channels = parseRgb(color).map((channel) => {
+          const value = channel / 255;
+          return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+      };
+      const style = getComputedStyle(element);
+      const surface = element.closest(closestSurface);
+      if (!(surface instanceof HTMLElement)) throw new Error(`Missing focus surface: ${closestSurface}`);
+      const outlineLuminance = luminance(style.outlineColor);
+      const surfaceLuminance = luminance(getComputedStyle(surface).backgroundColor);
+      return {
+        matchesFocusVisible: element.matches(":focus-visible"),
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        contrast: (Math.max(outlineLuminance, surfaceLuminance) + 0.05)
+          / (Math.min(outlineLuminance, surfaceLuminance) + 0.05),
+      };
+    }, surfaceSelector);
+  };
+
+  const featured = await focusState('.article-card.featured a', ".article-card.featured");
+  expect(featured).toMatchObject({
+    matchesFocusVisible: true,
+    outlineStyle: "solid",
+    outlineWidth: "2px",
+  });
+  expect(featured.contrast).toBeGreaterThanOrEqual(3);
+
+  const footer = await focusState('footer a[href="#privacy"]', "footer");
+  expect(footer).toMatchObject({
+    matchesFocusVisible: true,
+    outlineStyle: "solid",
+    outlineWidth: "2px",
+  });
+  expect(footer.contrast).toBeGreaterThanOrEqual(3);
+});
+
 test("applies the approved dynamic c1 motion tokens", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, "IntersectionObserver", {
     configurable: true,
