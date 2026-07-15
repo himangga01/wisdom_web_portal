@@ -18,6 +18,7 @@ import {
 } from "./consultations/service.js";
 import type { KeyProvider } from "./crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "./db/client.js";
+import { registerTask4Routes } from "./admin/routes.js";
 
 const MAX_BODY_BYTES = 32_768;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{16,128}$/;
@@ -49,6 +50,11 @@ export interface ControlAppDependencies {
   peerAddress?: (context: Context<ControlEnvironment>) => string;
   logger?: RedactedLogger;
   faultInjector?: (point: IntakeFaultPoint) => void;
+  publicOrigin?: string;
+  adminOrigin?: string;
+  authSecret?: Uint8Array;
+  withdrawalSecret?: Uint8Array;
+  dummyPasswordHash?: string;
 }
 
 class PayloadTooLargeError extends Error {}
@@ -67,6 +73,57 @@ function defaultLogger(): RedactedLogger {
       console.error(JSON.stringify(event));
     },
   };
+}
+
+function isLoopbackPeer(value: string): boolean {
+  const peer = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (peer === "::1" || peer === "0:0:0:0:0:0:0:1") return true;
+  if (peer.startsWith("::ffff:")) return isLoopbackPeer(peer.slice("::ffff:".length));
+  const octets = peer.split(".");
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet)) && octets[0] === "127";
+}
+
+function effectiveRequestOrigin(
+  context: Context<ControlEnvironment>,
+  dependencies: ControlAppDependencies,
+): string | undefined {
+  const peer = dependencies.peerAddress?.(context) ?? "unknown";
+  if (isLoopbackPeer(peer)) {
+    const forwardedHost = context.req.header("x-forwarded-host");
+    const forwardedProto = context.req.header("x-forwarded-proto");
+    if (forwardedHost !== undefined || forwardedProto !== undefined) {
+      if (
+        !forwardedHost ||
+        !forwardedProto ||
+        !/^[A-Za-z0-9.:[\]-]+(?::\d{1,5})?$/.test(forwardedHost) ||
+        !["http", "https"].includes(forwardedProto)
+      ) return undefined;
+      try {
+        return new URL(`${forwardedProto}://${forwardedHost}`).origin;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  try {
+    return new URL(context.req.url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSensitivePath(path: string): boolean {
+  return path === "/admin" || path.startsWith("/admin/") ||
+    path === "/marketing/withdraw" || path.startsWith("/marketing/withdraw/") ||
+    /^\/(?:en|zh-hans|zh-hant)\/marketing\/withdraw(?:\/|$)/.test(path);
+}
+
+function redactedRoute(path: string): string {
+  if (/^\/marketing\/withdraw\/[^/]+$/.test(path)) return "/marketing/withdraw/:token";
+  if (/^\/admin\/consultations\/[^/]+\/status$/.test(path)) return "/admin/consultations/:id/status";
+  if (/^\/admin\/consultations\/[^/]+$/.test(path)) return "/admin/consultations/:id";
+  if (/^\/admin\/failures\/[^/]+\/requeue$/.test(path)) return "/admin/failures/:id/requeue";
+  return path;
 }
 
 function fieldErrors(error: z.ZodError): Record<string, string[]> {
@@ -141,11 +198,48 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     context.res.headers.set("X-Request-Id", context.get("requestId"));
   });
 
+  app.use("*", async (context, next) => {
+    await next();
+    if (!isSensitivePath(context.req.path)) return;
+    context.res.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+    context.res.headers.set("Referrer-Policy", "no-referrer");
+    context.res.headers.set("X-Content-Type-Options", "nosniff");
+    context.res.headers.set("X-Frame-Options", "DENY");
+    context.res.headers.set(
+      "Content-Security-Policy",
+      "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    );
+  });
+
+  if (dependencies.publicOrigin !== undefined || dependencies.adminOrigin !== undefined) {
+    if (!dependencies.publicOrigin || !dependencies.adminOrigin) {
+      throw new Error("Both public and administrator origins are required for host routing");
+    }
+    app.use("*", async (context, next) => {
+      const origin = effectiveRequestOrigin(context, dependencies);
+      if (origin !== dependencies.publicOrigin && origin !== dependencies.adminOrigin) {
+        return context.text("Misdirected Request", 421);
+      }
+      const adminPath = context.req.path === "/admin" || context.req.path.startsWith("/admin/");
+      const withdrawalPath = context.req.path === "/marketing/withdraw" ||
+        context.req.path.startsWith("/marketing/withdraw/") ||
+        /^\/(?:en|zh-hans|zh-hant)\/marketing\/withdraw(?:\/|$)/.test(context.req.path);
+      const publicApiPath = context.req.path.startsWith("/api/");
+      if (
+        (adminPath && origin !== dependencies.adminOrigin) ||
+        ((withdrawalPath || publicApiPath) && origin !== dependencies.publicOrigin)
+      ) {
+        return context.text("Not Found", 404);
+      }
+      await next();
+    });
+  }
+
   app.onError((_error, context) => {
     safeLog({
       requestId: context.get("requestId"),
       method: context.req.method,
-      route: context.req.path,
+      route: redactedRoute(context.req.path),
       code: "STORAGE_UNAVAILABLE",
     });
     return apiError(
@@ -281,6 +375,36 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         return apiError(context, 429, "RATE_LIMITED", "Too many consultation requests. Try again later.");
     }
   });
+
+  const task4Dependencies = [
+    dependencies.publicOrigin,
+    dependencies.adminOrigin,
+    dependencies.authSecret,
+    dependencies.withdrawalSecret,
+    dependencies.dummyPasswordHash,
+  ];
+  if (task4Dependencies.some((value) => value !== undefined)) {
+    if (
+      !dependencies.publicOrigin ||
+      !dependencies.adminOrigin ||
+      !dependencies.authSecret ||
+      !dependencies.withdrawalSecret ||
+      !dependencies.dummyPasswordHash
+    ) {
+      throw new Error("Complete administrator and withdrawal dependencies are required");
+    }
+    registerTask4Routes(app, {
+      db: dependencies.db,
+      keyProvider: dependencies.keyProvider,
+      publicOrigin: dependencies.publicOrigin,
+      adminOrigin: dependencies.adminOrigin,
+      authSecret: dependencies.authSecret,
+      withdrawalSecret: dependencies.withdrawalSecret,
+      dummyPasswordHash: dependencies.dummyPasswordHash,
+      now,
+      peerAddress: dependencies.peerAddress ?? (() => "unknown"),
+    });
+  }
 
   return app;
 }

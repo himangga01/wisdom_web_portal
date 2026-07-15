@@ -12,6 +12,15 @@ const app = createControlApp({
   keyProvider: runtime.config.keyProvider,
   allowedOrigins: runtime.config.allowedOrigins,
   enforceOrigin: runtime.config.enforceOrigin,
+  ...(runtime.config.publicOrigin && runtime.config.adminOrigin
+    ? {
+        publicOrigin: runtime.config.publicOrigin,
+        adminOrigin: runtime.config.adminOrigin,
+        authSecret: runtime.config.authSecret,
+        withdrawalSecret: runtime.config.withdrawalSecret,
+        dummyPasswordHash: runtime.config.dummyPasswordHash,
+      }
+    : {}),
   peerAddress: (context) => getConnInfo(context).remote.address ?? "unknown",
 });
 

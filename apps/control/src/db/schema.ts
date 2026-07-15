@@ -33,6 +33,7 @@ export const consultations = sqliteTable("consultations", {
   updatedAtMs: integer("updated_at_ms").notNull(),
   retentionExpiresAtMs: integer("retention_expires_at_ms").notNull(),
   purgedAtMs: integer("purged_at_ms"),
+  marketingWithdrawnAtMs: integer("marketing_withdrawn_at_ms"),
   rowVersion: integer("row_version").notNull().default(1),
 }, (table) => [
   index("consultations_status_received_idx").on(table.status, table.receivedAtMs),
@@ -118,7 +119,10 @@ export const notificationOutbox = sqliteTable("notification_outbox", {
   attemptCount: integer("attempt_count").notNull().default(0),
   availableAtMs: integer("available_at_ms").notNull(),
   lockedAtMs: integer("locked_at_ms"),
+  leaseExpiresAtMs: integer("lease_expires_at_ms"),
   lockedBy: text("locked_by"),
+  purpose: text("purpose").notNull().default("transactional"),
+  deliveryCycle: integer("delivery_cycle").notNull().default(1),
   providerMessageId: text("provider_message_id"),
   lastErrorCode: text("last_error_code"),
   createdAtMs: integer("created_at_ms").notNull(),
@@ -127,6 +131,118 @@ export const notificationOutbox = sqliteTable("notification_outbox", {
 }, (table) => [
   uniqueIndex("notification_outbox_event_uidx").on(table.consultationId, table.channel, table.eventType),
   index("notification_outbox_queue_idx").on(table.state, table.availableAtMs),
+  index("notification_outbox_lease_idx").on(table.state, table.availableAtMs, table.leaseExpiresAtMs),
+]);
+
+export const admins = sqliteTable("admins", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  totpSecretEnvelope: text("totp_secret_envelope"),
+  totpKeyId: text("totp_key_id"),
+  totpLastCounter: integer("totp_last_counter"),
+  status: text("status").notNull(),
+  failedCount: integer("failed_count").notNull().default(0),
+  lockedUntilMs: integer("locked_until_ms"),
+  createdAtMs: integer("created_at_ms").notNull(),
+  updatedAtMs: integer("updated_at_ms").notNull(),
+  lastLoginAtMs: integer("last_login_at_ms"),
+});
+
+export const adminSessions = sqliteTable("admin_sessions", {
+  tokenHash: blob("token_hash", { mode: "buffer" }).primaryKey(),
+  adminId: text("admin_id").notNull().references(() => admins.id),
+  csrfHash: blob("csrf_hash", { mode: "buffer" }).notNull(),
+  createdAtMs: integer("created_at_ms").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+  idleExpiresAtMs: integer("idle_expires_at_ms").notNull(),
+  lastSeenAtMs: integer("last_seen_at_ms").notNull(),
+  revokedAtMs: integer("revoked_at_ms"),
+}, (table) => [
+  index("admin_sessions_admin_expiry_idx").on(table.adminId, table.expiresAtMs),
+]);
+
+export const adminRecoveryCodes = sqliteTable("admin_recovery_codes", {
+  id: text("id").primaryKey(),
+  adminId: text("admin_id").notNull().references(() => admins.id),
+  codeHash: blob("code_hash", { mode: "buffer" }).notNull(),
+  createdAtMs: integer("created_at_ms").notNull(),
+  usedAtMs: integer("used_at_ms"),
+}, (table) => [
+  uniqueIndex("admin_recovery_codes_admin_hash_uidx").on(table.adminId, table.codeHash),
+  index("admin_recovery_codes_unused_idx").on(table.adminId, table.usedAtMs),
+]);
+
+export const adminPreAuthChallenges = sqliteTable("admin_pre_auth_challenges", {
+  challengeHash: blob("challenge_hash", { mode: "buffer" }).primaryKey(),
+  adminId: text("admin_id").notNull().references(() => admins.id),
+  csrfHash: blob("csrf_hash", { mode: "buffer" }).notNull(),
+  pendingPasswordHash: text("pending_password_hash"),
+  createdAtMs: integer("created_at_ms").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+  usedAtMs: integer("used_at_ms"),
+}, (table) => [
+  index("admin_pre_auth_expiry_idx").on(table.expiresAtMs, table.usedAtMs),
+]);
+
+export const adminLoginBuckets = sqliteTable("admin_login_buckets", {
+  subjectKind: text("subject_kind").notNull(),
+  subjectHash: blob("subject_hash", { mode: "buffer" }).notNull(),
+  windowStartMs: integer("window_start_ms").notNull(),
+  failureCount: integer("failure_count").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.subjectKind, table.subjectHash, table.windowStartMs] }),
+  index("admin_login_buckets_expiry_idx").on(table.expiresAtMs),
+]);
+
+export const adminLoginAdmissions = sqliteTable("admin_login_admissions", {
+  id: text("id").primaryKey(),
+  usernameHash: blob("username_hash", { mode: "buffer" }).notNull(),
+  sourceHash: blob("source_hash", { mode: "buffer" }).notNull(),
+  createdAtMs: integer("created_at_ms").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+}, (table) => [
+  index("admin_login_admissions_username_idx").on(table.usernameHash, table.expiresAtMs),
+  index("admin_login_admissions_source_idx").on(table.sourceHash, table.expiresAtMs),
+]);
+
+export const notificationDeliveryAttempts = sqliteTable("notification_delivery_attempts", {
+  id: text("id").primaryKey(),
+  outboxId: text("outbox_id").notNull().references(() => notificationOutbox.id),
+  deliveryCycle: integer("delivery_cycle").notNull(),
+  attemptNo: integer("attempt_no").notNull(),
+  workerId: text("worker_id").notNull(),
+  outcomeCode: text("outcome_code"),
+  providerMessageId: text("provider_message_id"),
+  startedAtMs: integer("started_at_ms").notNull(),
+  finishedAtMs: integer("finished_at_ms"),
+}, (table) => [
+  uniqueIndex("notification_delivery_attempt_identity_uidx").on(
+    table.outboxId,
+    table.deliveryCycle,
+    table.attemptNo,
+  ),
+  index("notification_delivery_attempts_outbox_idx").on(table.outboxId, table.startedAtMs),
+]);
+
+export const marketingWithdrawalCapabilities = sqliteTable("marketing_withdrawal_capabilities", {
+  tokenHash: blob("token_hash", { mode: "buffer" }).primaryKey(),
+  consultationId: text("consultation_id").notNull().references(() => consultations.id),
+  consentEventId: text("consent_event_id").notNull().references(() => consentEvents.id),
+  locale: text("locale").notNull(),
+  landingHash: blob("landing_hash", { mode: "buffer" }),
+  landingExpiresAtMs: integer("landing_expires_at_ms"),
+  createdAtMs: integer("created_at_ms").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+  usedAtMs: integer("used_at_ms"),
+}, (table) => [
+  index("marketing_withdrawal_consultation_idx").on(
+    table.consultationId,
+    table.usedAtMs,
+    table.expiresAtMs,
+  ),
 ]);
 
 export const REQUIRED_TABLES = [
@@ -140,6 +256,12 @@ export const REQUIRED_TABLES = [
   "notification_settings",
   "admins",
   "admin_sessions",
+  "admin_recovery_codes",
+  "admin_pre_auth_challenges",
+  "admin_login_buckets",
+  "admin_login_admissions",
+  "notification_delivery_attempts",
+  "marketing_withdrawal_capabilities",
   "articles",
   "article_revisions",
   "jobs",
@@ -166,13 +288,21 @@ export const REQUIRED_INDEXES = [
   "notification_outbox_event_uidx",
   "notification_outbox_queue_idx",
   "admin_sessions_admin_expiry_idx",
+  "admin_recovery_codes_unused_idx",
+  "admin_pre_auth_expiry_idx",
+  "admin_login_buckets_expiry_idx",
+  "admin_login_admissions_username_idx",
+  "admin_login_admissions_source_idx",
+  "notification_delivery_attempts_outbox_idx",
+  "notification_outbox_lease_idx",
+  "marketing_withdrawal_consultation_idx",
   "article_revisions_article_locale_idx",
   "jobs_queue_idx",
   "audit_events_created_idx",
   "audit_events_target_idx",
 ] as const;
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const drizzleSchema = {
   schemaMigrations,
@@ -182,4 +312,12 @@ export const drizzleSchema = {
   idempotencyKeys,
   abuseBuckets,
   notificationOutbox,
+  admins,
+  adminSessions,
+  adminRecoveryCodes,
+  adminPreAuthChallenges,
+  adminLoginBuckets,
+  adminLoginAdmissions,
+  notificationDeliveryAttempts,
+  marketingWithdrawalCapabilities,
 };

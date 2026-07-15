@@ -51,3 +51,8 @@
 - 상담 접수는 단일 `BEGIN IMMEDIATE` 안에서 멱등성, 속도 제한, 상담·동의 이벤트·아웃박스·감사·응답 저장을 함께 처리한다.
 - 32KiB 원시 바이트 제한, 2초/2시간 폼 토큰, 10분·일일 제한, 12/24개월 dry-run 우선 보존기간 정리를 테스트로 검증했다.
 - 실제 알림 발송과 관리자 UI는 후속 Task 범위로 남기고 테이블과 메타데이터 아웃박스만 준비했다.
+- Task 4에서 별도 관리자 호스트의 Argon2id→TOTP/복구 코드 인증, hash-only pre-auth/session, CSRF와 이중 축 로그인 제한을 구현했다.
+- 상담 상태 전이·감사·알림 enqueue를 원자적으로 묶고 SMTP/Hermes 알림 워커에 lease, backoff, fencing, 수동 requeue와 PII-safe 결과 로그를 적용했다.
+- SMTP 목적지는 공개 FQDN·465/TLS로 제한하고 발송 시점 DNS 전체 검증, 공개 IP pinning, 원 FQDN TLS SNI로 SSRF와 DNS rebinding을 차단했다.
+- 마케팅 고객 메일마다 hash-only 철회 capability를 만들고 4개 언어의 깨끗한 확인 화면에서 계정 없이 동의를 철회하도록 구현했다.
+- owner bootstrap·비밀번호 재설정·MFA 교체는 로컬 CLI로만 제공하며 비밀번호는 stdin, 등록 정보는 owner-only 파일로만 전달한다.

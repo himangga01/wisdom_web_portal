@@ -36,7 +36,9 @@ npm run verify
 
 `.env.example`을 로컬 `.env`로 복사한 뒤 실제 값을 설정합니다. 애플리케이션은 `.env`를 로드한 다음 `@wisdom/shared`의 `parseEnvironment`에 전달해야 합니다.
 
-- 운영 환경의 세 비밀값은 각각 32자 이상이어야 하며 하나라도 없으면 파싱이 실패합니다.
+- 운영 환경의 `ADMIN_SESSION_SECRET`, `PII_ENCRYPTION_KEY`, `CONTROL_HMAC_SECRET`, `WITHDRAWAL_TOKEN_SECRET`, `HERMES_HMAC_SECRET`은 서로 다른 32바이트 이상의 값이어야 하며 하나라도 없으면 파싱이 실패합니다.
+- `PUBLIC_ORIGIN`과 `ADMIN_ORIGIN`은 경로 없는 정확한 원본이어야 합니다. 운영에서는 서로 다른 HTTPS 호스트명을 사용합니다.
+- `ADMIN_DUMMY_PASSWORD_HASH`는 실제 계정 비밀번호가 아니라 미등록 계정에도 동일한 Argon2id 비용을 적용하는 공개 dummy 검증값이며 동결된 파라미터를 충족해야 합니다.
 - 운영 환경은 인메모리 데이터베이스를 사용할 수 없습니다.
 - `NODE_ENV=test`에서만 격리된 인메모리 데이터베이스와 테스트 전용 비밀값을 기본 제공하며 운영에는 재사용되지 않습니다.
 - 이메일 본문 모드는 기본적으로 `receipt-only`입니다. `full-inquiry`는 별도 운영 승인 후 명시적으로 설정합니다.
@@ -53,7 +55,7 @@ npm run verify
 - bronze/sand/ivory 디자인 토큰과 승인된 홈페이지 리빌 수치
 - 운영 비밀값을 누락 허용하지 않는 환경 파서
 
-상담 요청의 전체 HTTP 본문 크기 제한과 저장·암호화는 Task 3에서 서버 경계에 추가합니다.
+상담 요청은 서버 경계에서 32KiB 원시 본문 제한을 적용하고 PII를 암호화해 저장합니다.
 
 ## 로컬 상담 제어 서비스
 
@@ -62,6 +64,10 @@ npm run verify
 운영 환경에서는 기존 비밀값과 함께 다음 설정이 필요합니다.
 
 - `CONTROL_HMAC_SECRET`: 암호화 키와 독립적인 32바이트 이상 HMAC 루트
+- `HERMES_HMAC_SECRET`: 다른 모든 키와 독립적인 Hermes 요청 서명 키
+- `PUBLIC_ORIGIN`, `ADMIN_ORIGIN`: 예: `https://www.example.com`, `https://admin.example.com`
+- `ADMIN_DUMMY_PASSWORD_HASH`: 동결 Argon2id 정책을 만족하는 dummy PHC 문자열
+- `HERMES_ENDPOINT`: literal loopback Hermes URL, 기본값 `http://127.0.0.1:8788/notify`
 - `PII_ACTIVE_KEY_ID`: 현재 PII 암호화 키 버전 ID
 - `PII_PREVIOUS_KEYS_JSON`: 이전 PII 키 ID와 값의 JSON 객체
 - `PUBLIC_ORIGINS`: 쉼표로 구분한 HTTPS 원본 허용 목록
@@ -77,9 +83,17 @@ npm.cmd run consent:seed --workspace @wisdom/control -- --file .\consent-bundle.
 npm.cmd run consent:activate --workspace @wisdom/control -- --bundle bundle-2026-01 --confirm-sha <seed-output-sha>
 npm.cmd run retention:purge --workspace @wisdom/control
 npm.cmd run retention:purge --workspace @wisdom/control -- --apply --batch-size 100
+npm.cmd run admin:bootstrap --workspace @wisdom/control -- --username owner --display-name "Primary Owner" --output .\owner-enrollment.json
+npm.cmd run admin:password-reset --workspace @wisdom/control -- --username owner
+npm.cmd run admin:mfa-replace --workspace @wisdom/control -- --username owner --output .\owner-mfa-replacement.json
+npm.cmd run notifications:worker --workspace @wisdom/control
 npm.cmd run dev --workspace @wisdom/control
 ```
 
 동의문 seed 파일은 개인정보·마케팅 문서 각각 4개 언어, 총 8개 문서를 포함해야 합니다. seed는 draft만 만들고 명령 출력의 묶음 SHA-256을 다시 입력해야 활성화됩니다. 보존기간 정리는 기본적으로 dry-run이며 `--apply`가 있을 때만 암호문과 정확검색 인덱스를 제거하고 미발송 아웃박스를 취소합니다.
+
+관리자 CLI 비밀번호는 명령 인자가 아니라 표준 입력 한 줄로만 전달합니다. bootstrap과 MFA 교체가 만드는 등록 JSON은 기존 파일을 덮어쓰지 않으며 POSIX에서는 `0600`, Windows에서는 현재 사용자 SID만 접근 가능한 ACL을 적용합니다. 파일에는 TOTP secret과 10개 복구 코드가 있으므로 인증 앱 등록과 안전한 오프라인 보관을 마친 뒤 일반 공유 폴더에서 제거합니다. CLI는 비밀번호·TOTP·복구 코드를 stdout/stderr에 출력하지 않습니다.
+
+알림 워커는 DB의 활성 채널 설정을 매 주기 다시 읽습니다. SMTP 자격증명은 DB나 `.env`에 넣지 않고 `notification_settings.secret_ref`가 가리키는 macOS Keychain 항목에 `{ "user": "...", "password": "..." }` JSON으로 보관합니다. Hermes에는 literal loopback endpoint와 독립 HMAC 키만 사용하며 Telegram으로는 접수 메타데이터만 전달합니다. 이메일 기본값은 PII를 복호화하지 않는 `receipt-only`; `full-inquiry`는 완전한 TLS SMTP 설정과 관리자 명시 승인 뒤에만 허용됩니다. SMTP 목적지는 공개 DNS FQDN과 465/implicit TLS만 허용하며, 매 발송 시 DNS 전체 응답이 공개 라우팅 주소인지 검사한 뒤 선택한 IP로 연결을 고정하고 TLS SNI는 원래 FQDN으로 유지합니다.
 
 `better-sqlite3@12.11.1`은 Node.js 24에서 사용하는 네이티브 모듈입니다. Windows와 Apple Silicon macOS 사이에서 `node_modules`를 복사하지 말고 대상 장비에서 설치해야 하며, 사전 빌드 파일이 없으면 Windows Build Tools 또는 Xcode Command Line Tools가 필요할 수 있습니다.

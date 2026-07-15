@@ -84,3 +84,16 @@
 - 남용 방지: honeypot, 2초 최소 작성, 2시간 배타 만료, IP 5/10분·20/일, 연락처 3/10분·10/일, 신뢰 프록시 체인 검증
 - 보존기간: 일반 12개월·마케팅 24개월, dry-run 무쓰기, 정확 경계, 아웃박스 취소, 멱등 재실행, 장애 rollback 검증
 - 현재 집중 검증: control typecheck 통과, Vitest 10파일 35/35 통과
+
+## 2026-07-16 · 운영 상세 Task 4 관리자·알림·철회
+
+- 기준 HEAD `25dc828`; append-only v2로 MFA/복구/pre-auth/throttle, 알림 lease/attempt, 철회 capability 저장 구조를 추가했다.
+- 관리자 인증은 Argon2id 고정 파라미터, SHA-256 TOTP, 1회용 복구 코드, 5분 pre-auth, 30분 idle/8시간 absolute 세션을 사용한다.
+- 별도 admin host SSR 화면과 상담 상태 CAS를 구현하고 모든 POST에 strict Origin·CSRF·16KiB 폼 상한·중복 필드 거부를 적용했다.
+- SMTP receipt-only/full-inquiry와 loopback HMAC Hermes를 구현하고 2분 lease, 5회 시도, 1/5/15/60분 backoff, at-least-once 의미를 고정했다.
+- 관리자 화면에서 SMTP TLS 접속 정보와 Keychain reference만 설정하며 비밀번호 원문은 UI·DB·감사·로그에서 배제한다.
+- SMTP는 공개 DNS FQDN·465/implicit TLS만 허용하고, 매 발송의 DNS 전체 응답에서 사설·loopback·link-local·문서용·multicast·ULA 주소를 차단한 뒤 검증된 IP에 고정 연결하고 원 FQDN으로 TLS 인증한다.
+- test 알림과 receipt-only는 PII zero-decrypt이며, 설정 오류는 채널별로 격리하고 purge·retention·withdrawal을 외부 I/O 직전에 재검사한다.
+- 마케팅 철회는 DB에 capability hash만 저장하고 raw token을 깨끗한 4언어 확인 URL로 교환한 뒤 POST에서 동의 이벤트·pending 취소·감사를 원자 처리한다.
+- 로컬 관리자 CLI는 stdin-only 비밀번호와 Windows ACL/POSIX 0600 owner-only 등록 파일을 사용하고 reset/교체 시 세션·pre-auth를 무효화한다.
+- 전체 검증: 루트 Node 5/5, shared 33/33, control 183/183, site 22/22, 64페이지 빌드, Playwright 60/60 통과.

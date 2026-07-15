@@ -4,7 +4,12 @@ import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
-import { drizzleSchema, SCHEMA_VERSION } from "./schema.js";
+import {
+  drizzleSchema,
+  REQUIRED_INDEXES,
+  REQUIRED_TABLES,
+  SCHEMA_VERSION,
+} from "./schema.js";
 
 export interface ControlDatabase {
   sqlite: Database.Database;
@@ -238,6 +243,136 @@ CREATE INDEX audit_events_created_idx ON audit_events(created_at_ms);
 CREATE INDEX audit_events_target_idx ON audit_events(target_type, target_id, created_at_ms);
 `;
 
+const SECOND_MIGRATION = `
+ALTER TABLE consultations ADD COLUMN marketing_withdrawn_at_ms INTEGER
+  CHECK (marketing_withdrawn_at_ms IS NULL OR marketing_accepted = 1);
+ALTER TABLE admins ADD COLUMN totp_last_counter INTEGER
+  CHECK (totp_last_counter IS NULL OR totp_last_counter >= 0);
+ALTER TABLE notification_outbox ADD COLUMN lease_expires_at_ms INTEGER
+  CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms >= 0);
+ALTER TABLE notification_outbox ADD COLUMN purpose TEXT NOT NULL DEFAULT 'transactional'
+  CHECK (purpose IN ('transactional','marketing','test'));
+ALTER TABLE notification_outbox ADD COLUMN delivery_cycle INTEGER NOT NULL DEFAULT 1
+  CHECK (delivery_cycle > 0);
+
+UPDATE notification_outbox
+SET state = 'pending', locked_at_ms = NULL, lease_expires_at_ms = NULL, locked_by = NULL
+WHERE state = 'processing';
+
+CREATE TABLE admin_recovery_codes (
+  id TEXT PRIMARY KEY,
+  admin_id TEXT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  code_hash BLOB NOT NULL CHECK (length(code_hash) = 32),
+  created_at_ms INTEGER NOT NULL,
+  used_at_ms INTEGER,
+  UNIQUE (admin_id, code_hash)
+);
+CREATE INDEX admin_recovery_codes_unused_idx
+  ON admin_recovery_codes(admin_id, used_at_ms);
+
+CREATE TABLE admin_pre_auth_challenges (
+  challenge_hash BLOB PRIMARY KEY NOT NULL CHECK (length(challenge_hash) = 32),
+  admin_id TEXT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  csrf_hash BLOB NOT NULL CHECK (length(csrf_hash) = 32),
+  pending_password_hash TEXT,
+  created_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  used_at_ms INTEGER,
+  CHECK (expires_at_ms > created_at_ms)
+);
+CREATE INDEX admin_pre_auth_expiry_idx
+  ON admin_pre_auth_challenges(expires_at_ms, used_at_ms);
+
+CREATE TABLE admin_login_buckets (
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('username','source')),
+  subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 32),
+  window_start_ms INTEGER NOT NULL,
+  failure_count INTEGER NOT NULL CHECK (failure_count > 0),
+  expires_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (subject_kind, subject_hash, window_start_ms),
+  CHECK (expires_at_ms > window_start_ms)
+) WITHOUT ROWID;
+CREATE INDEX admin_login_buckets_expiry_idx ON admin_login_buckets(expires_at_ms);
+
+CREATE TABLE admin_login_admissions (
+  id TEXT PRIMARY KEY,
+  username_hash BLOB NOT NULL CHECK (length(username_hash) = 32),
+  source_hash BLOB NOT NULL CHECK (length(source_hash) = 32),
+  created_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  CHECK (expires_at_ms > created_at_ms)
+);
+CREATE INDEX admin_login_admissions_username_idx
+  ON admin_login_admissions(username_hash, expires_at_ms);
+CREATE INDEX admin_login_admissions_source_idx
+  ON admin_login_admissions(source_hash, expires_at_ms);
+
+CREATE TABLE notification_delivery_attempts (
+  id TEXT PRIMARY KEY,
+  outbox_id TEXT NOT NULL REFERENCES notification_outbox(id) ON DELETE CASCADE,
+  delivery_cycle INTEGER NOT NULL CHECK (delivery_cycle > 0),
+  attempt_no INTEGER NOT NULL CHECK (attempt_no > 0),
+  worker_id TEXT NOT NULL,
+  outcome_code TEXT,
+  provider_message_id TEXT,
+  started_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER,
+  UNIQUE (outbox_id, delivery_cycle, attempt_no)
+);
+CREATE INDEX notification_delivery_attempts_outbox_idx
+  ON notification_delivery_attempts(outbox_id, started_at_ms);
+CREATE INDEX notification_outbox_lease_idx
+  ON notification_outbox(state, available_at_ms, lease_expires_at_ms);
+
+CREATE TABLE marketing_withdrawal_capabilities (
+  token_hash BLOB PRIMARY KEY NOT NULL CHECK (length(token_hash) = 32),
+  consultation_id TEXT NOT NULL REFERENCES consultations(id) ON DELETE CASCADE,
+  consent_event_id TEXT NOT NULL REFERENCES consent_events(id) ON DELETE RESTRICT,
+  locale TEXT NOT NULL CHECK (locale IN ('ko','en','zh-Hans','zh-Hant')),
+  landing_hash BLOB CHECK (landing_hash IS NULL OR length(landing_hash) = 32),
+  landing_expires_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  used_at_ms INTEGER,
+  CHECK (expires_at_ms > created_at_ms)
+);
+CREATE INDEX marketing_withdrawal_consultation_idx
+  ON marketing_withdrawal_capabilities(consultation_id, used_at_ms, expires_at_ms);
+CREATE TRIGGER marketing_withdrawal_capability_consent_insert
+BEFORE INSERT ON marketing_withdrawal_capabilities
+WHEN NOT EXISTS (
+  SELECT 1 FROM consent_events e
+  JOIN consultations c ON c.id = NEW.consultation_id
+  WHERE e.id = NEW.consent_event_id
+    AND e.consultation_id = NEW.consultation_id
+    AND e.kind = 'marketing'
+    AND e.decision = 'accepted'
+    AND c.marketing_accepted = 1
+)
+BEGIN
+  SELECT RAISE(ABORT, 'withdrawal capability requires the matching accepted marketing consent');
+END;
+CREATE TRIGGER marketing_withdrawal_capability_consent_update
+BEFORE UPDATE OF consultation_id, consent_event_id ON marketing_withdrawal_capabilities
+WHEN NOT EXISTS (
+  SELECT 1 FROM consent_events e
+  JOIN consultations c ON c.id = NEW.consultation_id
+  WHERE e.id = NEW.consent_event_id
+    AND e.consultation_id = NEW.consultation_id
+    AND e.kind = 'marketing'
+    AND e.decision = 'accepted'
+    AND c.marketing_accepted = 1
+)
+BEGIN
+  SELECT RAISE(ABORT, 'withdrawal capability requires the matching accepted marketing consent');
+END;
+`;
+
+const MIGRATIONS = [
+  { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
+  { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
+] as const;
+
 function applyPragmas(sqlite: Database.Database): void {
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("journal_mode = WAL");
@@ -253,8 +388,15 @@ export function openDatabase(path: string): ControlDatabase {
   return { sqlite, orm: drizzle(sqlite, { schema: drizzleSchema }) };
 }
 
-export function runMigrations(db: ControlDatabase, nowMs = Date.now()): void {
+export function runMigrations(
+  db: ControlDatabase,
+  nowMs = Date.now(),
+  targetVersion = SCHEMA_VERSION,
+): void {
   const { sqlite } = db;
+  if (!Number.isSafeInteger(targetVersion) || targetVersion < 1 || targetVersion > SCHEMA_VERSION) {
+    throw new Error("Unsupported schema migration target");
+  }
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -262,19 +404,33 @@ export function runMigrations(db: ControlDatabase, nowMs = Date.now()): void {
       applied_at_ms INTEGER NOT NULL
     );
   `);
-  const applied = sqlite.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(SCHEMA_VERSION);
-  if (applied) return;
-
-  sqlite.exec("BEGIN IMMEDIATE");
-  try {
-    sqlite.exec(INITIAL_MIGRATION);
-    sqlite.prepare(
-      "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",
-    ).run(SCHEMA_VERSION, "initial-control-schema", nowMs);
-    sqlite.exec("COMMIT");
-  } catch (error) {
-    if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
-    throw error;
+  const appliedRows = sqlite.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all() as Array<{
+    version: number;
+    name: string;
+  }>;
+  if (
+    appliedRows.length > MIGRATIONS.length ||
+    appliedRows.some((row, index) => {
+      const expected = MIGRATIONS[index];
+      return expected === undefined || row.version !== expected.version || row.name !== expected.name;
+    })
+  ) {
+    throw new Error("Database migration history is not an exact contiguous known prefix");
+  }
+  const applied = new Set(appliedRows.map((row) => row.version));
+  for (const migration of MIGRATIONS) {
+    if (migration.version > targetVersion || applied.has(migration.version)) continue;
+    sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      sqlite.exec(migration.sql);
+      sqlite.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",
+      ).run(migration.version, migration.name, nowMs);
+      sqlite.exec("COMMIT");
+    } catch (error) {
+      if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
+      throw error;
+    }
   }
 }
 
@@ -284,10 +440,36 @@ export function closeDatabase(db: ControlDatabase): void {
 
 export function isDatabaseReady(db: ControlDatabase): boolean {
   try {
-    const row = db.sqlite.prepare("SELECT max(version) version FROM schema_migrations").get() as
-      | { version: number | null }
-      | undefined;
-    return row?.version === SCHEMA_VERSION;
+    const history = db.sqlite.prepare(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    ).all() as Array<{ version: number; name: string }>;
+    if (
+      history.length !== MIGRATIONS.length ||
+      history.some((row, index) => {
+        const expected = MIGRATIONS[index];
+        return expected === undefined || row.version !== expected.version || row.name !== expected.name;
+      })
+    ) return false;
+
+    const schemaObjects = db.sqlite.prepare(`
+      SELECT type, name FROM sqlite_master
+      WHERE type IN ('table', 'index')
+    `).all() as Array<{ type: "table" | "index"; name: string }>;
+    const tables = new Set(schemaObjects.filter((item) => item.type === "table").map((item) => item.name));
+    const indexes = new Set(schemaObjects.filter((item) => item.type === "index").map((item) => item.name));
+    if (!REQUIRED_TABLES.every((name) => tables.has(name))) return false;
+    if (!REQUIRED_INDEXES.every((name) => indexes.has(name))) return false;
+
+    const requiredColumns = {
+      consultations: ["marketing_withdrawn_at_ms"],
+      admins: ["totp_last_counter"],
+      notification_outbox: ["lease_expires_at_ms", "purpose", "delivery_cycle"],
+    } as const;
+    return Object.entries(requiredColumns).every(([table, names]) => {
+      const columns = db.sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;
+      const present = new Set(columns.map((column) => column.name));
+      return names.every((name) => present.has(name));
+    });
   } catch {
     return false;
   }

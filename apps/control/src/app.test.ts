@@ -211,6 +211,47 @@ describe("public control API", () => {
     }
   });
 
+  it("queues a distinct hash-only customer marketing email when optional consent is accepted", async () => {
+    const current = fixture();
+    const consent = await consentConfiguration(current.app);
+    current.now += 2_000;
+    const body = JSON.stringify(submission(consent, {
+      marketingConsent: { version: consent.documents.marketing.version, accepted: true },
+    }));
+    const response = await post(current.app, body, "marketing-confirmation-key-0001");
+    expect(response.status).toBe(201);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT channel, event_type, purpose, payload_json
+      FROM notification_outbox ORDER BY purpose, channel
+    `).all()).toEqual([
+      {
+        channel: "email",
+        event_type: "marketing.confirmation",
+        purpose: "marketing",
+        payload_json: expect.stringContaining("receiptId"),
+      },
+      {
+        channel: "email",
+        event_type: "consultation.received",
+        purpose: "transactional",
+        payload_json: expect.stringContaining("receiptId"),
+      },
+      {
+        channel: "hermes-telegram",
+        event_type: "consultation.received",
+        purpose: "transactional",
+        payload_json: expect.stringContaining("receiptId"),
+      },
+    ]);
+    const persisted = current.database.db.sqlite.serialize();
+    for (const secret of ["client@example.com", "Hong Gildong", "/marketing/withdraw/"]) {
+      expect(persisted.includes(Buffer.from(secret))).toBe(false);
+    }
+    expect(current.database.db.sqlite.prepare(
+      "SELECT count(*) count FROM marketing_withdrawal_capabilities",
+    ).get()).toEqual({ count: 0 });
+  });
+
   it("serializes the same key across two file-backed connections", async () => {
     const current = fixture();
     const secondDb = openDatabase(current.database.path);
@@ -481,6 +522,8 @@ describe("public control API", () => {
 
       const response = await post(current.app, body, idempotencyKey);
       expect(response.status).toBe(mode === "success" ? 201 : mode === "validation" ? 422 : 503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/i);
       expectNoRequestCanaries(JSON.stringify(current.logs), body, idempotencyKey);
     },
   );

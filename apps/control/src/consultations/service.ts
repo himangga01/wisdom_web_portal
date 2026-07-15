@@ -285,6 +285,16 @@ export function acceptConsultation(
     const outboxPayload = JSON.stringify({ receiptId });
     insertOutbox.run(createId(), consultationId, "email", outboxPayload, input.nowMs, input.nowMs, input.nowMs);
     insertOutbox.run(createId(), consultationId, "hermes-telegram", outboxPayload, input.nowMs, input.nowMs, input.nowMs);
+    if (input.consultation.marketingConsent.accepted) {
+      db.sqlite.prepare(`
+        INSERT INTO notification_outbox (
+          id, consultation_id, channel, event_type, payload_json, state,
+          attempt_count, available_at_ms, purpose, delivery_cycle,
+          created_at_ms, updated_at_ms
+        ) VALUES (?, ?, 'email', 'marketing.confirmation', ?, 'pending',
+          0, ?, 'marketing', 1, ?, ?)
+      `).run(createId(), consultationId, outboxPayload, input.nowMs, input.nowMs, input.nowMs);
+    }
     options.faultInjector?.("after-outbox");
 
     db.sqlite.prepare(`
