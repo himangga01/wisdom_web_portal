@@ -10,6 +10,12 @@ import {
 
 const FORM_SELECTOR = "[data-consultation-form]";
 
+function supportedLocale(value: unknown): Locale | undefined {
+  if (typeof value !== "string") return undefined;
+  const locale = value as Locale;
+  return LOCALES.includes(locale) ? locale : undefined;
+}
+
 function validationMessage(control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): string {
   if (control.validity.valueMissing) return control.dataset.errorRequired ?? "";
   if (control.validity.patternMismatch) return control.dataset.errorPattern ?? "";
@@ -33,8 +39,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     const selectedLocale = (): Locale | undefined => {
       if (!(localeControl instanceof HTMLSelectElement)) return undefined;
-      const value = localeControl.value as Locale;
-      return LOCALES.includes(value) ? value : undefined;
+      return supportedLocale(localeControl.value);
     };
 
     let consentLocale = selectedLocale();
@@ -42,8 +47,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
       ? loadConsentConfiguration(consentLocale).catch(() => undefined)
       : Promise.resolve(undefined);
 
-    const refreshConsent = (): void => {
-      consentLocale = selectedLocale();
+    const refreshConsent = (locale: Locale | undefined = selectedLocale()): void => {
+      consentLocale = locale;
       consentRequest = consentLocale
         ? loadConsentConfiguration(consentLocale).catch(() => undefined)
         : Promise.resolve(undefined);
@@ -99,6 +104,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
       }
 
       void (async () => {
+        const submissionData = new FormData(form);
+        const submissionLocale = supportedLocale(submissionData.get("locale"));
         const originalSubmitLabel = submit?.textContent ?? "";
         form.setAttribute("aria-busy", "true");
         if (submit) {
@@ -108,11 +115,14 @@ export function initializeConsultationForms(documentRef: Document = document): v
         showStatus("submitting", form.dataset.statusSubmitting ?? "");
 
         try {
-          const currentLocale = selectedLocale();
-          if (currentLocale !== consentLocale) refreshConsent();
+          if (!submissionLocale) {
+            showStatus("error", form.dataset.statusInvalid ?? "");
+            return;
+          }
+          if (submissionLocale !== consentLocale) refreshConsent(submissionLocale);
           let consent = await consentRequest;
           if (!consent) {
-            refreshConsent();
+            refreshConsent(submissionLocale);
             consent = await consentRequest;
           }
           if (!consent) {
@@ -122,7 +132,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
           let submission;
           try {
-            submission = buildConsultationSubmission(new FormData(form), consent);
+            submission = buildConsultationSubmission(submissionData, consent);
           } catch {
             showStatus("error", form.dataset.statusInvalid ?? "");
             return;

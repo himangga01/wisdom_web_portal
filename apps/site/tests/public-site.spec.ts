@@ -363,6 +363,81 @@ test("reuses an idempotency key for retries and rotates it when the submission c
   expect(idempotencyKeys[2]).not.toBe(idempotencyKeys[1]);
 });
 
+test("keeps the submitted locale and consent bundle atomic during a delayed locale change", async ({ page }) => {
+  let releaseEnglishConsent!: () => void;
+  let markEnglishConsentStarted!: () => void;
+  const englishConsentStarted = new Promise<void>((resolve) => {
+    markEnglishConsentStarted = resolve;
+  });
+  const englishConsentRelease = new Promise<void>((resolve) => {
+    releaseEnglishConsent = resolve;
+  });
+  let capturedBody: unknown;
+
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    const locale = new URL(route.request().url()).searchParams.get("locale");
+    if (locale === "en") {
+      markEnglishConsentStarted();
+      await englishConsentRelease;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        locale,
+        documents: {
+          privacy: { version: `privacy-${locale}-2026-07-16` },
+          marketing: { version: `marketing-${locale}-2026-07-16` },
+        },
+        formToken: `signed-form-token-${locale}`,
+      }),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    capturedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        receiptId: "receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        receivedAt: "2026-07-16T02:00:00.000Z",
+        status: "received",
+      }),
+    });
+  });
+
+  await page.goto("/en/consultation");
+  await englishConsentStarted;
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "Hong Gildong");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+  await page.check('[name="privacyConsent"]');
+  const submit = page.locator('button[type="submit"]');
+
+  await submit.click();
+  await expect(submit).toBeDisabled();
+  await page.selectOption('[name="locale"]', "zh-Hans");
+  releaseEnglishConsent();
+
+  await expect(page.locator("[data-form-status]"))
+    .toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
+  const envelope = capturedBody as {
+    consultation: {
+      locale: string;
+      privacyConsent: { version: string };
+      marketingConsent: { version: string };
+    };
+    antiAbuse: { formToken: string };
+  };
+  expect(envelope.consultation).toMatchObject({
+    locale: "en",
+    privacyConsent: { version: "privacy-en-2026-07-16" },
+    marketingConsent: { version: "marketing-en-2026-07-16" },
+  });
+  expect(envelope.antiAbuse.formToken).toBe("signed-form-token-en");
+});
+
 test("submits checked marketing consent and shows localized API failure", async ({ page }) => {
   let capturedBody: unknown;
   await page.route("**/api/v1/consent-documents**", async (route) => {
