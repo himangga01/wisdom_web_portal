@@ -5,6 +5,8 @@ node_modules/
 packages/*/dist/
 apps/*/dist/
 apps/*/.astro/
+apps/*/playwright-report/
+apps/*/test-results/
 *.tsbuildinfo
 .env
 .env.*

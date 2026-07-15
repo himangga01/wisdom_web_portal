@@ -1,0 +1,98 @@
+---
+import type { Locale } from "@wisdom/shared";
+
+import { OFFICE, siteContent } from "../content/site-content.js";
+import { localeLinksForPath, toLocalizedPath, type ContentRoute, type PublicRoute } from "../lib/routes.js";
+import { getKakaoChatUrl } from "../lib/site-config.js";
+
+interface Props {
+  locale: Locale;
+  route: PublicRoute;
+}
+
+const { locale, route } = Astro.props;
+const content = siteContent[locale];
+const kakaoUrl = getKakaoChatUrl(import.meta.env.PUBLIC_KAKAO_CHAT_URL);
+const languageNames: Record<Locale, string> = {
+  ko: "한국어",
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+};
+const navigationLabel = locale === "ko" ? "주요 메뉴" : locale === "en" ? "Primary" : "主要导航";
+const mobileLabel = locale === "ko" ? "모바일 메뉴" : locale === "en" ? "Mobile" : "移动导航";
+const menuLabel = locale === "ko" ? "메뉴 열기" : locale === "en" ? "Open menu" : "打开菜单";
+const navigation = [
+  { key: "home", route: "/" },
+  { key: "about", route: "/about" },
+  { key: "services", route: "/services" },
+  { key: "process", route: "/process" },
+  { key: "insights", route: "/insights" },
+  { key: "location", route: "/location" },
+] as const satisfies readonly { key: keyof typeof content.navigation; route: ContentRoute }[];
+const isActive = (itemRoute: ContentRoute): boolean =>
+  route === itemRoute || (itemRoute === "/services" && route.startsWith("/services/"));
+const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
+---
+
+<a class="skip-link" href="#main">{locale === "ko" ? "본문으로 이동" : locale === "en" ? "Skip to content" : "跳至主要内容"}</a>
+<header class="site-header">
+  <div class="shell header-inner">
+    <a class="brand" href={toLocalizedPath(locale, "/")} aria-label={content.office.name}>
+      <span class="brand-mark" aria-hidden="true">智</span>
+      <span>
+        <span class="brand-name">{content.office.name}</span>
+        <span class="brand-en">{OFFICE.englishName}</span>
+      </span>
+    </a>
+
+    <nav class="desktop-navigation" aria-label={navigationLabel}>
+      {navigation.map((item) => (
+        <a
+          href={toLocalizedPath(locale, item.route)}
+          aria-current={isActive(item.route) ? "page" : undefined}
+        >
+          {content.navigation[item.key]}
+        </a>
+      ))}
+    </nav>
+
+    <div class="header-actions">
+      <div class="language-links" aria-label={locale === "ko" ? "언어 선택" : "Language selection"}>
+        {languageLinks.map(({ locale: linkLocale, href }) => (
+          <a
+            href={href}
+            lang={linkLocale}
+            hreflang={linkLocale}
+            aria-current={linkLocale === locale ? "page" : undefined}
+          >
+            {languageNames[linkLocale]}
+          </a>
+        ))}
+      </div>
+      <a class="button button-small header-consultation" href={toLocalizedPath(locale, "/consultation")}>
+        {content.buttons.consultation}
+      </a>
+      <details class="mobile-menu">
+        <summary aria-label={menuLabel}><span></span><span></span><span></span></summary>
+        <nav aria-label={mobileLabel}>
+          {navigation.map((item) => (
+            <a href={toLocalizedPath(locale, item.route)} aria-current={isActive(item.route) ? "page" : undefined}>
+              {content.navigation[item.key]}
+            </a>
+          ))}
+          <a href={toLocalizedPath(locale, "/consultation")}>{content.navigation.consultation}</a>
+          <a href={`tel:${OFFICE.phone}`}>{content.buttons.phone}</a>
+          {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
+          <div class="mobile-languages">
+            {languageLinks.map(({ locale: linkLocale, href }) => (
+              <a href={href} lang={linkLocale} hreflang={linkLocale} aria-current={linkLocale === locale ? "page" : undefined}>
+                {languageNames[linkLocale]}
+              </a>
+            ))}
+          </div>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>

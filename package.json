@@ -10,10 +10,14 @@
     "packages/*",
     "apps/*"
   ],
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "7.3.6"
+  },
   "scripts": {
     "build:shared": "npm run build --workspace @wisdom/shared",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run build:shared && node --test scripts/workspace-orchestration.test.mjs && npm run test --workspaces --if-present",
+    "test": "npm run build:shared && node --test scripts/workspace-orchestration.test.mjs scripts/astro-typecheck-regression.test.mjs && npm run test --workspaces --if-present",
     "test:e2e": "npm run build:shared && npm run test:e2e --workspaces --if-present",
     "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
     "verify": "npm run typecheck && npm run test && npm run build && npm run test:e2e"

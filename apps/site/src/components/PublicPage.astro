@@ -1,0 +1,192 @@
+---
+import type { Locale } from "@wisdom/shared";
+
+import ConsultationForm from "./ConsultationForm.astro";
+import HomePage from "./HomePage.astro";
+import { OFFICE, REPRESENTATIVE, siteContent, type ServiceCategorySlug } from "../content/site-content.js";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { toLocalizedPath, type PublicRoute } from "../lib/routes.js";
+
+interface Props {
+  locale: Locale;
+  route: PublicRoute;
+}
+
+const { locale, route } = Astro.props;
+const content = siteContent[locale];
+const serviceSlug = route.startsWith("/services/")
+  ? (route.slice("/services/".length) as ServiceCategorySlug)
+  : undefined;
+const selectedService = serviceSlug
+  ? content.services.categories.find((category) => category.slug === serviceSlug)
+  : undefined;
+const pageKey = route === "/"
+  ? "home"
+  : route === "/about"
+    ? "about"
+    : route === "/services" || selectedService
+      ? "services"
+      : route === "/process"
+        ? "process"
+        : route === "/insights"
+          ? "insights"
+          : route === "/consultation"
+            ? "consultation"
+            : route === "/location"
+              ? "location"
+              : route === "/privacy"
+                ? "privacy"
+                : route === "/marketing/withdraw"
+                  ? "marketingWithdraw"
+                  : "notFound";
+const meta = content.meta[pageKey];
+const heading = selectedService?.title ?? content.headings[pageKey];
+const backToServices = toLocalizedPath(locale, "/services");
+---
+
+<BaseLayout
+  locale={locale}
+  route={route}
+  title={selectedService ? `${selectedService.title} | ${content.office.name}` : meta.title}
+  description={selectedService?.summary ?? meta.description}
+  noindex={route === "/404"}
+>
+  {route === "/" && <HomePage locale={locale} />}
+
+  {route !== "/" && (
+    <>
+      <section class="page-hero">
+        <div class="shell narrow-shell">
+          {selectedService && <a class="back-link" href={backToServices}><span aria-hidden="true">←</span> {content.navigation.services}</a>}
+          <p class="eyebrow">{content.office.englishName}</p>
+          <h1>{heading}</h1>
+          {route === "/about" && <p>{content.pages.about.intro}</p>}
+          {route === "/services" && <p>{content.pages.servicesIntro}</p>}
+          {selectedService && <p>{selectedService.summary}</p>}
+          {route === "/process" && <p>{content.pages.process.intro}</p>}
+          {route === "/insights" && <p>{content.pages.insights.intro}</p>}
+          {route === "/consultation" && <p>{content.pages.consultationIntro}</p>}
+          {route === "/location" && <p>{content.pages.locationIntro}</p>}
+          {route === "/privacy" && <p>{content.pages.privacy.intro}</p>}
+          {route === "/marketing/withdraw" && <p>{content.pages.marketingWithdraw.intro}</p>}
+          {route === "/404" && <p>{content.pages.notFoundBody}</p>}
+        </div>
+      </section>
+
+      <section class="page-content section">
+        <div class="shell narrow-shell">
+          {route === "/about" && (
+            <div class="profile-grid">
+              <section class="content-card">
+                <h2>{content.pages.about.educationHeading}</h2>
+                <ul>{REPRESENTATIVE.education.map((item) => <li>{item}</li>)}</ul>
+              </section>
+              <section class="content-card">
+                <h2>{content.pages.about.careerHeading}</h2>
+                <ul>{REPRESENTATIVE.career.map((item) => <li>{item}</li>)}</ul>
+              </section>
+              <section class="content-card">
+                <h2>{content.pages.about.qualificationsHeading}</h2>
+                <ul>{REPRESENTATIVE.qualifications.map((item) => <li>{item}</li>)}</ul>
+              </section>
+              <p class="operational-note full-span">{content.pages.about.disclosure}</p>
+            </div>
+          )}
+
+          {route === "/services" && (
+            <div class="service-grid">
+              {content.services.categories.map((category, index) => (
+                <article class="service-card">
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <h2>{category.title}</h2>
+                  <p>{category.summary}</p>
+                  <ul>{category.items.slice(0, 3).map((item) => <li>{item}</li>)}</ul>
+                  <a href={toLocalizedPath(locale, `/services/${category.slug}`)}>{content.buttons.exploreServices}<span aria-hidden="true"> →</span></a>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {selectedService && (
+            <div class="category-detail">
+              <ol class="service-list">
+                {selectedService.items.map((item, index) => (
+                  <li><span>{String(index + 1).padStart(2, "0")}</span><strong>{item}</strong></li>
+                ))}
+              </ol>
+              <aside class="content-cta">
+                <p>{content.pages.consultationIntro}</p>
+                <a class="button button-primary" href={toLocalizedPath(locale, "/consultation")}>{content.buttons.consultation}</a>
+              </aside>
+            </div>
+          )}
+
+          {route === "/process" && (
+            <ol class="process-list">
+              {content.pages.process.steps.map((step) => (
+                <li><h2>{step.title}</h2><p>{step.body}</p></li>
+              ))}
+            </ol>
+          )}
+
+          {route === "/insights" && (
+            <div class="insight-notice">
+              <span aria-hidden="true">知</span>
+              <h2>{content.headings.insights}</h2>
+              <p>{content.pages.insights.note}</p>
+              <a class="button button-secondary" href={toLocalizedPath(locale, "/services")}>{content.buttons.exploreServices}</a>
+            </div>
+          )}
+
+          {route === "/consultation" && <ConsultationForm locale={locale} />}
+
+          {route === "/location" && (
+            <div class="location-grid">
+              <address class="location-card">
+                <h2>{content.office.name}</h2>
+                <p>{content.office.nearby}</p>
+                <dl>
+                  <div><dt>{locale === "ko" ? "주소" : locale === "en" ? "Address" : "地址"}</dt><dd>{content.office.address}</dd></div>
+                  <div><dt>{content.buttons.phone}</dt><dd><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></dd></div>
+                  <div><dt>Fax</dt><dd>{content.office.fax}</dd></div>
+                  <div><dt>Email</dt><dd><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></dd></div>
+                </dl>
+              </address>
+              <div class="map-geometry">
+                <span class="map-pin" aria-hidden="true">智</span>
+                <p>{content.office.nearby}</p>
+                <div class="map-actions">
+                  <a class="button button-primary" href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a>
+                  <a class="button button-secondary" href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {route === "/privacy" && (
+            <article class="policy-document">
+              <div class="launch-gate" role="note"><strong>{content.policies.launchGate}</strong><span>{content.policies.draftNotice}</span></div>
+              {content.pages.privacy.sections.map((section) => <section><h2>{section.title}</h2><p>{section.body}</p></section>)}
+              <p class="operational-note">{OFFICE.email} · {OFFICE.phone}</p>
+            </article>
+          )}
+
+          {route === "/marketing/withdraw" && (
+            <article class="policy-document">
+              <div class="launch-gate" role="note"><strong>{content.policies.launchGate}</strong><span>{content.policies.draftNotice}</span></div>
+              <ol class="withdrawal-steps">{content.pages.marketingWithdraw.steps.map((step) => <li>{step}</li>)}</ol>
+              <p><a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={`tel:${OFFICE.phone}`}>{OFFICE.phone}</a></p>
+            </article>
+          )}
+
+          {route === "/404" && (
+            <div class="not-found-card">
+              <span aria-hidden="true">404</span>
+              <a class="button button-primary" href={toLocalizedPath(locale, "/")}>{content.buttons.backHome}</a>
+            </div>
+          )}
+        </div>
+      </section>
+    </>
+  )}
+</BaseLayout>

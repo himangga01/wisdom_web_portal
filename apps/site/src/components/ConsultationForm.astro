@@ -1,0 +1,100 @@
+---
+import { LOCALES, PREFERRED_CONTACT_METHODS, type Locale } from "@wisdom/shared";
+
+import { siteContent } from "../content/site-content.js";
+import { CONSULTATION_FORM } from "../lib/site-config.js";
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const content = siteContent[locale];
+const form = content.forms.consultation;
+const categoryNames = new Map(content.services.categories.map((category) => [category.slug, category.title]));
+const languageNames: Record<Locale, string> = {
+  ko: "한국어",
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+};
+---
+
+<form
+  action={CONSULTATION_FORM.action}
+  method={CONSULTATION_FORM.method}
+  class="consultation-form"
+  data-consultation-form
+>
+  <div class="form-grid">
+    <div class="field full-field">
+      <label for="consultation-locale">{form.labels.locale}</label>
+      <select id="consultation-locale" name="locale" required data-error-required={form.errors.required}>
+        {LOCALES.map((optionLocale) => <option value={optionLocale} selected={optionLocale === locale}>{languageNames[optionLocale]}</option>)}
+      </select>
+    </div>
+
+    <div class="field full-field">
+      <label for="consultation-category">{form.labels.category}</label>
+      <select id="consultation-category" name="category" required aria-describedby="category-help" data-error-required={form.errors.required}>
+        <option value="">—</option>
+        {CONSULTATION_FORM.categories.map((category) => (
+          <option value={category}>{category === "other" ? content.pages.formOptions.other : categoryNames.get(category)}</option>
+        ))}
+      </select>
+      <small id="category-help">{form.help.category}</small>
+    </div>
+
+    <div class="field">
+      <label for="consultation-name">{form.labels.name}</label>
+      <input id="consultation-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="50" required data-error-required={form.errors.required} />
+    </div>
+    <div class="field">
+      <label for="consultation-phone">{form.labels.phone}</label>
+      <input id="consultation-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern="\+?[0-9 .()\-]{8,30}" required aria-describedby="phone-help" data-error-required={form.errors.required} data-error-pattern={form.errors.invalidPhone} />
+      <small id="phone-help">{form.help.phone}</small>
+    </div>
+    <div class="field">
+      <label for="consultation-email">{form.labels.email}</label>
+      <input id="consultation-email" name="email" type="email" autocomplete="email" maxlength="254" aria-describedby="email-help" data-error-type={form.errors.invalidEmail} />
+      <small id="email-help">{form.help.email}</small>
+    </div>
+    <div class="field">
+      <label for="consultation-company">{form.labels.company}</label>
+      <input id="consultation-company" name="company" type="text" autocomplete="organization" maxlength="100" aria-describedby="company-help" />
+      <small id="company-help">{form.help.company}</small>
+    </div>
+
+    <fieldset class="field full-field contact-method">
+      <legend>{form.labels.preferredContact}</legend>
+      {PREFERRED_CONTACT_METHODS.map((method) => (
+        <label class="choice-control">
+          <input name="preferredContact" type="radio" value={method} checked={method === "phone"} required data-error-required={form.errors.required} />
+          <span>{content.pages.formOptions[method]}</span>
+        </label>
+      ))}
+      <small>{form.help.preferredContact}</small>
+    </fieldset>
+
+    <div class="field full-field">
+      <label for="consultation-message">{form.labels.message}</label>
+      <textarea id="consultation-message" name="message" rows="8" minlength="20" maxlength="2000" required aria-describedby="message-help sensitive-warning attachment-warning" data-error-required={form.errors.required} data-error-too-short={form.errors.messageLength}></textarea>
+      <small id="message-help">{form.help.message}</small>
+      <p class="warning" id="sensitive-warning">{form.help.sensitiveIdWarning}</p>
+      <p class="warning" id="attachment-warning">{form.help.noAttachments}</p>
+    </div>
+
+    <fieldset class="field full-field consent-group">
+      <legend>{locale === "ko" ? "동의" : locale === "en" ? "Consent" : "同意"}</legend>
+      <label class="choice-control consent-control">
+        <input name="privacyConsent" type="checkbox" value="accepted" required data-error-required={form.errors.privacyRequired} />
+        <span><strong>{form.labels.privacyConsent}</strong><small>{form.help.privacyConsent}</small></span>
+      </label>
+      <label class="choice-control consent-control">
+        <input name="marketingConsent" type="checkbox" value="accepted" />
+        <span><strong>{form.labels.marketingConsent}</strong><small>{form.help.marketingConsent}</small></span>
+      </label>
+    </fieldset>
+  </div>
+  <button class="button button-primary form-submit" type="submit">{form.submit}</button>
+</form>

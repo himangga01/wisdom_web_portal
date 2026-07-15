@@ -9,7 +9,7 @@
     "preview": "astro preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "typecheck": "astro check"
+    "typecheck": "astro sync && astro-check --root ."
   },
   "dependencies": {
     "@wisdom/shared": "0.1.0",
@@ -24,6 +24,7 @@
     "@types/node": "^26.1.1",
     "tailwindcss": "^4.3.2",
     "typescript": "^6.0.3",
+    "vite": "^7.3.2",
     "vitest": "^4.1.10"
   }
 }

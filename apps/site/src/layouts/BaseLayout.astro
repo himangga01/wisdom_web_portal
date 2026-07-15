@@ -1,0 +1,65 @@
+---
+import { designTokens, type Locale } from "@wisdom/shared";
+
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import { localeLinksForPath, type PublicRoute } from "../lib/routes.js";
+import "../styles/global.css";
+
+interface Props {
+  locale: Locale;
+  route: PublicRoute;
+  title: string;
+  description: string;
+  noindex?: boolean;
+}
+
+const { locale, route, title, description, noindex = false } = Astro.props;
+const alternateLinks = localeLinksForPath(Astro.url.pathname);
+const colors = designTokens.color;
+const motion = designTokens.motion.homepageReveal;
+const tokenStyle = [
+  `--wisdom-bronze:${colors.bronze}`,
+  `--wisdom-sand:${colors.sand}`,
+  `--wisdom-ivory:${colors.ivory}`,
+  `--wisdom-brown:${colors.brown}`,
+  `--wisdom-ink:${colors.ink}`,
+  `--wisdom-white:${colors.white}`,
+  `--wisdom-font-sans:${designTokens.font.sans}`,
+  `--wisdom-font-serif:${designTokens.font.serif}`,
+  `--duration-dynamic:${motion.durationMs}ms`,
+  `--distance-dynamic:${motion.distancePx}px`,
+  `--stagger-dynamic:${motion.staggerMs}ms`,
+  `--reveal-easing:${motion.easing}`,
+].join(";");
+---
+
+<!DOCTYPE html>
+<html lang={locale} style={tokenStyle}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <meta name="theme-color" content={colors.ivory} />
+    <title>{title}</title>
+    {alternateLinks.map(({ locale: alternateLocale, href }) => (
+      <link rel="alternate" hreflang={alternateLocale} href={href} />
+    ))}
+    <link rel="alternate" hreflang="x-default" href={alternateLinks[0].href} />
+  </head>
+  <body>
+    <SiteHeader locale={locale} route={route} />
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <SiteFooter locale={locale} />
+    <script>
+      import { initializeConsultationForms } from "../lib/form-validation";
+      import { initializeRevealMotion } from "../motion/reveal-controller";
+
+      initializeRevealMotion();
+      initializeConsultationForms();
+    </script>
+  </body>
+</html>

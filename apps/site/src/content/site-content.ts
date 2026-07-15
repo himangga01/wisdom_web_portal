@@ -54,6 +54,56 @@ interface ServiceCategoryContent extends ServiceCategoryTranslation {
   slug: ServiceCategorySlug;
 }
 
+interface LocalePageNarrative {
+  home: {
+    eyebrow: string;
+    intro: string;
+    navigatorTitle: string;
+    navigatorBody: string;
+    principlesTitle: string;
+    principles: readonly { title: string; body: string }[];
+    insightsTitle: string;
+    insights: readonly { title: string; body: string }[];
+    credentialsTitle: string;
+    credentialsBody: string;
+    consultationTitle: string;
+    consultationBody: string;
+    portraitLabel: string;
+  };
+  about: {
+    intro: string;
+    educationHeading: string;
+    careerHeading: string;
+    qualificationsHeading: string;
+    disclosure: string;
+  };
+  servicesIntro: string;
+  process: {
+    intro: string;
+    steps: readonly { title: string; body: string }[];
+  };
+  insights: {
+    intro: string;
+    note: string;
+  };
+  consultationIntro: string;
+  locationIntro: string;
+  privacy: {
+    intro: string;
+    sections: readonly { title: string; body: string }[];
+  };
+  marketingWithdraw: {
+    intro: string;
+    steps: readonly string[];
+  };
+  notFoundBody: string;
+  formOptions: {
+    phone: string;
+    email: string;
+    other: string;
+  };
+}
+
 interface LocaleText {
   navigation: {
     home: string;
@@ -146,6 +196,7 @@ interface LocaleText {
 
 interface LocaleSiteContent extends Omit<LocaleText, "metaDescriptions" | "serviceCatalog"> {
   meta: Record<PageKey, { title: string; description: string }>;
+  pages: LocalePageNarrative;
   services: {
     categories: readonly ServiceCategoryContent[];
   };
@@ -884,7 +935,246 @@ const localizedText = {
   },
 } satisfies Record<Locale, LocaleText>;
 
-function buildLocaleContent(text: LocaleText): LocaleSiteContent {
+const pageNarrative = {
+  ko: {
+    home: {
+      eyebrow: "기업과 사람의 행정 절차를 함께 설계합니다",
+      intro: "기업행정, 공공조달, 출입국·비자 세 분야를 같은 비중으로 검토하고 필요한 절차를 분명하게 안내합니다.",
+      navigatorTitle: "필요한 업무에서 시작하세요",
+      navigatorBody: "현재 상황과 목표에 가까운 분야를 선택하면 세부 업무와 준비 방향을 확인할 수 있습니다.",
+      principlesTitle: "명확한 범위, 확인 가능한 절차",
+      principles: [
+        { title: "직접 확인", body: "의뢰 목적과 현재 자료를 먼저 확인합니다." },
+        { title: "대안 검토", body: "가능한 절차와 선행 조건을 구분해 설명합니다." },
+        { title: "현장 중심", body: "실제 접수와 보완 단계에 필요한 준비를 정리합니다." },
+      ],
+      insightsTitle: "분야별 실무 안내",
+      insights: [
+        { title: "조달시장 진입 준비", body: "제품·생산·기업 요건을 나누어 확인합니다." },
+        { title: "기업 인증 준비", body: "신청 목적과 유지 요건을 함께 살핍니다." },
+        { title: "체류 자격 검토", body: "활동 목적과 현재 체류 상태부터 확인합니다." },
+      ],
+      credentialsTitle: "대표 행정사 소개",
+      credentialsBody: "공개가 승인된 학력, 경력, 자격 정보만 안내합니다.",
+      consultationTitle: "상담 요청을 남겨 주세요",
+      consultationBody: "민감한 식별정보와 첨부파일 없이 검토에 필요한 기본 사실만 보내 주세요.",
+      portraitLabel: "승인된 대표 사진을 위한 자리",
+    },
+    about: {
+      intro: "지혜행정사사무소는 공개가 승인된 대표자의 교육, 경력, 자격 정보를 바탕으로 업무 범위를 안내합니다.",
+      educationHeading: "학력",
+      careerHeading: "경력",
+      qualificationsHeading: "자격",
+      disclosure: "기관명이 OO로 마스킹된 자료는 비공개 요약으로만 표시하며 임의로 복원하지 않습니다.",
+    },
+    servicesIntro: "여섯 업무군의 세부 항목을 확인하고 현재 상황에 맞는 상담 분야를 선택해 주세요.",
+    process: {
+      intro: "상담 요청부터 업무 진행까지의 기본 흐름입니다. 구체적인 범위와 일정은 사실관계 확인 후 정합니다.",
+      steps: [
+        { title: "01 상담 요청", body: "연락처와 검토가 필요한 기본 사실을 전달합니다." },
+        { title: "02 범위 확인", body: "목표, 현재 상태, 필요한 자료와 선행 조건을 확인합니다." },
+        { title: "03 위임 협의", body: "업무 범위와 역할을 확인한 뒤 위임 여부를 결정합니다." },
+        { title: "04 진행 안내", body: "접수, 보완, 결과 확인의 상태를 단계별로 안내합니다." },
+      ],
+    },
+    insights: {
+      intro: "공개 전 검토가 완료된 실무 안내만 게시할 예정입니다.",
+      note: "현재는 서비스 범위 안내 페이지이며, 사례 수·성공률·순위와 같은 검증되지 않은 표현을 사용하지 않습니다.",
+    },
+    consultationIntro: "상담 검토에 필요한 기본 정보를 입력해 주세요. 이 화면은 실제 API로 전송하며 성공 결과를 미리 표시하지 않습니다.",
+    locationIntro: "문정역 인근 사무소의 주소와 연락처입니다. 방문 전 연락해 주세요.",
+    privacy: {
+      intro: "상담 접수 운영을 준비하기 위한 개인정보 처리방침 초안입니다.",
+      sections: [
+        { title: "처리 목적", body: "상담 요청 확인과 연락을 위한 운영 항목을 정리하는 초안입니다." },
+        { title: "처리 항목과 보유기간", body: "수집 항목, 동의 버전, 보유기간은 법률 검토와 운영 설정 완료 후 확정합니다." },
+        { title: "권리 행사와 문의", body: "열람·정정·삭제 요청 절차와 담당 연락처는 출시 전 최종 문서에 반영합니다." },
+      ],
+    },
+    marketingWithdraw: {
+      intro: "마케팅 수신 동의를 철회하기 위한 운영 절차 초안입니다.",
+      steps: ["사무소 전화 또는 이메일로 철회 의사를 전달합니다.", "본인 확인에 필요한 최소 정보만 안내합니다.", "처리 결과를 선택한 연락 방법으로 확인합니다."],
+    },
+    notFoundBody: "주소를 다시 확인하거나 아래 링크로 홈 화면으로 이동해 주세요.",
+    formOptions: { phone: "전화", email: "이메일", other: "기타" },
+  },
+  en: {
+    home: {
+      eyebrow: "Administrative pathways for organizations and people",
+      intro: "We give equal attention to business administration, public procurement, and immigration or visa matters, with a clear view of the next procedure.",
+      navigatorTitle: "Start with the work you need",
+      navigatorBody: "Choose the area closest to your current situation to review its services and preparation path.",
+      principlesTitle: "Clear scope, verifiable process",
+      principles: [
+        { title: "Direct review", body: "We begin with your objective and the material currently available." },
+        { title: "Practical alternatives", body: "Available procedures and prerequisites are explained separately." },
+        { title: "Procedure focused", body: "Preparation is organized around filing and follow-up stages." },
+      ],
+      insightsTitle: "Practice-area guidance",
+      insights: [
+        { title: "Entering procurement", body: "Review product, production, and business requirements separately." },
+        { title: "Preparing certification", body: "Consider both the application purpose and ongoing requirements." },
+        { title: "Reviewing stay status", body: "Begin with the intended activity and current immigration status." },
+      ],
+      credentialsTitle: "Representative profile",
+      credentialsBody: "Only approved education, career, and qualification facts are shown.",
+      consultationTitle: "Tell us what you need reviewed",
+      consultationBody: "Send only the basic facts needed for review, without sensitive identifiers or attachments.",
+      portraitLabel: "Reserved slot for an approved representative portrait",
+    },
+    about: {
+      intro: "JIHYE Administrative Attorney presents its scope using only approved education, career, and qualification details.",
+      educationHeading: "Education",
+      careerHeading: "Career",
+      qualificationsHeading: "Qualifications",
+      disclosure: "Institutions masked as OO remain non-public summaries and are never inferred or resolved.",
+    },
+    servicesIntro: "Review the detailed work in each of the six service groups and choose the closest consultation category.",
+    process: {
+      intro: "This is the basic path from an initial request to active work. Scope and timing are agreed after the facts are reviewed.",
+      steps: [
+        { title: "01 Request", body: "Provide contact details and the basic facts that need review." },
+        { title: "02 Scope review", body: "Confirm the objective, current status, materials, and prerequisites." },
+        { title: "03 Engagement", body: "Agree the work scope and responsibilities before engagement." },
+        { title: "04 Progress", body: "Receive updates for filing, follow-up requests, and results." },
+      ],
+    },
+    insights: {
+      intro: "Only practical guidance that has completed review will be published here.",
+      note: "This is currently a service-scope page. It does not make unverified claims about cases, success rates, rankings, or reviews.",
+    },
+    consultationIntro: "Provide the basic information needed for review. The form posts to the real API and does not display a simulated receipt.",
+    locationIntro: "Office address and contact details near Munjeong Station. Please contact the office before visiting.",
+    privacy: {
+      intro: "This is a draft privacy notice for preparing consultation intake operations.",
+      sections: [
+        { title: "Purpose", body: "Draft operating terms for reviewing consultation requests and making contact." },
+        { title: "Data and retention", body: "Collected fields, consent versions, and retention periods will be finalized after legal and operational review." },
+        { title: "Rights and contact", body: "Access, correction, and deletion procedures will be included in the final pre-launch document." },
+      ],
+    },
+    marketingWithdraw: {
+      intro: "This is a draft operating process for withdrawing marketing consent.",
+      steps: ["Contact the office by phone or email.", "Provide only the minimum information needed to identify the consent.", "Receive confirmation through the selected contact method."],
+    },
+    notFoundBody: "Check the address or use the link below to return home.",
+    formOptions: { phone: "Phone", email: "Email", other: "Other" },
+  },
+  "zh-Hans": {
+    home: {
+      eyebrow: "为企业与个人梳理行政程序",
+      intro: "同等重视企业行政、公共采购与出入境签证事项，并清楚说明下一步程序。",
+      navigatorTitle: "从您需要的业务开始",
+      navigatorBody: "选择最接近现状的领域，查看具体服务与准备方向。",
+      principlesTitle: "明确范围，可核实程序",
+      principles: [
+        { title: "直接确认", body: "先确认委托目的与现有资料。" },
+        { title: "替代方案", body: "分别说明可行程序与前置条件。" },
+        { title: "程序导向", body: "围绕申请与补充阶段整理准备事项。" },
+      ],
+      insightsTitle: "业务领域指南",
+      insights: [
+        { title: "进入采购市场", body: "分别核对产品、生产与企业条件。" },
+        { title: "准备企业认证", body: "同时考虑申请目的与持续条件。" },
+        { title: "审查居留资格", body: "从活动目的与当前居留状态开始。" },
+      ],
+      credentialsTitle: "代表行政士简介",
+      credentialsBody: "仅公开已获批准的教育、经历与资格信息。",
+      consultationTitle: "请留下咨询需求",
+      consultationBody: "请勿提交敏感身份信息或附件，仅发送审查所需基本事实。",
+      portraitLabel: "预留的代表照片位置",
+    },
+    about: {
+      intro: "JIHYE行政士事务所仅依据获准公开的教育、经历与资格信息介绍业务范围。",
+      educationHeading: "教育",
+      careerHeading: "经历",
+      qualificationsHeading: "资格",
+      disclosure: "以OO遮蔽的机构仅作为非公开摘要，不作推断或还原。",
+    },
+    servicesIntro: "查看六个业务组的详细项目，并选择最接近的咨询类别。",
+    process: {
+      intro: "这是从咨询请求到业务进行的基本流程，具体范围与时间在确认事实后商定。",
+      steps: [
+        { title: "01 提交请求", body: "提供联系方式与需要审查的基本事实。" },
+        { title: "02 确认范围", body: "确认目标、现状、资料与前置条件。" },
+        { title: "03 委托协商", body: "确认工作范围与责任后决定是否委托。" },
+        { title: "04 进度说明", body: "按申请、补充与结果阶段说明状态。" },
+      ],
+    },
+    insights: { intro: "仅发布完成审查的实务指南。", note: "当前为服务范围说明页，不使用未经核实的案例数、成功率、排名或评价。" },
+    consultationIntro: "请填写审查所需基本信息。本表单提交至真实API，不模拟成功结果。",
+    locationIntro: "文井站附近事务所的地址与联系方式，来访前请先联系。",
+    privacy: {
+      intro: "这是为咨询受理运营准备的个人信息处理方针草案。",
+      sections: [
+        { title: "处理目的", body: "整理用于确认咨询请求与联系的运营草案。" },
+        { title: "项目与保存期限", body: "收集项目、同意版本与保存期限将在法律及运营审查后确定。" },
+        { title: "权利与咨询", body: "查阅、更正与删除程序将在上线前最终文件中说明。" },
+      ],
+    },
+    marketingWithdraw: { intro: "这是撤回营销接收同意的运营流程草案。", steps: ["通过电话或电子邮件联系事务所。", "仅提供确认同意所需的最少信息。", "通过所选联系方式确认处理结果。"] },
+    notFoundBody: "请检查地址，或使用下方链接返回首页。",
+    formOptions: { phone: "电话", email: "电子邮件", other: "其他" },
+  },
+  "zh-Hant": {
+    home: {
+      eyebrow: "為企業與個人梳理行政程序",
+      intro: "同等重視企業行政、公共採購與出入境簽證事項，並清楚說明下一步程序。",
+      navigatorTitle: "從您需要的業務開始",
+      navigatorBody: "選擇最接近現況的領域，查看具體服務與準備方向。",
+      principlesTitle: "明確範圍，可核實程序",
+      principles: [
+        { title: "直接確認", body: "先確認委託目的與現有資料。" },
+        { title: "替代方案", body: "分別說明可行程序與前置條件。" },
+        { title: "程序導向", body: "圍繞申請與補充階段整理準備事項。" },
+      ],
+      insightsTitle: "業務領域指南",
+      insights: [
+        { title: "進入採購市場", body: "分別核對產品、生產與企業條件。" },
+        { title: "準備企業認證", body: "同時考慮申請目的與持續條件。" },
+        { title: "審查居留資格", body: "從活動目的與目前居留狀態開始。" },
+      ],
+      credentialsTitle: "代表行政士簡介",
+      credentialsBody: "僅公開已獲批准的教育、經歷與資格資訊。",
+      consultationTitle: "請留下諮詢需求",
+      consultationBody: "請勿提交敏感身分資訊或附件，僅傳送審查所需基本事實。",
+      portraitLabel: "預留的代表照片位置",
+    },
+    about: {
+      intro: "JIHYE行政士事務所僅依據獲准公開的教育、經歷與資格資訊介紹業務範圍。",
+      educationHeading: "教育",
+      careerHeading: "經歷",
+      qualificationsHeading: "資格",
+      disclosure: "以OO遮蔽的機構僅作為非公開摘要，不作推斷或還原。",
+    },
+    servicesIntro: "查看六個業務組的詳細項目，並選擇最接近的諮詢類別。",
+    process: {
+      intro: "這是從諮詢請求到業務進行的基本流程，具體範圍與時間在確認事實後商定。",
+      steps: [
+        { title: "01 提交請求", body: "提供聯絡方式與需要審查的基本事實。" },
+        { title: "02 確認範圍", body: "確認目標、現況、資料與前置條件。" },
+        { title: "03 委託協商", body: "確認工作範圍與責任後決定是否委託。" },
+        { title: "04 進度說明", body: "按申請、補充與結果階段說明狀態。" },
+      ],
+    },
+    insights: { intro: "僅發布完成審查的實務指南。", note: "目前為服務範圍說明頁，不使用未經核實的案例數、成功率、排名或評價。" },
+    consultationIntro: "請填寫審查所需基本資訊。本表單提交至真實API，不模擬成功結果。",
+    locationIntro: "文井站附近事務所的地址與聯絡方式，來訪前請先聯絡。",
+    privacy: {
+      intro: "這是為諮詢受理營運準備的個人資訊處理方針草案。",
+      sections: [
+        { title: "處理目的", body: "整理用於確認諮詢請求與聯絡的營運草案。" },
+        { title: "項目與保存期限", body: "收集項目、同意版本與保存期限將在法律及營運審查後確定。" },
+        { title: "權利與諮詢", body: "查閱、更正與刪除程序將在上線前最終文件中說明。" },
+      ],
+    },
+    marketingWithdraw: { intro: "這是撤回行銷接收同意的營運流程草案。", steps: ["透過電話或電子郵件聯絡事務所。", "僅提供確認同意所需的最少資訊。", "透過所選聯絡方式確認處理結果。"] },
+    notFoundBody: "請檢查地址，或使用下方連結返回首頁。",
+    formOptions: { phone: "電話", email: "電子郵件", other: "其他" },
+  },
+} satisfies Record<Locale, LocalePageNarrative>;
+
+function buildLocaleContent(locale: Locale, text: LocaleText): LocaleSiteContent {
   const meta = Object.fromEntries(
     PAGE_KEYS.map((key) => [
       key,
@@ -901,6 +1191,7 @@ function buildLocaleContent(text: LocaleText): LocaleSiteContent {
     headings: text.headings,
     meta,
     home: text.home,
+    pages: pageNarrative[locale],
     forms: text.forms,
     footer: text.footer,
     office: text.office,
@@ -915,10 +1206,10 @@ function buildLocaleContent(text: LocaleText): LocaleSiteContent {
 }
 
 export const siteContent = {
-  ko: buildLocaleContent(localizedText.ko),
-  en: buildLocaleContent(localizedText.en),
-  "zh-Hans": buildLocaleContent(localizedText["zh-Hans"]),
-  "zh-Hant": buildLocaleContent(localizedText["zh-Hant"]),
+  ko: buildLocaleContent("ko", localizedText.ko),
+  en: buildLocaleContent("en", localizedText.en),
+  "zh-Hans": buildLocaleContent("zh-Hans", localizedText["zh-Hans"]),
+  "zh-Hant": buildLocaleContent("zh-Hant", localizedText["zh-Hant"]),
 } satisfies Record<Locale, LocaleSiteContent>;
 
 export type SiteContent = typeof siteContent;

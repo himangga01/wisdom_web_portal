@@ -1,0 +1,42 @@
+---
+import type { Locale } from "@wisdom/shared";
+
+import { OFFICE, siteContent } from "../content/site-content.js";
+import { toLocalizedPath } from "../lib/routes.js";
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const content = siteContent[locale];
+---
+
+<footer class="site-footer">
+  <div class="shell footer-grid">
+    <div>
+      <div class="footer-brand"><span aria-hidden="true">智</span>{content.footer.office}</div>
+      <p>{content.footer.representative}</p>
+      <p class="footer-address">{content.office.address}</p>
+    </div>
+    <div>
+      <h2>{content.footer.contact}</h2>
+      <ul class="footer-links">
+        <li><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></li>
+        <li><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></li>
+        <li><a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a></li>
+        <li><a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>{locale === "ko" ? "운영 안내" : locale === "en" ? "Policies" : "运营说明"}</h2>
+      <ul class="footer-links">
+        <li><a href={toLocalizedPath(locale, "/privacy")}>{content.footer.privacy}</a></li>
+        <li><a href={toLocalizedPath(locale, "/marketing/withdraw")}>{content.footer.marketingWithdraw}</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="shell footer-bottom">
+    <small>© {new Date().getFullYear()} {OFFICE.englishName}. {content.footer.rights}</small>
+  </div>
+</footer>

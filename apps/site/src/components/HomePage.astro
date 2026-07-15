@@ -1,0 +1,178 @@
+---
+import type { Locale } from "@wisdom/shared";
+
+import { OFFICE, REPRESENTATIVE, siteContent } from "../content/site-content.js";
+import { toLocalizedPath } from "../lib/routes.js";
+import { getKakaoChatUrl } from "../lib/site-config.js";
+import { HOME_REVEAL_TARGETS } from "../motion/reveal-contract.js";
+
+interface Props {
+  locale: Locale;
+}
+
+type RevealKey = (typeof HOME_REVEAL_TARGETS)[number]["key"];
+
+const { locale } = Astro.props;
+const content = siteContent[locale];
+const narrative = content.pages.home;
+const kakaoUrl = getKakaoChatUrl(import.meta.env.PUBLIC_KAKAO_CHAT_URL);
+const consultationHref = toLocalizedPath(locale, "/consultation");
+const revealAttributes = (key: RevealKey) => {
+  const target = HOME_REVEAL_TARGETS.find((candidate) => candidate.key === key);
+  if (!target) throw new Error(`Missing reveal target: ${key}`);
+  return {
+    "data-reveal": "",
+    "data-reveal-key": target.key,
+    "data-reveal-direction": target.direction,
+    "data-reveal-delay": String(target.delayMs),
+    "data-revealed": "false",
+    style: `--reveal-delay:${target.delayMs}ms`,
+  };
+};
+---
+
+<section class="hero-section">
+  <div class="shell hero-grid">
+    <div class="hero-copy" {...revealAttributes("hero-copy")}>
+      <p class="eyebrow">{narrative.eyebrow}</p>
+      <h1>{content.headings.home}</h1>
+      <p class="hero-intro">{narrative.intro}</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href={consultationHref}>{content.buttons.consultation}</a>
+        <a class="button button-secondary" href={`tel:${OFFICE.phone}`}>{content.buttons.phone}</a>
+      </div>
+      <div class="secondary-actions" aria-label={locale === "ko" ? "추가 연락 방법" : "Additional contact options"}>
+        {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
+        <a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a>
+        <a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a>
+      </div>
+    </div>
+
+    <div class="portrait-stage" {...revealAttributes("portrait")}>
+      <picture class="portrait-asset-slot" data-asset-slot="representative-portrait" hidden aria-hidden="true"></picture>
+      <div class="portrait-geometry" role="img" aria-label={narrative.portraitLabel}>
+        <span class="geometry-orbit" aria-hidden="true"></span>
+        <span class="geometry-monogram" aria-hidden="true">智</span>
+        <span class="geometry-line" aria-hidden="true"></span>
+      </div>
+      <div class="portrait-caption">
+        <strong>{content.office.representative}</strong>
+        <span>{content.office.englishName}</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section practice-section" id="services">
+  <div class="shell">
+    <div class="section-heading">
+      <p class="eyebrow">01 · {content.navigation.services}</p>
+      <h2>{content.buttons.exploreServices}</h2>
+    </div>
+    <div class="three-column-grid">
+      <article class="feature-card" {...revealAttributes("practice-enterprise")}>
+        <span class="card-index">01</span>
+        <h3>{content.home.pillars[0].title}</h3>
+        <p>{content.home.pillars[0].summary}</p>
+        <a href={toLocalizedPath(locale, "/services/business-certification")}>{content.buttons.exploreServices}<span aria-hidden="true"> →</span></a>
+      </article>
+      <article class="feature-card featured" {...revealAttributes("practice-procurement")}>
+        <span class="card-index">02</span>
+        <h3>{content.home.pillars[1].title}</h3>
+        <p>{content.home.pillars[1].summary}</p>
+        <a href={toLocalizedPath(locale, "/services/procurement")}>{content.buttons.exploreServices}<span aria-hidden="true"> →</span></a>
+      </article>
+      <article class="feature-card" {...revealAttributes("practice-visa")}>
+        <span class="card-index">03</span>
+        <h3>{content.home.pillars[2].title}</h3>
+        <p>{content.home.pillars[2].summary}</p>
+        <a href={toLocalizedPath(locale, "/services/immigration-visa")}>{content.buttons.exploreServices}<span aria-hidden="true"> →</span></a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section navigator-section">
+  <div class="shell split-grid">
+    <div {...revealAttributes("navigator-copy")}>
+      <p class="eyebrow">02 · Navigator</p>
+      <h2>{narrative.navigatorTitle}</h2>
+      <p>{narrative.navigatorBody}</p>
+    </div>
+    <div class="service-navigator" {...revealAttributes("navigator-choices")}>
+      {content.services.categories.map((category, index) => (
+        <a href={toLocalizedPath(locale, `/services/${category.slug}`)}>
+          <span>{String(index + 1).padStart(2, "0")}</span>
+          <strong>{category.title}</strong>
+          <span aria-hidden="true">↗</span>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>
+
+<section class="section principles-section" id="principles">
+  <div class="shell">
+    <div class="section-heading centered" {...revealAttributes("principles-heading")}>
+      <p class="eyebrow">03 · Principles</p>
+      <h2>{narrative.principlesTitle}</h2>
+    </div>
+    <div class="three-column-grid principle-grid">
+      <article {...revealAttributes("principle-direct")}>
+        <span aria-hidden="true">I</span><h3>{narrative.principles[0].title}</h3><p>{narrative.principles[0].body}</p>
+      </article>
+      <article {...revealAttributes("principle-alternative")}>
+        <span aria-hidden="true">II</span><h3>{narrative.principles[1].title}</h3><p>{narrative.principles[1].body}</p>
+      </article>
+      <article {...revealAttributes("principle-field")}>
+        <span aria-hidden="true">III</span><h3>{narrative.principles[2].title}</h3><p>{narrative.principles[2].body}</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section insights-section" id="insights">
+  <div class="shell">
+    <div class="section-heading" {...revealAttributes("insights-heading")}>
+      <p class="eyebrow">04 · {content.navigation.insights}</p>
+      <h2>{narrative.insightsTitle}</h2>
+    </div>
+    <div class="three-column-grid insight-grid">
+      <article {...revealAttributes("insight-procurement")}><span>Procurement</span><h3>{narrative.insights[0].title}</h3><p>{narrative.insights[0].body}</p></article>
+      <article {...revealAttributes("insight-enterprise")}><span>Enterprise</span><h3>{narrative.insights[1].title}</h3><p>{narrative.insights[1].body}</p></article>
+      <article {...revealAttributes("insight-visa")}><span>Immigration</span><h3>{narrative.insights[2].title}</h3><p>{narrative.insights[2].body}</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="section credentials-section">
+  <div class="shell credentials-card" {...revealAttributes("credentials")}>
+    <div>
+      <p class="eyebrow">05 · Profile</p>
+      <h2>{narrative.credentialsTitle}</h2>
+      <p>{narrative.credentialsBody}</p>
+    </div>
+    <div class="credentials-lists">
+      <ul>{REPRESENTATIVE.education.map((item) => <li>{item}</li>)}</ul>
+      <ul>{[...REPRESENTATIVE.career, ...REPRESENTATIVE.qualifications].map((item) => <li>{item}</li>)}</ul>
+    </div>
+  </div>
+</section>
+
+<section class="section consultation-section" id="consultation">
+  <div class="shell split-grid consultation-grid">
+    <div {...revealAttributes("consultation-copy")}>
+      <p class="eyebrow">06 · {content.navigation.consultation}</p>
+      <h2>{narrative.consultationTitle}</h2>
+      <p>{narrative.consultationBody}</p>
+      <a class="button button-primary" href={consultationHref}>{content.buttons.consultation}</a>
+    </div>
+    <address class="office-card" {...revealAttributes("consultation-card")}>
+      <strong>{content.office.name}</strong>
+      <span>{content.office.representative}</span>
+      <a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a>
+      <a href={`mailto:${OFFICE.email}`}>{content.office.email}</a>
+      <span>{content.office.address}</span>
+    </address>
+  </div>
+</section>
