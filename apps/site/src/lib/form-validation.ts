@@ -1,3 +1,13 @@
+import { LOCALES, type Locale } from "@wisdom/shared";
+
+import {
+  buildConsultationSubmission,
+  createConsultationIdempotencyKeyCache,
+  loadConsentConfiguration,
+  postConsultation,
+  type ConsentConfiguration,
+} from "./consultation-adapter.js";
+
 const FORM_SELECTOR = "[data-consultation-form]";
 
 function validationMessage(control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): string {
@@ -15,7 +25,37 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     const email = form.elements.namedItem("email");
     const marketing = form.elements.namedItem("marketingConsent");
+    const localeControl = form.elements.namedItem("locale");
     const contactMethods = Array.from(form.querySelectorAll<HTMLInputElement>('[name="preferredContact"]'));
+    const status = form.querySelector<HTMLElement>("[data-form-status]");
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const idempotencyKeyFor = createConsultationIdempotencyKeyCache();
+
+    const selectedLocale = (): Locale | undefined => {
+      if (!(localeControl instanceof HTMLSelectElement)) return undefined;
+      const value = localeControl.value as Locale;
+      return LOCALES.includes(value) ? value : undefined;
+    };
+
+    let consentLocale = selectedLocale();
+    let consentRequest: Promise<ConsentConfiguration | undefined> = consentLocale
+      ? loadConsentConfiguration(consentLocale).catch(() => undefined)
+      : Promise.resolve(undefined);
+
+    const refreshConsent = (): void => {
+      consentLocale = selectedLocale();
+      consentRequest = consentLocale
+        ? loadConsentConfiguration(consentLocale).catch(() => undefined)
+        : Promise.resolve(undefined);
+    };
+
+    const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
+      if (!status) return;
+      status.hidden = false;
+      status.dataset.state = state;
+      status.setAttribute("role", state === "error" ? "alert" : "status");
+      status.textContent = message;
+    };
 
     const updateEmailConstraint = (): void => {
       if (!(email instanceof HTMLInputElement) || !(marketing instanceof HTMLInputElement)) return;
@@ -47,7 +87,73 @@ export function initializeConsultationForms(documentRef: Document = document): v
       }
       updateEmailConstraint();
     });
-    form.addEventListener("change", updateEmailConstraint);
+    form.addEventListener("change", (event) => {
+      updateEmailConstraint();
+      if (event.target === localeControl) refreshConsent();
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+      }
+
+      void (async () => {
+        const originalSubmitLabel = submit?.textContent ?? "";
+        form.setAttribute("aria-busy", "true");
+        if (submit) {
+          submit.disabled = true;
+          submit.textContent = form.dataset.statusSubmitting ?? originalSubmitLabel;
+        }
+        showStatus("submitting", form.dataset.statusSubmitting ?? "");
+
+        try {
+          const currentLocale = selectedLocale();
+          if (currentLocale !== consentLocale) refreshConsent();
+          let consent = await consentRequest;
+          if (!consent) {
+            refreshConsent();
+            consent = await consentRequest;
+          }
+          if (!consent) {
+            showStatus("error", form.dataset.statusConfigurationFailure ?? "");
+            return;
+          }
+
+          let submission;
+          try {
+            submission = buildConsultationSubmission(new FormData(form), consent);
+          } catch {
+            showStatus("error", form.dataset.statusInvalid ?? "");
+            return;
+          }
+
+          try {
+            const result = await postConsultation(submission, {
+              endpoint: form.getAttribute("action") ?? "/api/v1/consultations",
+              idempotencyKey: idempotencyKeyFor(submission),
+            });
+            if (!result.ok) {
+              showStatus("error", form.dataset.statusFailure ?? "");
+              return;
+            }
+            const message = (form.dataset.statusSuccess ?? "").replace(
+              "{receiptId}",
+              result.receipt.receiptId,
+            );
+            showStatus("success", message);
+          } catch {
+            showStatus("error", form.dataset.statusFailure ?? "");
+          }
+        } finally {
+          form.removeAttribute("aria-busy");
+          if (submit) {
+            submit.disabled = false;
+            submit.textContent = originalSubmitLabel;
+          }
+        }
+      })();
+    });
     updateEmailConstraint();
   });
 }

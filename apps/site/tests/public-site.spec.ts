@@ -1,7 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
+import { consultationRequestSchema } from "@wisdom/shared";
 import { expect, test } from "@playwright/test";
 
 import { PUBLIC_ROUTE_ENTRIES } from "../src/lib/routes.js";
+import { siteContent } from "../src/content/site-content.js";
 
 function physicalViewportSize(browserName: string, width: number, height: number) {
   const windowsWebKitScale = browserName === "webkit" && process.platform === "win32" ? 1.25 : 1;
@@ -228,12 +230,191 @@ test("renders native consultation constraints and never fakes success", async ({
   await expect(form).toHaveAttribute("method", "post");
   await expect(form.locator('[name="message"]')).toHaveAttribute("minlength", "20");
   await expect(form.locator('[name="message"]')).toHaveAttribute("maxlength", "2000");
+  await expect(form.locator('[name="phone"]')).toHaveAttribute("maxlength", "20");
   await expect(form.locator('[name="privacyConsent"]')).toBeChecked({ checked: false });
   await expect(form.locator('[name="privacyConsent"]')).toHaveAttribute("required", "");
   await expect(form.locator('[name="marketingConsent"]')).not.toBeChecked();
   await expect(form.locator('input[type="file"]')).toHaveCount(0);
   await expect(page.getByText(/Do not enter resident, passport/)).toBeVisible();
   await expect(page.getByText(/success/i)).toHaveCount(0);
+});
+
+test("submits schema-valid JSON with unchecked marketing and renders a validated receipt", async ({ page }) => {
+  let capturedBody: unknown;
+  let capturedHeaders: Record<string, string> = {};
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        locale: "en",
+        documents: {
+          privacy: { version: "privacy-2026-07-16" },
+          marketing: { version: "marketing-2026-07-16" },
+        },
+        formToken: "signed-form-token-en",
+      }),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    capturedBody = route.request().postDataJSON();
+    capturedHeaders = route.request().headers();
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        receiptId: "receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        receivedAt: "2026-07-16T02:00:00.000Z",
+        status: "received",
+      }),
+    });
+  });
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "Hong Gildong");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="company"]', "Wisdom Co.");
+  await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+  await page.check('[name="privacyConsent"]');
+  await page.getByRole("button", { name: "Send consultation request" }).click();
+
+  await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
+  expect(capturedHeaders["content-type"]).toContain("application/json");
+  expect(capturedHeaders["idempotency-key"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  const envelope = capturedBody as {
+    consultation: unknown;
+    antiAbuse: { formToken: string; website: string };
+  };
+  expect(consultationRequestSchema.parse(envelope.consultation)).toMatchObject({
+    phone: "+821012345678",
+    privacyConsent: { version: "privacy-2026-07-16", accepted: true },
+    marketingConsent: { version: "marketing-2026-07-16", accepted: false },
+  });
+  expect(envelope.antiAbuse).toEqual({ formToken: "signed-form-token-en", website: "" });
+});
+
+test("reuses an idempotency key for retries and rotates it when the submission changes", async ({ page }) => {
+  const idempotencyKeys: string[] = [];
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        locale: "en",
+        documents: {
+          privacy: { version: "privacy-2026-07-16" },
+          marketing: { version: "marketing-2026-07-16" },
+        },
+        formToken: "signed-form-token-en",
+      }),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    idempotencyKeys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (idempotencyKeys.length === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "TEMPORARILY_UNAVAILABLE",
+          message: "Unavailable",
+          requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        receiptId: "receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        receivedAt: "2026-07-16T02:00:00.000Z",
+        status: "received",
+      }),
+    });
+  });
+
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "Hong Gildong");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="company"]', "Wisdom Co.");
+  await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+  await page.check('[name="privacyConsent"]');
+  const submit = page.getByRole("button", { name: "Send consultation request" });
+
+  await submit.click();
+  await expect(page.locator("[data-form-status]")).toHaveAttribute("role", "alert");
+  await submit.click();
+  await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
+  expect(idempotencyKeys[0]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
+
+  await page.fill(
+    '[name="message"]',
+    "Please review our updated public procurement registration plan.",
+  );
+  await submit.click();
+  await expect.poll(() => idempotencyKeys.length).toBe(3);
+  expect(idempotencyKeys[2]).not.toBe(idempotencyKeys[1]);
+});
+
+test("submits checked marketing consent and shows localized API failure", async ({ page }) => {
+  let capturedBody: unknown;
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        locale: "zh-Hans",
+        documents: {
+          privacy: { version: "privacy-zh-2026-07-16" },
+          marketing: { version: "marketing-zh-2026-07-16" },
+        },
+        formToken: "signed-form-token-zh-hans",
+      }),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    capturedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "TEMPORARILY_UNAVAILABLE",
+        message: "Unavailable",
+        requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+      }),
+    });
+  });
+  await page.goto("/zh-hans/consultation");
+  await page.selectOption('[name="category"]', "other");
+  await page.fill('[name="name"]', "张三");
+  await page.fill('[name="phone"]', "01012345678");
+  await page.fill('[name="email"]', "client@example.com");
+  await page.fill('[name="message"]', "请协助审查目前需要办理的行政程序和所需资料。");
+  await page.check('[name="privacyConsent"]');
+  await page.check('[name="marketingConsent"]');
+  await page.getByRole("button", { name: "提交咨询申请" }).click();
+
+  await expect(page.locator("[data-form-status]")).toHaveAttribute("role", "alert");
+  await expect(page.locator("[data-form-status]")).toContainText("暂时无法提交咨询申请");
+  const envelope = capturedBody as {
+    consultation: unknown;
+    antiAbuse: { formToken: string; website: string };
+  };
+  expect(consultationRequestSchema.parse(envelope.consultation)).toMatchObject({
+    email: "client@example.com",
+    marketingConsent: { version: "marketing-zh-2026-07-16", accepted: true },
+  });
+  expect(envelope.antiAbuse).toEqual({
+    formToken: "signed-form-token-zh-hans",
+    website: "",
+  });
 });
 
 for (const path of ["/", "/consultation"]) {
@@ -251,4 +432,33 @@ test("returns a real localized 404 document", async ({ page }) => {
   expect(response?.status()).toBe(404);
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+});
+
+test("localizes direct locale-prefixed misses while preserving HTTP 404", async ({ page, request }) => {
+  for (const { pathname, locale } of [
+    { pathname: "/en/missing-public-route", locale: "en" as const },
+    { pathname: "/zh-hant/missing-public-route", locale: "zh-Hant" as const },
+  ]) {
+    const response = await page.goto(pathname);
+    expect(response?.status(), pathname).toBe(404);
+    await expect(page.locator("html")).toHaveAttribute("lang", locale);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(siteContent[locale].headings.notFound);
+    await expect(page.getByRole("link", { name: siteContent[locale].buttons.backHome })).toHaveAttribute(
+      "href",
+      locale === "en" ? "/en" : "/zh-hant",
+    );
+  }
+
+  expect((await request.get("/en/404")).status()).toBe(200);
+});
+
+test("keeps the Korean 404 fallback when JavaScript is disabled", async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  const response = await page.goto("http://127.0.0.1:4321/en/missing-without-javascript");
+
+  expect(response?.status()).toBe(404);
+  await expect(page.locator("html")).toHaveAttribute("lang", "ko");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(siteContent.ko.headings.notFound);
+  await context.close();
 });

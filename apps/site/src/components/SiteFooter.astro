@@ -29,7 +29,7 @@ const content = siteContent[locale];
       </ul>
     </div>
     <div>
-      <h2>{locale === "ko" ? "운영 안내" : locale === "en" ? "Policies" : "运营说明"}</h2>
+      <h2>{content.footer.policies}</h2>
       <ul class="footer-links">
         <li><a href={toLocalizedPath(locale, "/privacy")}>{content.footer.privacy}</a></li>
         <li><a href={toLocalizedPath(locale, "/marketing/withdraw")}>{content.footer.marketingWithdraw}</a></li>

@@ -1,7 +1,7 @@
 ---
 import type { Locale } from "@wisdom/shared";
 
-import { OFFICE, REPRESENTATIVE, siteContent } from "../content/site-content.js";
+import { OFFICE, siteContent } from "../content/site-content.js";
 import { toLocalizedPath } from "../lib/routes.js";
 import { getKakaoChatUrl } from "../lib/site-config.js";
 import { HOME_REVEAL_TARGETS } from "../motion/reveal-contract.js";
@@ -41,7 +41,7 @@ const revealAttributes = (key: RevealKey) => {
         <a class="button button-primary" href={consultationHref}>{content.buttons.consultation}</a>
         <a class="button button-secondary" href={`tel:${OFFICE.phone}`}>{content.buttons.phone}</a>
       </div>
-      <div class="secondary-actions" aria-label={locale === "ko" ? "추가 연락 방법" : "Additional contact options"}>
+      <div class="secondary-actions" aria-label={content.accessibility.additionalContactOptions}>
         {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
         <a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a>
         <a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a>
@@ -95,7 +95,7 @@ const revealAttributes = (key: RevealKey) => {
 <section class="section navigator-section">
   <div class="shell split-grid">
     <div {...revealAttributes("navigator-copy")}>
-      <p class="eyebrow">02 · Navigator</p>
+      <p class="eyebrow">02 · {narrative.sectionLabels.navigator}</p>
       <h2>{narrative.navigatorTitle}</h2>
       <p>{narrative.navigatorBody}</p>
     </div>
@@ -114,7 +114,7 @@ const revealAttributes = (key: RevealKey) => {
 <section class="section principles-section" id="principles">
   <div class="shell">
     <div class="section-heading centered" {...revealAttributes("principles-heading")}>
-      <p class="eyebrow">03 · Principles</p>
+      <p class="eyebrow">03 · {narrative.sectionLabels.principles}</p>
       <h2>{narrative.principlesTitle}</h2>
     </div>
     <div class="three-column-grid principle-grid">
@@ -138,9 +138,9 @@ const revealAttributes = (key: RevealKey) => {
       <h2>{narrative.insightsTitle}</h2>
     </div>
     <div class="three-column-grid insight-grid">
-      <article {...revealAttributes("insight-procurement")}><span>Procurement</span><h3>{narrative.insights[0].title}</h3><p>{narrative.insights[0].body}</p></article>
-      <article {...revealAttributes("insight-enterprise")}><span>Enterprise</span><h3>{narrative.insights[1].title}</h3><p>{narrative.insights[1].body}</p></article>
-      <article {...revealAttributes("insight-visa")}><span>Immigration</span><h3>{narrative.insights[2].title}</h3><p>{narrative.insights[2].body}</p></article>
+      <article {...revealAttributes("insight-procurement")}><span>{narrative.insightCategories[0]}</span><h3>{narrative.insights[0].title}</h3><p>{narrative.insights[0].body}</p></article>
+      <article {...revealAttributes("insight-enterprise")}><span>{narrative.insightCategories[1]}</span><h3>{narrative.insights[1].title}</h3><p>{narrative.insights[1].body}</p></article>
+      <article {...revealAttributes("insight-visa")}><span>{narrative.insightCategories[2]}</span><h3>{narrative.insights[2].title}</h3><p>{narrative.insights[2].body}</p></article>
     </div>
   </div>
 </section>
@@ -148,13 +148,13 @@ const revealAttributes = (key: RevealKey) => {
 <section class="section credentials-section">
   <div class="shell credentials-card" {...revealAttributes("credentials")}>
     <div>
-      <p class="eyebrow">05 · Profile</p>
+      <p class="eyebrow">05 · {narrative.sectionLabels.profile}</p>
       <h2>{narrative.credentialsTitle}</h2>
       <p>{narrative.credentialsBody}</p>
     </div>
     <div class="credentials-lists">
-      <ul>{REPRESENTATIVE.education.map((item) => <li>{item}</li>)}</ul>
-      <ul>{[...REPRESENTATIVE.career, ...REPRESENTATIVE.qualifications].map((item) => <li>{item}</li>)}</ul>
+      <ul>{content.pages.profile.education.map((item) => <li>{item}</li>)}</ul>
+      <ul>{[...content.pages.profile.career, ...content.pages.profile.qualifications].map((item) => <li>{item}</li>)}</ul>
     </div>
   </div>
 </section>

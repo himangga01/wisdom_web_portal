@@ -25,7 +25,17 @@ const languageNames: Record<Locale, string> = {
   method={CONSULTATION_FORM.method}
   class="consultation-form"
   data-consultation-form
+  data-locale={locale}
+  data-status-submitting={form.status.submitting}
+  data-status-success={form.status.success}
+  data-status-failure={form.status.failure}
+  data-status-configuration-failure={form.status.configurationFailure}
+  data-status-invalid={form.status.invalid}
 >
+  <div class="honeypot-field" aria-hidden="true">
+    <label for="consultation-website">{form.labels.website}</label>
+    <input id="consultation-website" name="website" type="text" tabindex="-1" autocomplete="off" />
+  </div>
   <div class="form-grid">
     <div class="field full-field">
       <label for="consultation-locale">{form.labels.locale}</label>
@@ -51,7 +61,7 @@ const languageNames: Record<Locale, string> = {
     </div>
     <div class="field">
       <label for="consultation-phone">{form.labels.phone}</label>
-      <input id="consultation-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern="\+?[0-9 .()\-]{8,30}" required aria-describedby="phone-help" data-error-required={form.errors.required} data-error-pattern={form.errors.invalidPhone} />
+      <input id="consultation-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern="\+?[0-9 .()\-]{8,20}" minlength="8" maxlength="20" required aria-describedby="phone-help" data-error-required={form.errors.required} data-error-pattern={form.errors.invalidPhone} />
       <small id="phone-help">{form.help.phone}</small>
     </div>
     <div class="field">
@@ -85,7 +95,7 @@ const languageNames: Record<Locale, string> = {
     </div>
 
     <fieldset class="field full-field consent-group">
-      <legend>{locale === "ko" ? "동의" : locale === "en" ? "Consent" : "同意"}</legend>
+      <legend>{form.labels.consent}</legend>
       <label class="choice-control consent-control">
         <input name="privacyConsent" type="checkbox" value="accepted" required data-error-required={form.errors.privacyRequired} />
         <span><strong>{form.labels.privacyConsent}</strong><small>{form.help.privacyConsent}</small></span>
@@ -97,4 +107,6 @@ const languageNames: Record<Locale, string> = {
     </fieldset>
   </div>
   <button class="button button-primary form-submit" type="submit">{form.submit}</button>
+  <div class="form-status" data-form-status role="status" aria-live="polite" hidden></div>
+  <noscript><p class="warning no-script-note">{form.help.noJavaScript}</p></noscript>
 </form>

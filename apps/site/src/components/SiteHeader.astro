@@ -19,9 +19,6 @@ const languageNames: Record<Locale, string> = {
   "zh-Hans": "简体中文",
   "zh-Hant": "繁體中文",
 };
-const navigationLabel = locale === "ko" ? "주요 메뉴" : locale === "en" ? "Primary" : "主要导航";
-const mobileLabel = locale === "ko" ? "모바일 메뉴" : locale === "en" ? "Mobile" : "移动导航";
-const menuLabel = locale === "ko" ? "메뉴 열기" : locale === "en" ? "Open menu" : "打开菜单";
 const navigation = [
   { key: "home", route: "/" },
   { key: "about", route: "/about" },
@@ -35,7 +32,7 @@ const isActive = (itemRoute: ContentRoute): boolean =>
 const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
 ---
 
-<a class="skip-link" href="#main">{locale === "ko" ? "본문으로 이동" : locale === "en" ? "Skip to content" : "跳至主要内容"}</a>
+<a class="skip-link" href="#main">{content.accessibility.skipToContent}</a>
 <header class="site-header">
   <div class="shell header-inner">
     <a class="brand" href={toLocalizedPath(locale, "/")} aria-label={content.office.name}>
@@ -46,7 +43,7 @@ const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
       </span>
     </a>
 
-    <nav class="desktop-navigation" aria-label={navigationLabel}>
+    <nav class="desktop-navigation" aria-label={content.accessibility.primaryNavigation}>
       {navigation.map((item) => (
         <a
           href={toLocalizedPath(locale, item.route)}
@@ -58,7 +55,7 @@ const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
     </nav>
 
     <div class="header-actions">
-      <div class="language-links" aria-label={locale === "ko" ? "언어 선택" : "Language selection"}>
+      <div class="language-links" aria-label={content.accessibility.languageSelection}>
         {languageLinks.map(({ locale: linkLocale, href }) => (
           <a
             href={href}
@@ -74,8 +71,8 @@ const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
         {content.buttons.consultation}
       </a>
       <details class="mobile-menu">
-        <summary aria-label={menuLabel}><span></span><span></span><span></span></summary>
-        <nav aria-label={mobileLabel}>
+        <summary aria-label={content.accessibility.openMenu}><span></span><span></span><span></span></summary>
+        <nav aria-label={content.accessibility.mobileNavigation}>
           {navigation.map((item) => (
             <a href={toLocalizedPath(locale, item.route)} aria-current={isActive(item.route) ? "page" : undefined}>
               {content.navigation[item.key]}

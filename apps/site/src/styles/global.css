@@ -859,9 +859,18 @@ p {
 }
 
 .consultation-form {
+  position: relative;
   padding: clamp(1.4rem, 4vw, 3rem);
   border: 1px solid var(--wisdom-sand);
   background: color-mix(in srgb, var(--wisdom-white) 70%, transparent);
+}
+
+.honeypot-field {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
 }
 
 .form-grid {
@@ -960,6 +969,29 @@ p {
 .form-submit {
   width: 100%;
   margin-top: 1.5rem;
+}
+
+.form-status {
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--wisdom-sand);
+  background: color-mix(in srgb, var(--wisdom-sand) 22%, var(--wisdom-white));
+  color: var(--wisdom-ink);
+  font-size: 0.82rem;
+}
+
+.form-status[data-state="error"] {
+  border-color: var(--wisdom-brown);
+  color: var(--wisdom-brown);
+}
+
+.form-status[data-state="success"] {
+  border-color: var(--wisdom-bronze);
+  font-weight: 750;
+}
+
+.no-script-note {
+  margin-top: 1rem;
 }
 
 .location-card {

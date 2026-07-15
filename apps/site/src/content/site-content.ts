@@ -69,6 +69,12 @@ interface LocalePageNarrative {
     consultationTitle: string;
     consultationBody: string;
     portraitLabel: string;
+    sectionLabels: {
+      navigator: string;
+      principles: string;
+      profile: string;
+    };
+    insightCategories: readonly [string, string, string];
   };
   about: {
     intro: string;
@@ -76,6 +82,11 @@ interface LocalePageNarrative {
     careerHeading: string;
     qualificationsHeading: string;
     disclosure: string;
+  };
+  profile: {
+    education: readonly string[];
+    career: readonly string[];
+    qualifications: readonly string[];
   };
   servicesIntro: string;
   process: {
@@ -114,6 +125,14 @@ interface LocaleText {
     consultation: string;
     location: string;
   };
+  accessibility: {
+    skipToContent: string;
+    primaryNavigation: string;
+    mobileNavigation: string;
+    openMenu: string;
+    languageSelection: string;
+    additionalContactOptions: string;
+  };
   buttons: {
     consultation: string;
     phone: string;
@@ -133,8 +152,10 @@ interface LocaleText {
   };
   forms: {
     consultation: {
-      labels: {
-        locale: string;
+        labels: {
+          consent: string;
+          website: string;
+          locale: string;
         category: string;
         name: string;
         phone: string;
@@ -155,7 +176,8 @@ interface LocaleText {
         privacyConsent: string;
         marketingConsent: string;
         sensitiveIdWarning: string;
-        noAttachments: string;
+          noAttachments: string;
+          noJavaScript: string;
       };
       errors: {
         required: string;
@@ -163,8 +185,15 @@ interface LocaleText {
         invalidEmail: string;
         messageLength: string;
         privacyRequired: string;
-      };
-      submit: string;
+        };
+        status: {
+          submitting: string;
+          success: string;
+          failure: string;
+          configurationFailure: string;
+          invalid: string;
+        };
+        submit: string;
     };
   };
   footer: {
@@ -172,8 +201,9 @@ interface LocaleText {
     representative: string;
     contact: string;
     privacy: string;
-    marketingWithdraw: string;
-    rights: string;
+      marketingWithdraw: string;
+      policies: string;
+      rights: string;
   };
   office: {
     name: string;
@@ -184,6 +214,10 @@ interface LocaleText {
     email: string;
     address: string;
     nearby: string;
+    addressLabel: string;
+    phoneLabel: string;
+    faxLabel: string;
+    emailLabel: string;
   };
   policies: {
     privacyHeading: string;
@@ -212,6 +246,14 @@ const localizedText = {
       insights: "실무 안내",
       consultation: "상담 신청",
       location: "오시는 길",
+    },
+    accessibility: {
+      skipToContent: "본문으로 이동",
+      primaryNavigation: "주요 메뉴",
+      mobileNavigation: "모바일 메뉴",
+      openMenu: "메뉴 열기",
+      languageSelection: "언어 선택",
+      additionalContactOptions: "추가 연락 방법",
     },
     buttons: {
       consultation: "상담 신청",
@@ -256,6 +298,8 @@ const localizedText = {
     forms: {
       consultation: {
         labels: {
+          consent: "동의",
+          website: "웹사이트(비워 두세요)",
           locale: "상담 언어",
           category: "상담 분야",
           name: "이름",
@@ -278,6 +322,7 @@ const localizedText = {
           marketingConsent: "선택 항목이며 기본값은 동의하지 않음입니다.",
           sensitiveIdWarning: "주민등록번호, 여권번호, 외국인등록번호 등 민감한 식별정보는 입력하지 마세요.",
           noAttachments: "이 단계에서는 첨부파일을 받지 않습니다.",
+          noJavaScript: "온라인 접수에는 JavaScript가 필요합니다. 사용할 수 없다면 전화 또는 이메일로 문의해 주세요.",
         },
         errors: {
           required: "필수 항목을 입력해 주세요.",
@@ -285,6 +330,13 @@ const localizedText = {
           invalidEmail: "올바른 이메일 주소를 입력해 주세요.",
           messageLength: "상담 내용은 20자 이상 2,000자 이하로 입력해 주세요.",
           privacyRequired: "개인정보 수집·이용에 동의해야 상담을 접수할 수 있습니다.",
+        },
+        status: {
+          submitting: "상담 요청을 보내는 중입니다…",
+          success: "상담 요청이 접수되었습니다. 접수번호: {receiptId}",
+          failure: "현재 상담 요청을 전송할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+          configurationFailure: "최신 동의 문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          invalid: "입력 내용을 다시 확인해 주세요.",
         },
         submit: "상담 요청 보내기",
       },
@@ -295,6 +347,7 @@ const localizedText = {
       contact: "연락처",
       privacy: "개인정보 처리방침",
       marketingWithdraw: "마케팅 수신 동의 철회",
+      policies: "운영 안내",
       rights: "모든 권리 보유.",
     },
     office: {
@@ -306,6 +359,10 @@ const localizedText = {
       email: OFFICE.email,
       address: OFFICE.address,
       nearby: "문정역 인근",
+      addressLabel: "주소",
+      phoneLabel: "전화",
+      faxLabel: "팩스",
+      emailLabel: "이메일",
     },
     policies: {
       privacyHeading: "개인정보 처리방침",
@@ -394,6 +451,14 @@ const localizedText = {
       consultation: "Consultation",
       location: "Location",
     },
+    accessibility: {
+      skipToContent: "Skip to content",
+      primaryNavigation: "Primary navigation",
+      mobileNavigation: "Mobile navigation",
+      openMenu: "Open menu",
+      languageSelection: "Language selection",
+      additionalContactOptions: "Additional contact options",
+    },
     buttons: {
       consultation: "Request a consultation",
       phone: "Call",
@@ -437,6 +502,8 @@ const localizedText = {
     forms: {
       consultation: {
         labels: {
+          consent: "Consent",
+          website: "Website (leave blank)",
           locale: "Consultation language",
           category: "Service category",
           name: "Name",
@@ -459,6 +526,7 @@ const localizedText = {
           marketingConsent: "Optional and unchecked by default.",
           sensitiveIdWarning: "Do not enter resident, passport, or foreign registration numbers or other sensitive identifiers.",
           noAttachments: "Attachments are not accepted at this stage.",
+          noJavaScript: "JavaScript is required for secure online submission. If it is unavailable, contact the office by phone or email.",
         },
         errors: {
           required: "Complete this required field.",
@@ -466,6 +534,13 @@ const localizedText = {
           invalidEmail: "Enter a valid email address.",
           messageLength: "Enter between 20 and 2,000 characters.",
           privacyRequired: "Privacy consent is required to submit the request.",
+        },
+        status: {
+          submitting: "Sending your consultation request…",
+          success: "Your consultation request was received. Receipt: {receiptId}",
+          failure: "We could not send your consultation request. Please try again shortly.",
+          configurationFailure: "We could not load the current consent documents. Please try again shortly.",
+          invalid: "Review the form fields and try again.",
         },
         submit: "Send consultation request",
       },
@@ -476,6 +551,7 @@ const localizedText = {
       contact: "Contact",
       privacy: "Privacy Policy",
       marketingWithdraw: "Withdraw Marketing Consent",
+      policies: "Policies",
       rights: "All rights reserved.",
     },
     office: {
@@ -487,6 +563,10 @@ const localizedText = {
       email: OFFICE.email,
       address: "Suite 212, 92 Beobwon-ro, Songpa-gu, Seoul (Partners 1, Munjeong-dong)",
       nearby: "Near Munjeong Station",
+      addressLabel: "Address",
+      phoneLabel: "Phone",
+      faxLabel: "Fax",
+      emailLabel: "Email",
     },
     policies: {
       privacyHeading: "Privacy Policy",
@@ -581,6 +661,14 @@ const localizedText = {
       consultation: "申请咨询",
       location: "来访路线",
     },
+    accessibility: {
+      skipToContent: "跳至主要内容",
+      primaryNavigation: "主要导航",
+      mobileNavigation: "移动端导航",
+      openMenu: "打开菜单",
+      languageSelection: "选择语言",
+      additionalContactOptions: "其他联系方式",
+    },
     buttons: {
       consultation: "申请咨询",
       phone: "电话联系",
@@ -624,6 +712,8 @@ const localizedText = {
     forms: {
       consultation: {
         labels: {
+          consent: "同意事项",
+          website: "网站（请留空）",
           locale: "咨询语言",
           category: "咨询领域",
           name: "姓名",
@@ -646,6 +736,7 @@ const localizedText = {
           marketingConsent: "可选项目，默认未勾选。",
           sensitiveIdWarning: "请勿填写居民登记号、护照号、外国人登记号等敏感识别信息。",
           noAttachments: "此阶段不接收附件。",
+          noJavaScript: "安全在线提交需要JavaScript。如无法使用，请通过电话或电子邮件联系。",
         },
         errors: {
           required: "请填写必填项目。",
@@ -653,6 +744,13 @@ const localizedText = {
           invalidEmail: "请输入有效的电子邮箱地址。",
           messageLength: "咨询内容应为20至2,000个字符。",
           privacyRequired: "必须同意个人信息处理后才能提交。",
+        },
+        status: {
+          submitting: "正在提交咨询申请…",
+          success: "咨询申请已接收。受理编号：{receiptId}",
+          failure: "暂时无法提交咨询申请，请稍后重试。",
+          configurationFailure: "无法载入当前同意文件，请稍后重试。",
+          invalid: "请检查输入内容后重试。",
         },
         submit: "提交咨询申请",
       },
@@ -663,6 +761,7 @@ const localizedText = {
       contact: "联系方式",
       privacy: "个人信息处理方针",
       marketingWithdraw: "撤回营销同意",
+      policies: "运营说明",
       rights: "保留所有权利。",
     },
     office: {
@@ -674,6 +773,10 @@ const localizedText = {
       email: OFFICE.email,
       address: "首尔特别市松坡区法院路92号212室（文井洞，Partners 1）",
       nearby: "文井站附近",
+      addressLabel: "地址",
+      phoneLabel: "电话",
+      faxLabel: "传真",
+      emailLabel: "电子邮箱",
     },
     policies: {
       privacyHeading: "个人信息处理方针",
@@ -762,6 +865,14 @@ const localizedText = {
       consultation: "申請諮詢",
       location: "來訪路線",
     },
+    accessibility: {
+      skipToContent: "跳至主要內容",
+      primaryNavigation: "主要導覽",
+      mobileNavigation: "行動版導覽",
+      openMenu: "開啟選單",
+      languageSelection: "選擇語言",
+      additionalContactOptions: "其他聯絡方式",
+    },
     buttons: {
       consultation: "申請諮詢",
       phone: "電話聯絡",
@@ -805,6 +916,8 @@ const localizedText = {
     forms: {
       consultation: {
         labels: {
+          consent: "同意事項",
+          website: "網站（請留空）",
           locale: "諮詢語言",
           category: "諮詢領域",
           name: "姓名",
@@ -827,6 +940,7 @@ const localizedText = {
           marketingConsent: "可選項目，預設未勾選。",
           sensitiveIdWarning: "請勿填寫居民登記號、護照號、外國人登記號等敏感識別資料。",
           noAttachments: "此階段不接收附件。",
+          noJavaScript: "安全線上提交需要JavaScript。如無法使用，請透過電話或電子郵件聯絡。",
         },
         errors: {
           required: "請填寫必填項目。",
@@ -834,6 +948,13 @@ const localizedText = {
           invalidEmail: "請輸入有效的電子郵件地址。",
           messageLength: "諮詢內容應為20至2,000個字元。",
           privacyRequired: "必須同意個人資料處理後才能提交。",
+        },
+        status: {
+          submitting: "正在提交諮詢申請…",
+          success: "諮詢申請已接收。受理編號：{receiptId}",
+          failure: "暫時無法提交諮詢申請，請稍後重試。",
+          configurationFailure: "無法載入目前同意文件，請稍後重試。",
+          invalid: "請檢查輸入內容後重試。",
         },
         submit: "提交諮詢申請",
       },
@@ -844,6 +965,7 @@ const localizedText = {
       contact: "聯絡方式",
       privacy: "個人資料處理方針",
       marketingWithdraw: "撤回行銷同意",
+      policies: "營運說明",
       rights: "保留所有權利。",
     },
     office: {
@@ -855,6 +977,10 @@ const localizedText = {
       email: OFFICE.email,
       address: "首爾特別市松坡區法院路92號212室（文井洞，Partners 1）",
       nearby: "文井站附近",
+      addressLabel: "地址",
+      phoneLabel: "電話",
+      faxLabel: "傳真",
+      emailLabel: "電子郵件",
     },
     policies: {
       privacyHeading: "個人資料處理方針",
@@ -959,6 +1085,8 @@ const pageNarrative = {
       consultationTitle: "상담 요청을 남겨 주세요",
       consultationBody: "민감한 식별정보와 첨부파일 없이 검토에 필요한 기본 사실만 보내 주세요.",
       portraitLabel: "승인된 대표 사진을 위한 자리",
+      sectionLabels: { navigator: "업무 찾기", principles: "업무 원칙", profile: "대표 행정사" },
+      insightCategories: ["공공조달", "기업행정", "출입국·비자"],
     },
     about: {
       intro: "지혜행정사사무소는 공개가 승인된 대표자의 교육, 경력, 자격 정보를 바탕으로 업무 범위를 안내합니다.",
@@ -966,6 +1094,11 @@ const pageNarrative = {
       careerHeading: "경력",
       qualificationsHeading: "자격",
       disclosure: "기관명이 OO로 마스킹된 자료는 비공개 요약으로만 표시하며 임의로 복원하지 않습니다.",
+    },
+    profile: {
+      education: REPRESENTATIVE.education,
+      career: REPRESENTATIVE.career,
+      qualifications: REPRESENTATIVE.qualifications,
     },
     servicesIntro: "여섯 업무군의 세부 항목을 확인하고 현재 상황에 맞는 상담 분야를 선택해 주세요.",
     process: {
@@ -1021,6 +1154,8 @@ const pageNarrative = {
       consultationTitle: "Tell us what you need reviewed",
       consultationBody: "Send only the basic facts needed for review, without sensitive identifiers or attachments.",
       portraitLabel: "Reserved slot for an approved representative portrait",
+      sectionLabels: { navigator: "Service navigator", principles: "Working principles", profile: "Representative profile" },
+      insightCategories: ["Public procurement", "Business administration", "Immigration and visas"],
     },
     about: {
       intro: "JIHYE Administrative Attorney presents its scope using only approved education, career, and qualification details.",
@@ -1028,6 +1163,15 @@ const pageNarrative = {
       careerHeading: "Career",
       qualificationsHeading: "Qualifications",
       disclosure: "Institutions masked as OO remain non-public summaries and are never inferred or resolved.",
+    },
+    profile: {
+      education: [
+        "Hanyang University, Bachelor's and Master's in Business Administration",
+        "Ajou University Graduate School, Master's in Education and Counseling",
+        "Namseoul University, Master's Program in AI Public Procurement",
+      ],
+      career: ["Director, Public Procurement Research Institute"],
+      qualifications: ["11th Administrative Attorney", "ISO 45001 Auditor"],
     },
     servicesIntro: "Review the detailed work in each of the six service groups and choose the closest consultation category.",
     process: {
@@ -1083,6 +1227,8 @@ const pageNarrative = {
       consultationTitle: "请留下咨询需求",
       consultationBody: "请勿提交敏感身份信息或附件，仅发送审查所需基本事实。",
       portraitLabel: "预留的代表照片位置",
+      sectionLabels: { navigator: "业务导航", principles: "办理原则", profile: "代表行政士简介" },
+      insightCategories: ["公共采购", "企业行政", "出入境签证"],
     },
     about: {
       intro: "JIHYE行政士事务所仅依据获准公开的教育、经历与资格信息介绍业务范围。",
@@ -1090,6 +1236,11 @@ const pageNarrative = {
       careerHeading: "经历",
       qualificationsHeading: "资格",
       disclosure: "以OO遮蔽的机构仅作为非公开摘要，不作推断或还原。",
+    },
+    profile: {
+      education: ["汉阳大学经营学学士、硕士", "亚洲大学研究生院教育学与咨询硕士", "南首尔大学AI公共采购学硕士课程"],
+      career: ["公共采购研究所理事"],
+      qualifications: ["第11届行政士", "ISO 45001审核员"],
     },
     servicesIntro: "查看六个业务组的详细项目，并选择最接近的咨询类别。",
     process: {
@@ -1139,6 +1290,8 @@ const pageNarrative = {
       consultationTitle: "請留下諮詢需求",
       consultationBody: "請勿提交敏感身分資訊或附件，僅傳送審查所需基本事實。",
       portraitLabel: "預留的代表照片位置",
+      sectionLabels: { navigator: "業務導覽", principles: "辦理原則", profile: "代表行政士簡介" },
+      insightCategories: ["公共採購", "企業行政", "出入境簽證"],
     },
     about: {
       intro: "JIHYE行政士事務所僅依據獲准公開的教育、經歷與資格資訊介紹業務範圍。",
@@ -1146,6 +1299,11 @@ const pageNarrative = {
       careerHeading: "經歷",
       qualificationsHeading: "資格",
       disclosure: "以OO遮蔽的機構僅作為非公開摘要，不作推斷或還原。",
+    },
+    profile: {
+      education: ["漢陽大學經營學學士、碩士", "亞洲大學研究所教育學與諮商碩士", "南首爾大學AI公共採購學碩士課程"],
+      career: ["公共採購研究所理事"],
+      qualifications: ["第11屆行政士", "ISO 45001稽核員"],
     },
     servicesIntro: "查看六個業務組的詳細項目，並選擇最接近的諮詢類別。",
     process: {
@@ -1187,6 +1345,7 @@ function buildLocaleContent(locale: Locale, text: LocaleText): LocaleSiteContent
 
   return {
     navigation: text.navigation,
+    accessibility: text.accessibility,
     buttons: text.buttons,
     headings: text.headings,
     meta,

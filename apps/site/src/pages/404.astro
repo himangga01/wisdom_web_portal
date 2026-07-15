@@ -1,5 +1,115 @@
 ---
-import PublicPage from "../components/PublicPage.astro";
+import { designTokens, type Locale } from "@wisdom/shared";
+
+import { siteContent } from "../content/site-content.js";
+import { toLocalizedPath } from "../lib/routes.js";
+import "../styles/global.css";
+
+const fallback = siteContent.ko;
+const colors = designTokens.color;
+const tokenStyle = [
+  `--wisdom-bronze:${colors.bronze}`,
+  `--wisdom-sand:${colors.sand}`,
+  `--wisdom-ivory:${colors.ivory}`,
+  `--wisdom-brown:${colors.brown}`,
+  `--wisdom-ink:${colors.ink}`,
+  `--wisdom-white:${colors.white}`,
+  `--wisdom-font-sans:${designTokens.font.sans}`,
+  `--wisdom-font-serif:${designTokens.font.serif}`,
+].join(";");
+const languageNames: Record<Locale, string> = {
+  ko: "한국어",
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+};
+const locale404Copy = Object.fromEntries(
+  (Object.keys(languageNames) as Locale[]).map((locale) => {
+    const content = siteContent[locale];
+    return [locale, {
+      lang: locale,
+      title: content.meta.notFound.title,
+      description: content.meta.notFound.description,
+      office: content.office.name,
+      heading: content.headings.notFound,
+      body: content.pages.notFoundBody,
+      backHome: content.buttons.backHome,
+      homeHref: toLocalizedPath(locale, "/"),
+      navigationLabel: content.accessibility.languageSelection,
+    }];
+  }),
+);
 ---
 
-<PublicPage locale="ko" route="/404" />
+<!DOCTYPE html>
+<html lang="ko" style={tokenStyle}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={fallback.meta.notFound.description} data-404-description />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content={colors.ivory} />
+    <title>{fallback.meta.notFound.title}</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="/" data-404-brand>
+          <span class="brand-mark" aria-hidden="true">智</span>
+          <span class="brand-name">{fallback.office.name}</span>
+        </a>
+        <nav class="language-links" aria-label={fallback.accessibility.languageSelection} data-404-languages>
+          {(Object.keys(languageNames) as Locale[]).map((locale) => (
+            <a href={toLocalizedPath(locale, "/")} lang={locale} hreflang={locale}>{languageNames[locale]}</a>
+          ))}
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <section class="page-hero">
+        <div class="shell narrow-shell">
+          <p class="eyebrow">404</p>
+          <h1 data-404-heading>{fallback.headings.notFound}</h1>
+          <p data-404-body>{fallback.pages.notFoundBody}</p>
+        </div>
+      </section>
+      <section class="page-content section">
+        <div class="shell narrow-shell not-found-card">
+          <span aria-hidden="true">404</span>
+          <a class="button button-primary" href="/" data-404-home>{fallback.buttons.backHome}</a>
+        </div>
+      </section>
+    </main>
+    <script is:inline define:vars={{ locale404Copy }}>
+      (() => {
+        const path = window.location.pathname.toLowerCase();
+        const locale = path === "/en" || path.startsWith("/en/")
+          ? "en"
+          : path === "/zh-hans" || path.startsWith("/zh-hans/")
+            ? "zh-Hans"
+            : path === "/zh-hant" || path.startsWith("/zh-hant/")
+              ? "zh-Hant"
+              : "ko";
+        if (locale === "ko") return;
+
+        const copy = locale404Copy[locale];
+        document.documentElement.lang = copy.lang;
+        document.title = copy.title;
+        document.querySelector("[data-404-description]")?.setAttribute("content", copy.description);
+        const brand = document.querySelector("[data-404-brand]");
+        brand?.setAttribute("href", copy.homeHref);
+        const brandName = brand?.querySelector(".brand-name");
+        if (brandName) brandName.textContent = copy.office;
+        const languageNavigation = document.querySelector("[data-404-languages]");
+        languageNavigation?.setAttribute("aria-label", copy.navigationLabel);
+        const heading = document.querySelector("[data-404-heading]");
+        if (heading) heading.textContent = copy.heading;
+        const body = document.querySelector("[data-404-body]");
+        if (body) body.textContent = copy.body;
+        const home = document.querySelector("[data-404-home]");
+        home?.setAttribute("href", copy.homeHref);
+        if (home) home.textContent = copy.backHome;
+      })();
+    </script>
+  </body>
+</html>

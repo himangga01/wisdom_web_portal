@@ -44,6 +44,34 @@ describe("public Astro page DOM", () => {
     }
   });
 
+  it("localizes homepage labels and representative facts without Korean leakage", async () => {
+    const englishHome = await renderPage("en", "/");
+    const englishAbout = await renderPage("en", "/about");
+    const simplifiedHome = await renderPage("zh-Hans", "/");
+    const traditionalAbout = await renderPage("zh-Hant", "/about");
+
+    for (const html of [englishHome, englishAbout, simplifiedHome, traditionalAbout]) {
+      for (const koreanFact of [
+        "한양대학교 경영학 학사·석사",
+        "아주대학교 대학원 교육학·상담 석사",
+        "공공조달연구소 이사",
+        "제11회 행정사",
+      ]) {
+        expect(html).not.toContain(koreanFact);
+      }
+    }
+
+    expect(englishAbout.replaceAll("&#39;", "'")).toContain(
+      "Hanyang University, Bachelor's and Master's in Business Administration",
+    );
+    expect(englishAbout).toContain("Director, Public Procurement Research Institute");
+    expect(simplifiedHome).toContain("业务导航");
+    expect(simplifiedHome).toContain("公共采购");
+    expect(simplifiedHome).not.toMatch(/>Navigator<|>Principles<|>Procurement<|>Enterprise<|>Immigration<|>Profile</);
+    expect(traditionalAbout).toContain("漢陽大學經營學學士、碩士");
+    expect(traditionalAbout).toContain("公共採購研究所理事");
+  });
+
   it("renders the consultation contract as a native form without fake success UI", async () => {
     const html = await renderPage("en", "/consultation");
 
@@ -65,7 +93,10 @@ describe("public Astro page DOM", () => {
     expect(html).toMatch(/name="privacyConsent"[^>]+required/);
     expect(html).toMatch(/name="marketingConsent"/);
     expect(html).not.toMatch(/name="marketingConsent"[^>]+checked/);
-    expect(html).not.toMatch(/type="file"|name="attachment"|success/i);
+    expect(html).not.toMatch(/type="file"|name="attachment"/i);
+    expect(html).toMatch(
+      /<div class="form-status" data-form-status role="status" aria-live="polite" hidden[^>]*>\s*<\/div>/,
+    );
   });
 
   it("renders operational-draft policy gates and a useful localized 404", async () => {

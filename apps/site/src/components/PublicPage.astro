@@ -3,7 +3,7 @@ import type { Locale } from "@wisdom/shared";
 
 import ConsultationForm from "./ConsultationForm.astro";
 import HomePage from "./HomePage.astro";
-import { OFFICE, REPRESENTATIVE, siteContent, type ServiceCategorySlug } from "../content/site-content.js";
+import { OFFICE, siteContent, type ServiceCategorySlug } from "../content/site-content.js";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { toLocalizedPath, type PublicRoute } from "../lib/routes.js";
 
@@ -79,15 +79,15 @@ const backToServices = toLocalizedPath(locale, "/services");
             <div class="profile-grid">
               <section class="content-card">
                 <h2>{content.pages.about.educationHeading}</h2>
-                <ul>{REPRESENTATIVE.education.map((item) => <li>{item}</li>)}</ul>
+                <ul>{content.pages.profile.education.map((item) => <li>{item}</li>)}</ul>
               </section>
               <section class="content-card">
                 <h2>{content.pages.about.careerHeading}</h2>
-                <ul>{REPRESENTATIVE.career.map((item) => <li>{item}</li>)}</ul>
+                <ul>{content.pages.profile.career.map((item) => <li>{item}</li>)}</ul>
               </section>
               <section class="content-card">
                 <h2>{content.pages.about.qualificationsHeading}</h2>
-                <ul>{REPRESENTATIVE.qualifications.map((item) => <li>{item}</li>)}</ul>
+                <ul>{content.pages.profile.qualifications.map((item) => <li>{item}</li>)}</ul>
               </section>
               <p class="operational-note full-span">{content.pages.about.disclosure}</p>
             </div>
@@ -146,10 +146,10 @@ const backToServices = toLocalizedPath(locale, "/services");
                 <h2>{content.office.name}</h2>
                 <p>{content.office.nearby}</p>
                 <dl>
-                  <div><dt>{locale === "ko" ? "주소" : locale === "en" ? "Address" : "地址"}</dt><dd>{content.office.address}</dd></div>
-                  <div><dt>{content.buttons.phone}</dt><dd><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></dd></div>
-                  <div><dt>Fax</dt><dd>{content.office.fax}</dd></div>
-                  <div><dt>Email</dt><dd><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></dd></div>
+                  <div><dt>{content.office.addressLabel}</dt><dd>{content.office.address}</dd></div>
+                  <div><dt>{content.office.phoneLabel}</dt><dd><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></dd></div>
+                  <div><dt>{content.office.faxLabel}</dt><dd>{content.office.fax}</dd></div>
+                  <div><dt>{content.office.emailLabel}</dt><dd><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></dd></div>
                 </dl>
               </address>
               <div class="map-geometry">
