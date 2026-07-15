@@ -38,3 +38,7 @@
 - 상담 요청의 필수 개인정보 동의, 조건부 이메일, 문자열·전화번호 정규화와 길이 경계를 테스트 우선으로 구현했다.
 - 운영 비밀값 누락과 인메모리 운영 DB를 거부하고 `NODE_ENV=test`에서만 안전한 기본값을 제공하는 환경 파서를 추가했다.
 - 승인된 bronze/sand/ivory 색상과 18개·500ms·64px·60ms 홈페이지 리빌 수치를 공용 디자인 토큰으로 고정했다.
+- Task 1 재검토에서 공용 동의 스키마·타입 export 누락과 clean checkout 워크스페이스 순서 문제를 확인해 테스트 우선으로 보완했다.
+- `privacyConsentSchema`, `marketingConsentSchema`와 추론 타입을 `@wisdom/shared` 공개 진입점에서 제공한다.
+- 루트 명령은 `packages/*`를 `apps/*`보다 먼저 처리하고 소비 명령 전에 shared 산출물을 생성하도록 변경했다.
+- 운영 PII 키 이름을 `PII_ENCRYPTION_KEY`로 통일하고 3개 운영 비밀값의 누락·약한 값·test-only 값 거부를 매개변수 테스트로 검증했다.

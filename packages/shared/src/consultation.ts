@@ -8,19 +8,21 @@ import {
 
 const consentVersionSchema = z.string().trim().min(1);
 
-const privacyConsentSchema = z
+export const privacyConsentSchema = z
   .object({
     version: consentVersionSchema,
     accepted: z.literal(true),
   })
   .strict();
+export type PrivacyConsent = z.infer<typeof privacyConsentSchema>;
 
-const marketingConsentSchema = z
+export const marketingConsentSchema = z
   .object({
     version: consentVersionSchema,
     accepted: z.boolean(),
   })
   .strict();
+export type MarketingConsent = z.infer<typeof marketingConsentSchema>;
 
 const optionalEmailSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.trim() : value),

@@ -1,0 +1,43 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+const packageJson = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
+
+test("orders package workspaces before consuming app workspaces", () => {
+  assert.deepEqual(packageJson.workspaces, ["packages/*", "apps/*"]);
+});
+
+test("builds shared output before typecheck, test, and e2e workspace commands", () => {
+  assert.equal(
+    packageJson.scripts["build:shared"],
+    "npm run build --workspace @wisdom/shared",
+  );
+
+  for (const command of ["typecheck", "test", "test:e2e"]) {
+    const script = packageJson.scripts[command];
+    const sharedBuildIndex = script.indexOf("npm run build:shared");
+    const workspaceCommandIndex = script.indexOf(
+      `npm run ${command} --workspaces --if-present`,
+    );
+
+    assert.notEqual(sharedBuildIndex, -1, `${command} must build @wisdom/shared first`);
+    assert.ok(
+      workspaceCommandIndex > sharedBuildIndex,
+      `${command} must run consuming workspaces after the shared build`,
+    );
+  }
+});
+
+test("keeps the orchestration contract in the root test and verify flows", () => {
+  assert.match(
+    packageJson.scripts.test,
+    /node --test scripts\/workspace-orchestration\.test\.mjs/,
+  );
+  assert.equal(
+    packageJson.scripts.verify,
+    "npm run typecheck && npm run test && npm run build && npm run test:e2e",
+  );
+});

@@ -30,7 +30,7 @@ npm run test:e2e
 npm run verify
 ```
 
-루트 명령은 `apps/*`와 `packages/*`의 같은 이름 스크립트를 실행하며, 아직 해당 스크립트가 없는 워크스페이스는 건너뜁니다. `verify`는 타입 검사, 단위 테스트, 빌드, E2E 테스트 순서로 전체 운영 워크스페이스를 확인합니다.
+루트 명령은 `packages/*`를 `apps/*`보다 먼저 처리하며, 아직 같은 이름의 스크립트가 없는 워크스페이스는 건너뜁니다. `typecheck`, `test`, `test:e2e`는 소비 앱을 실행하기 전에 `@wisdom/shared`를 빌드하므로 `packages/shared/dist`가 없는 새 checkout에서도 동작합니다. `verify`는 타입 검사, 단위 테스트, 빌드, E2E 테스트 순서로 전체 운영 워크스페이스를 확인합니다.
 
 ## 환경 설정
 

@@ -67,3 +67,7 @@
 - 보안 기본값: 운영 비밀값 3종 필수, 운영 인메모리 DB 금지, 이메일 `receipt-only`
 - 플랫폼 안내: Windows `npm.cmd`, macOS `npm`
 - 범위 보존: `prototypes/homepage-motion` 수정 없음
+- 재검토 보완: 공개 동의 schema/type 계약, dotted 전화번호 정규화 회귀 테스트
+- 환경 계약: `PII_ENCRYPTION_KEY`; 3개 운영 비밀값별 누락·약한 값·test-only 값 거부
+- 루트 오케스트레이션: `packages/*` → `apps/*`, 소비 명령 전 `@wisdom/shared` 빌드
+- clean checkout 증거: `packages/shared/dist` 삭제 후 `npm.cmd run verify` 통과 (Node test 3/3, Vitest 31/31)

@@ -8,7 +8,7 @@ const rawEnvironmentSchema = z.object({
   NODE_ENV: nodeEnvironmentSchema.default("development"),
   DATABASE_PATH: z.string().trim().min(1).optional(),
   ADMIN_SESSION_SECRET: z.string().trim().min(1).optional(),
-  CONSULTATION_ENCRYPTION_KEY: z.string().trim().min(1).optional(),
+  PII_ENCRYPTION_KEY: z.string().trim().min(1).optional(),
   WITHDRAWAL_TOKEN_SECRET: z.string().trim().min(1).optional(),
   EMAIL_PAYLOAD_MODE: emailPayloadModeSchema.default("receipt-only"),
 });
@@ -18,7 +18,7 @@ const resolvedEnvironmentSchema = z
     nodeEnv: nodeEnvironmentSchema,
     databasePath: z.string().trim().min(1),
     adminSessionSecret: z.string().min(32),
-    consultationEncryptionKey: z.string().min(32),
+    piiEncryptionKey: z.string().min(32),
     withdrawalTokenSecret: z.string().min(32),
     emailPayloadMode: emailPayloadModeSchema,
   })
@@ -38,7 +38,7 @@ const resolvedEnvironmentSchema = z
 
     for (const [path, value] of [
       ["adminSessionSecret", environment.adminSessionSecret],
-      ["consultationEncryptionKey", environment.consultationEncryptionKey],
+      ["piiEncryptionKey", environment.piiEncryptionKey],
       ["withdrawalTokenSecret", environment.withdrawalTokenSecret],
     ] as const) {
       if (value.startsWith("test-only-")) {
@@ -54,7 +54,7 @@ const resolvedEnvironmentSchema = z
 const TEST_DEFAULTS = {
   databasePath: ":memory:",
   adminSessionSecret: "test-only-admin-session-secret-0001",
-  consultationEncryptionKey: "test-only-consultation-key-000001",
+  piiEncryptionKey: "test-only-pii-encryption-key-00001",
   withdrawalTokenSecret: "test-only-withdrawal-token-000001",
 } as const;
 
@@ -70,9 +70,8 @@ export function parseEnvironment(source: EnvironmentSource): AppEnvironment {
     databasePath: raw.DATABASE_PATH ?? (testMode ? TEST_DEFAULTS.databasePath : undefined),
     adminSessionSecret:
       raw.ADMIN_SESSION_SECRET ?? (testMode ? TEST_DEFAULTS.adminSessionSecret : undefined),
-    consultationEncryptionKey:
-      raw.CONSULTATION_ENCRYPTION_KEY ??
-      (testMode ? TEST_DEFAULTS.consultationEncryptionKey : undefined),
+    piiEncryptionKey:
+      raw.PII_ENCRYPTION_KEY ?? (testMode ? TEST_DEFAULTS.piiEncryptionKey : undefined),
     withdrawalTokenSecret:
       raw.WITHDRAWAL_TOKEN_SECRET ??
       (testMode ? TEST_DEFAULTS.withdrawalTokenSecret : undefined),

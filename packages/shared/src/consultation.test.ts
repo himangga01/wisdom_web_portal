@@ -126,4 +126,13 @@ describe("consultation request validation", () => {
     expect(requestSchema().safeParse(validRequest({ phone: "1".repeat(21) })).success).toBe(false);
     expect(requestSchema().safeParse(validRequest({ phone: "010/1234/5678" })).success).toBe(false);
   });
+
+  it("normalizes permitted dotted phone punctuation", () => {
+    const result = requestSchema().safeParse(validRequest({ phone: "+82.10.1234.5678" }));
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({ phone: "+821012345678" });
+    }
+  });
 });
