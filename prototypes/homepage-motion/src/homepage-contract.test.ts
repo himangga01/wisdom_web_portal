@@ -7,29 +7,39 @@ const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
 const windowRef = new Window();
 windowRef.document.write(html);
 const documentRef = windowRef.document;
-const expectedRevealKeys = [
-  "hero-copy",
-  "portrait",
-  "practice",
-  "navigator-copy",
-  "navigator-choices",
-  "principles-heading",
-  "principles-group",
-  "insights-heading",
-  "insights-group",
-  "credentials",
-  "consultation-copy",
-  "consultation-card",
-];
+const expectedRevealTargets = [
+  { key: "hero-copy", direction: "left", delay: "0" },
+  { key: "portrait", direction: "right", delay: "0" },
+  { key: "practice-enterprise", direction: "left", delay: "0" },
+  { key: "practice-procurement", direction: "right", delay: "60" },
+  { key: "practice-visa", direction: "left", delay: "120" },
+  { key: "navigator-copy", direction: "left", delay: "0" },
+  { key: "navigator-choices", direction: "right", delay: "0" },
+  { key: "principles-heading", direction: "left", delay: "0" },
+  { key: "principle-direct", direction: "right", delay: "0" },
+  { key: "principle-alternative", direction: "left", delay: "60" },
+  { key: "principle-field", direction: "right", delay: "120" },
+  { key: "insights-heading", direction: "right", delay: "0" },
+  { key: "insight-procurement", direction: "left", delay: "0" },
+  { key: "insight-enterprise", direction: "right", delay: "60" },
+  { key: "insight-visa", direction: "left", delay: "120" },
+  { key: "credentials", direction: "right", delay: "0" },
+  { key: "consultation-copy", direction: "left", delay: "0" },
+  { key: "consultation-card", direction: "right", delay: "0" },
+] as const;
 
 describe("homepage contract", () => {
-  it("contains the twelve approved cinematic reveal targets", () => {
+  it("contains the eighteen approved dynamic reveal targets", () => {
     const targets = Array.from(documentRef.querySelectorAll("[data-reveal]")) as unknown as globalThis.HTMLElement[];
-    const keys = targets.map((target) => target.dataset.revealKey);
+    const contract = targets.map((target) => ({
+      key: target.dataset.revealKey,
+      direction: target.dataset.revealDirection,
+      delay: target.dataset.revealDelay,
+    }));
 
-    expect(targets).toHaveLength(12);
-    expect(keys).toEqual(expectedRevealKeys);
-    expect(new Set(keys).size).toBe(12);
+    expect(targets).toHaveLength(18);
+    expect(contract).toEqual(expectedRevealTargets);
+    expect(new Set(contract.map(({ key }) => key)).size).toBe(18);
   });
 
   it("contains the cinematic progress indicator", () => {
