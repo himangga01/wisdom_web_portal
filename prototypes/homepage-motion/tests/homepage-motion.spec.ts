@@ -44,6 +44,74 @@ test("shows final state from the first frame for reduced motion", async ({ page 
   expect(states.every((state) => state.opacity === "1" && state.transform === "none" && state.duration === "0s")).toBe(true);
 });
 
+test("applies the approved cinematic motion tokens", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, "IntersectionObserver", {
+    configurable: true,
+    value: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  }));
+  await page.goto("/");
+
+  const rootTokens = await page.locator("html").evaluate((root) => {
+    const style = getComputedStyle(root);
+    return {
+      duration: style.getPropertyValue("--duration-cinematic").trim(),
+      mediaDuration: style.getPropertyValue("--duration-media").trim(),
+      distance: style.getPropertyValue("--distance-cinematic").trim(),
+    };
+  });
+  expect(rootTokens).toEqual({
+    duration: "900ms",
+    mediaDuration: "780ms",
+    distance: "32px",
+  });
+
+  const heading = page.locator('[data-reveal-key="principles-heading"]');
+  await expect.poll(() => heading.evaluate((target) => {
+    const style = getComputedStyle(target);
+    return {
+      opacity: style.opacity,
+      filter: style.filter,
+      duration: style.transitionDuration,
+    };
+  })).toEqual({
+    opacity: "0.12",
+    filter: "blur(6px)",
+    duration: "0.9s",
+  });
+
+  const interactiveOpacity = await page
+    .locator('[data-reveal-key="navigator-choices"]')
+    .evaluate((target) => getComputedStyle(target).opacity);
+  expect(interactiveOpacity).toBe("1");
+});
+
+test("stages cards and exposes a two pixel scroll progress line", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, "IntersectionObserver", {
+    configurable: true,
+    value: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  }));
+  await page.goto("/");
+
+  const delays = await page.locator("#practice .practice-card > :first-child").evaluateAll((contents) =>
+    contents.map((content) => getComputedStyle(content).transitionDelay),
+  );
+  expect(delays).toEqual(["0s", "0.1s", "0.2s"]);
+
+  const progress = await page.locator(".scroll-progress").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { position: style.position, height: style.height };
+  });
+  expect(progress).toEqual({ position: "fixed", height: "2px" });
+});
+
 for (const width of [320, 390, 768, 1024, 1440]) {
   test(`has no horizontal overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });

@@ -947,52 +947,6 @@
   }
 }
 
-/* 모든 콘텐츠는 기본적으로 보인다. JS가 정상 준비된 경우에만 아래 모션 상태를 사용한다. */
-[data-reveal] {
-  opacity: 1;
-  transform: none;
-}
-
-[data-reveal-key="practice"],
-[data-reveal-key="principles-group"],
-[data-reveal-key="insights-group"] {
-  --reveal-delay: 80ms;
-}
-
-[data-reveal-key="insights-group"] {
-  --reveal-delay: 120ms;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .motion-enabled .reveal,
-  .motion-enabled .reveal-media,
-  .motion-enabled .reveal-group {
-    transition-property: opacity, transform;
-    transition-duration: 600ms;
-    transition-delay: var(--reveal-delay, 0ms);
-    transition-timing-function: var(--ease-out);
-  }
-
-  .motion-enabled .reveal-media {
-    transition-duration: 400ms;
-  }
-
-  .motion-enabled .reveal[data-revealed="false"] {
-    opacity: 0;
-    transform: translate3d(0, 18px, 0);
-  }
-
-  .motion-enabled .reveal-media[data-revealed="false"] {
-    opacity: 0;
-    transform: translate3d(0, 14px, 0) scale(0.985);
-  }
-
-  .motion-enabled .reveal-group[data-revealed="false"] {
-    opacity: 1;
-    transform: translate3d(0, 16px, 0);
-  }
-}
-
 @media (max-width: 1080px) {
   .shell {
     width: min(calc(100% - 48px), 940px);
@@ -1259,23 +1213,6 @@
     @apply flex-wrap;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .motion-enabled .reveal[data-revealed="false"] {
-      transform: translate3d(0, 10px, 0);
-    }
-
-    .motion-enabled .reveal-media[data-revealed="false"] {
-      transform: translate3d(0, 10px, 0) scale(0.99);
-    }
-
-    .motion-enabled .reveal-group[data-revealed="false"] {
-      transform: translate3d(0, 10px, 0);
-    }
-
-    .motion-enabled [data-reveal] {
-      transition-delay: 0ms;
-    }
-  }
 }
 
 @media (max-width: 410px) {
@@ -1311,25 +1248,5 @@
 
   .choice {
     padding: 17px 14px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0ms !important;
-    transition-delay: 0ms !important;
-  }
-
-  [data-reveal] {
-    opacity: 1 !important;
-    transform: none !important;
   }
 }
