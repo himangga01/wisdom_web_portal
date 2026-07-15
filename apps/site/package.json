@@ -1,0 +1,29 @@
+{
+  "name": "@wisdom/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@wisdom/shared": "0.1.0",
+    "astro": "^6.4.8",
+    "i18next": "^26.3.6"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/node": "^26.1.1",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
