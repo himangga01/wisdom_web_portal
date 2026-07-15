@@ -200,7 +200,14 @@ async function inspectRenderedResources(page) {
       if (visitedRuleLists.has(rules)) return;
       visitedRuleLists.add(rules);
       for (const rule of rules) {
-        if (rule.type === CSSRule.IMPORT_RULE) add(`${label}:@import`, rule.href);
+        if (rule.type === CSSRule.IMPORT_RULE) {
+          add(`${label}:@import`, rule.href);
+          try {
+            walkRules(rule.styleSheet.cssRules, label);
+          } catch {
+            // The import href is already reported when its child sheet cannot be inspected.
+          }
+        }
         if ("style" in rule && rule.style instanceof CSSStyleDeclaration) {
           scanStyle(rule.style, `${label}:rule`);
         }

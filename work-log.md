@@ -49,7 +49,7 @@
 
 ## 2026-07-15 · 동적 C1 독립 HTML 최종 재검증
 
-- 최종 자동 검사: Vitest 20/20, Playwright 31/31, TypeScript·Vite 운영 빌드 성공
+- 최종 자동 검사: Vitest 20/20, Playwright 32/32, TypeScript·Vite 운영 빌드 성공
 - 사전 상태 검사: Observer를 애플리케이션 시작 전에 정지하고 18개 대상의 `data-revealed="false"`, opacity 0.08, blur 2px, 좌우 64px, 500ms, 0/60/120ms를 전수 확인
 - 최종 상태 검사: 18개 대상의 `data-revealed="true"`, opacity 1, filter/translate 해제를 전수 확인
 - 전환 중 가로 넘침: 최대 620ms 뒤 프레임 여유를 포함해 650ms를 한 번 기다렸고, 64개 `requestAnimationFrame` 표본 모두 `scrollWidth: 390`, `clientWidth: 390`

@@ -347,6 +347,21 @@ test("rejects CSS @import and image-set references from actual rules", () => {
   expect(result.output).toContain("http://127.0.0.1:4173/images/representative-brochure.jpg");
 });
 
+test("rejects an external rendered resource nested in an embedded CSS import", () => {
+  const externalUrl = "https://example.com/dormant-imported-background.png";
+  const importedCss = `.unused-imported-resource { background-image: url("${externalUrl}"); }`;
+  const embeddedImport = `data:text/css,${encodeURIComponent(importedCss)}`;
+  const result = runVerifier(writeFixture(
+    "embedded-css-import.html",
+    baseHtml.replace("</head>", `<style>@import url("${embeddedImport}");</style></head>`),
+  ));
+
+  expect(result.status, result.output).not.toBe(0);
+  expect(result.output).toContain("Standalone HTML contains external rendered resources");
+  expect(result.output).toContain(externalUrl);
+  expect(result.output).not.toContain("External browser requests");
+});
+
 test("rejects a successful dynamically initiated external request", () => {
   const runtimeRequest = `<script>
     const requestProbe = new Image();
