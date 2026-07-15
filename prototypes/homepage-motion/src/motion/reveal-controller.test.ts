@@ -61,4 +61,114 @@ describe("RevealController core", () => {
     expect(target.dataset.revealed).toBe("true");
     expect(unobserve).toHaveBeenCalledTimes(1);
   });
+
+  it("shows every target without constructing an observer for reduced motion", () => {
+    const targets = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+    const createObserver = vi.fn();
+    const controller = createRevealController({ mediaQuery: createMediaQuery(true), createObserver });
+
+    controller.start();
+
+    expect(document.documentElement.classList.contains("motion-enabled")).toBe(false);
+    expect(targets.every((target) => target.dataset.revealed === "true")).toBe(true);
+    expect(createObserver).not.toHaveBeenCalled();
+  });
+
+  it("shows every target when IntersectionObserver is unsupported", () => {
+    const targets = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+    const controller = createRevealController({ mediaQuery: createMediaQuery(false), createObserver: null });
+
+    controller.start();
+
+    expect(document.documentElement.classList.contains("motion-enabled")).toBe(false);
+    expect(targets.every((target) => target.dataset.revealed === "true")).toBe(true);
+  });
+
+  it("recovers atomically when observer construction throws", () => {
+    const targets = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+    const controller = createRevealController({
+      mediaQuery: createMediaQuery(false),
+      createObserver: () => { throw new Error("forced initialization failure"); },
+    });
+
+    controller.start();
+
+    expect(document.documentElement.classList.contains("motion-enabled")).toBe(false);
+    expect(targets.every((target) => target.dataset.revealed === "true")).toBe(true);
+  });
+
+  it("reveals an interactive ancestor when focus enters", () => {
+    document.body.innerHTML = `<section data-reveal data-revealed="false"><a href="#consultation">상담</a></section>`;
+    const target = document.querySelector<HTMLElement>("[data-reveal]")!;
+    const controller = createRevealController({
+      mediaQuery: createMediaQuery(false),
+      createObserver: () => ({ observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }),
+    });
+    controller.start();
+
+    target.querySelector("a")!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+
+    expect(target.dataset.revealed).toBe("true");
+  });
+
+  it("disconnects and reveals all when reduced motion turns on", () => {
+    let changeListener: ((event: MediaQueryListEvent) => void) | undefined;
+    const disconnect = vi.fn();
+    const mediaQuery = {
+      ...createMediaQuery(false),
+      addEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+        changeListener = listener as (event: MediaQueryListEvent) => void;
+      },
+    } as unknown as MediaQueryList;
+    const controller = createRevealController({
+      mediaQuery,
+      createObserver: () => ({ observe: vi.fn(), unobserve: vi.fn(), disconnect }),
+    });
+    controller.start();
+
+    changeListener?.({ matches: true } as MediaQueryListEvent);
+
+    expect(document.documentElement.classList.contains("motion-enabled")).toBe(false);
+    expect(disconnect).toHaveBeenCalled();
+  });
+
+  it("reveals a direct hash destination", () => {
+    document.body.innerHTML = `<section id="principles"><div data-reveal data-revealed="false"></div></section>`;
+    window.history.replaceState({}, "", "#principles");
+    const target = document.querySelector<HTMLElement>("[data-reveal]")!;
+    const controller = createRevealController({
+      mediaQuery: createMediaQuery(false),
+      createObserver: () => ({ observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }),
+    });
+    controller.start();
+
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+
+    expect(target.dataset.revealed).toBe("true");
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("reveals targets that a fast scroll has already passed", () => {
+    const target = document.querySelector<HTMLElement>("[data-reveal]")!;
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: -200,
+      top: -200,
+      right: 300,
+      bottom: -20,
+      left: 0,
+      width: 300,
+      height: 180,
+      toJSON: () => ({}),
+    });
+    const controller = createRevealController({
+      mediaQuery: createMediaQuery(false),
+      createObserver: () => ({ observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() }),
+    });
+    controller.start();
+
+    window.dispatchEvent(new Event("pageshow"));
+
+    expect(target.dataset.revealed).toBe("true");
+  });
 });
