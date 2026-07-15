@@ -55,6 +55,26 @@ describe("consultation form adapter", () => {
     });
   });
 
+  it("normalizes formatted phones and enforces the shared eight-to-twenty digit boundaries", async () => {
+    const { buildConsultationSubmission } = await import("./consultation-adapter.js");
+
+    expect(buildConsultationSubmission(
+      formData({ phone: "02-123-456" }),
+      consentConfiguration,
+    ).consultation.phone).toBe("02123456");
+    expect(buildConsultationSubmission(
+      formData({ phone: "+12 (345) 6789-0123-4567-890" }),
+      consentConfiguration,
+    ).consultation.phone).toBe("+12345678901234567890");
+
+    for (const phone of ["--------", "1234567", "123456789012345678901"]) {
+      expect(() => buildConsultationSubmission(
+        formData({ phone }),
+        consentConfiguration,
+      ), phone).toThrow();
+    }
+  });
+
   it("loads and validates active consent versions with the signed form token", async () => {
     const { loadConsentConfiguration } = await import("./consultation-adapter.js");
     const fetchRef = vi.fn(async (

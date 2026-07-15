@@ -572,7 +572,7 @@ const localizedText = {
       privacyHeading: "Privacy Policy",
       marketingWithdrawHeading: "Withdraw Marketing Consent",
       draftNotice: "Operational draft — do not publish or use before legal review is complete.",
-      launchGate: "법률 검토 전 운영 금지",
+      launchGate: "Do not use before legal review",
     },
     serviceCatalog: {
       procurement: {
@@ -782,7 +782,7 @@ const localizedText = {
       privacyHeading: "个人信息处理方针",
       marketingWithdrawHeading: "撤回营销信息接收同意",
       draftNotice: "运营草案——完成法律审查前不得公开或使用。",
-      launchGate: "법률 검토 전 운영 금지",
+      launchGate: "法律审查完成前禁止使用",
     },
     serviceCatalog: {
       procurement: {
@@ -986,7 +986,7 @@ const localizedText = {
       privacyHeading: "個人資料處理方針",
       marketingWithdrawHeading: "撤回行銷資訊接收同意",
       draftNotice: "營運草案——完成法律審查前不得公開或使用。",
-      launchGate: "법률 검토 전 운영 금지",
+      launchGate: "法律審查完成前禁止使用",
     },
     serviceCatalog: {
       procurement: {

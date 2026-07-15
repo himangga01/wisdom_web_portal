@@ -3,6 +3,7 @@ import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { describe, expect, it } from "vitest";
 
 import PublicPage from "./PublicPage.astro";
+import { siteContent } from "../content/site-content.js";
 import type { PublicRoute } from "../lib/routes.js";
 
 async function renderPage(locale: Locale, route: PublicRoute): Promise<string> {
@@ -102,10 +103,17 @@ describe("public Astro page DOM", () => {
   it("renders operational-draft policy gates and a useful localized 404", async () => {
     const privacy = await renderPage("ko", "/privacy");
     const withdrawal = await renderPage("en", "/marketing/withdraw");
+    const simplifiedPrivacy = await renderPage("zh-Hans", "/privacy");
+    const traditionalWithdrawal = await renderPage("zh-Hant", "/marketing/withdraw");
     const missing = await renderPage("zh-Hans", "/404");
 
     expect(privacy).toContain("법률 검토 전 운영 금지");
-    expect(withdrawal).toContain("법률 검토 전 운영 금지");
+    expect(withdrawal).toContain("Do not use before legal review");
+    expect(simplifiedPrivacy).toContain("法律审查完成前禁止使用");
+    expect(traditionalWithdrawal).toContain("法律審查完成前禁止使用");
+    for (const locale of ["en", "zh-Hans", "zh-Hant"] as const) {
+      expect(siteContent[locale].policies.launchGate).not.toMatch(/[가-힣]/);
+    }
     expect(missing).toContain('name="robots" content="noindex"');
     expect(missing).toContain('href="/zh-hans"');
   });

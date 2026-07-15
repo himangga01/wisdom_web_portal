@@ -230,13 +230,32 @@ test("renders native consultation constraints and never fakes success", async ({
   await expect(form).toHaveAttribute("method", "post");
   await expect(form.locator('[name="message"]')).toHaveAttribute("minlength", "20");
   await expect(form.locator('[name="message"]')).toHaveAttribute("maxlength", "2000");
-  await expect(form.locator('[name="phone"]')).toHaveAttribute("maxlength", "20");
+  await expect(form.locator('[name="phone"]')).toHaveAttribute("maxlength", "40");
   await expect(form.locator('[name="privacyConsent"]')).toBeChecked({ checked: false });
   await expect(form.locator('[name="privacyConsent"]')).toHaveAttribute("required", "");
   await expect(form.locator('[name="marketingConsent"]')).not.toBeChecked();
   await expect(form.locator('input[type="file"]')).toHaveCount(0);
   await expect(page.getByText(/Do not enter resident, passport/)).toBeVisible();
   await expect(page.getByText(/success/i)).toHaveCount(0);
+});
+
+test("matches native phone validity to the shared eight-to-twenty digit contract", async ({ page }) => {
+  await page.goto("/en/consultation");
+  const phone = page.locator('[name="phone"]');
+  const cases = [
+    { value: "--------", valid: false },
+    { value: "02-123-456", valid: true },
+    { value: "+12 (345) 6789-0123-4567-890", valid: true },
+    { value: "1234567", valid: false },
+    { value: "123456789012345678901", valid: false },
+  ] as const;
+
+  for (const { value, valid } of cases) {
+    await phone.fill(value);
+    expect(await phone.inputValue(), value).toBe(value);
+    expect(await phone.evaluate((control: HTMLInputElement) => control.checkValidity()), value)
+      .toBe(valid);
+  }
 });
 
 test("submits schema-valid JSON with unchecked marketing and renders a validated receipt", async ({ page }) => {
