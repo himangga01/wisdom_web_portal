@@ -8,7 +8,7 @@ const prototypeRoot = resolve(scriptDir, "..");
 const workspaceRoot = resolve(prototypeRoot, "../..");
 const filePath = resolve(
   workspaceRoot,
-  ".superpowers/brainstorm/renders/wisdom-homepage-cinematic-demo.html",
+  ".superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html",
 );
 const html = await readFile(filePath, "utf8");
 
@@ -27,7 +27,7 @@ page.on("pageerror", (error) => pageErrors.push(error.message));
 try {
   await page.goto(pathToFileURL(filePath).href, { waitUntil: "load" });
   const targets = page.locator("[data-reveal]");
-  if (await targets.count() !== 12) throw new Error("Expected 12 reveal targets");
+  if (await targets.count() !== 18) throw new Error("Expected 18 reveal targets");
 
   for (let index = 0; index < await targets.count(); index += 1) {
     await targets.nth(index).scrollIntoViewIfNeeded();
@@ -44,7 +44,7 @@ try {
     clientWidth: document.documentElement.clientWidth,
   }));
 
-  if (!result.headingVisible || result.revealed !== 12) {
+  if (!result.headingVisible || result.revealed !== 18) {
     throw new Error(`Invalid standalone state: ${JSON.stringify(result)}`);
   }
   if (result.scrollWidth !== result.clientWidth) {

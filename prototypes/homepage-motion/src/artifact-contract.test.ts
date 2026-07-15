@@ -4,16 +4,22 @@ import { describe, expect, it } from "vitest";
 
 const capture = readFileSync(resolve(process.cwd(), "scripts/capture-motion.mjs"), "utf8");
 const standalone = readFileSync(resolve(process.cwd(), "scripts/build-standalone.mjs"), "utf8");
+const verifier = readFileSync(resolve(process.cwd(), "scripts/verify-standalone.mjs"), "utf8");
 
-describe("cinematic artifact contract", () => {
-  it("uses the approved cinematic artifact names", () => {
+describe("homepage demo artifact contract", () => {
+  it("keeps the approved cinematic capture artifacts", () => {
     expect(capture).toContain("wisdom-homepage-cinematic-desktop.png");
     expect(capture).toContain("wisdom-homepage-cinematic-mobile.png");
     expect(capture).toContain("wisdom-homepage-cinematic-scroll.webm");
-    expect(standalone).toContain("wisdom-homepage-cinematic-demo.html");
   });
 
-  it("waits long enough to record the 900ms reveal", () => {
+  it("uses the approved dynamic c1 standalone artifact", () => {
+    expect(standalone).toContain("wisdom-homepage-dynamic-c1-demo.html");
+    expect(verifier).toContain("wisdom-homepage-dynamic-c1-demo.html");
+    expect(verifier).toContain("Expected 18 reveal targets");
+  });
+
+  it("waits long enough to record the previous 900ms cinematic capture", () => {
     expect(capture).toContain("waitForTimeout(1050)");
   });
 });

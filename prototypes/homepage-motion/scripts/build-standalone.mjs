@@ -6,7 +6,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const prototypeRoot = resolve(scriptDir, "..");
 const workspaceRoot = resolve(prototypeRoot, "../..");
 const outputDir = resolve(workspaceRoot, ".superpowers/brainstorm/renders");
-const outputPath = resolve(outputDir, "wisdom-homepage-cinematic-demo.html");
+const outputPath = resolve(outputDir, "wisdom-homepage-dynamic-c1-demo.html");
 
 let html = await readFile(resolve(prototypeRoot, "dist/index.html"), "utf8");
 const scriptMatch = html.match(/<script type="module" crossorigin src="([^"]+)"><\/script>/);

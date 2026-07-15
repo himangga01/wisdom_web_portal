@@ -37,3 +37,12 @@
 - 독립 실행 검사: `file://`에서 12개 대상 리빌, 390px 가로 넘침 없음, 페이지 오류 없음
 - 최종 산출물: 데스크톱 PNG 489,338바이트, 모바일 PNG 171,522바이트, 스크롤 WebM 1,997,846바이트, 단일 HTML 144,046바이트
 - 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체
+
+## 2026-07-15 · 동적 C1 독립 HTML 전달
+
+- 동적 C1 최종값: 18개 대상, 500ms 지속시간, 64px 이동, 60ms 시차, 모바일 동일 강도
+- 선행 구현 커밋: Task 1 `e204a44`, Task 2 `a224b45`
+- 최종 자동 검사: Vitest 17/17, Playwright 16/16 통과
+- 독립 실행 검사: `file://`에서 18개 대상 리빌, `scrollWidth: 390`, `clientWidth: 390`, `pageErrors: []`
+- 독립 HTML: `.superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html` (142,717바이트)
+- 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체

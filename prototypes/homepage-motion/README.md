@@ -38,8 +38,9 @@ npm.cmd run verify:standalone
 - `standalone`: 별도 서버 없이 바로 열 수 있는 단일 HTML 생성
 
 `verify:standalone`은 운영 빌드 후 CSS·JavaScript·대표 사진을 포함한
-`.superpowers/brainstorm/renders/wisdom-homepage-cinematic-demo.html`을 만들고,
-Chromium에서 서버 없이 직접 열어 12개 모션과 모바일 너비를 검사합니다.
+`.superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html`을 만들고,
+Chromium에서 서버 없이 직접 열어 18개 좌우 모션과 모바일 너비를 검사합니다.
+기존 `wisdom-homepage-cinematic-demo.html`은 비교용으로 보존합니다.
 
 ## 시안 범위
 
