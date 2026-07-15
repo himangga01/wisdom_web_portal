@@ -19,8 +19,8 @@ test("reveals each target no more than once", async ({ page }) => {
 
   await page.goto("/");
   const targets = page.locator("[data-reveal]");
-  await expect(targets).toHaveCount(8);
-  for (let index = 0; index < 8; index += 1) {
+  await expect(targets).toHaveCount(12);
+  for (let index = 0; index < await targets.count(); index += 1) {
     await targets.nth(index).scrollIntoViewIfNeeded();
     await expect(targets.nth(index)).toHaveAttribute("data-revealed", "true");
   }
@@ -29,7 +29,7 @@ test("reveals each target no more than once", async ({ page }) => {
   const counts = await page.evaluate(() => (window as unknown as Window & {
     __revealCounts: Record<string, number>;
   }).__revealCounts);
-  expect(Object.keys(counts)).toHaveLength(8);
+  expect(Object.keys(counts)).toHaveLength(12);
   expect(Object.values(counts).every((count) => count === 1)).toBe(true);
 });
 

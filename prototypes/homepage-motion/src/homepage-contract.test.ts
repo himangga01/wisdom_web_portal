@@ -7,15 +7,36 @@ const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
 const windowRef = new Window();
 windowRef.document.write(html);
 const documentRef = windowRef.document;
+const expectedRevealKeys = [
+  "hero-copy",
+  "portrait",
+  "practice",
+  "navigator-copy",
+  "navigator-choices",
+  "principles-heading",
+  "principles-group",
+  "insights-heading",
+  "insights-group",
+  "credentials",
+  "consultation-copy",
+  "consultation-card",
+];
 
 describe("homepage contract", () => {
-  it("contains the eight approved reveal targets", () => {
+  it("contains the twelve approved cinematic reveal targets", () => {
     const targets = Array.from(documentRef.querySelectorAll("[data-reveal]")) as unknown as globalThis.HTMLElement[];
     const keys = targets.map((target) => target.dataset.revealKey);
 
-    expect(targets).toHaveLength(8);
-    expect(keys.every(Boolean)).toBe(true);
-    expect(new Set(keys).size).toBe(8);
+    expect(targets).toHaveLength(12);
+    expect(keys).toEqual(expectedRevealKeys);
+    expect(new Set(keys).size).toBe(12);
+  });
+
+  it("contains the cinematic progress indicator", () => {
+    const progress = documentRef.querySelector(".scroll-progress") as unknown as globalThis.HTMLElement | null;
+
+    expect(progress).not.toBeNull();
+    expect(progress?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("keeps interactive reveal containers visible", () => {
