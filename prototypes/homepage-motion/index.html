@@ -3,11 +3,174 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="지혜행정사사무소 홈페이지 스크롤 모션 샘플">
-    <title>지혜행정사사무소 — Scroll Motion Sample</title>
+    <meta name="description" content="기업행정, 공공조달, 출입국·비자 업무를 대표행정사가 직접 검토하는 지혜행정사사무소 홈페이지 샘플">
+    <meta name="theme-color" content="#5d4936">
+    <title>지혜행정사사무소 | 기업행정·공공조달·출입국 비자</title>
   </head>
   <body>
-    <main><h1>지혜행정사사무소 모션 샘플</h1></main>
+    <a class="skip-link" href="#main-content">본문으로 바로가기</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top" aria-label="지혜행정사사무소 홈">
+          <span class="brand-seal serif" aria-hidden="true">지혜</span>
+          <span>
+            <strong class="brand-name">지혜행정사사무소</strong>
+            <small class="brand-en">JIHYE ADMINISTRATIVE ATTORNEY</small>
+          </span>
+        </a>
+
+        <nav aria-label="주요 메뉴">
+          <a href="#practice">전문업무</a>
+          <a href="#navigator">업무 찾기</a>
+          <a href="#principles">업무 원칙</a>
+          <a href="#insights">전문정보</a>
+          <a href="#representative">대표행정사</a>
+        </nav>
+
+        <div class="header-tools">
+          <div class="language" aria-label="언어 선택">
+            <button type="button" aria-pressed="true">KO</button><span>·</span>
+            <button type="button" aria-pressed="false">EN</button><span>·</span>
+            <button type="button" aria-pressed="false">简</button><span>·</span>
+            <button type="button" aria-pressed="false">繁</button>
+          </div>
+          <a class="menu-toggle" href="#practice" aria-label="주요 메뉴로 이동">☰</a>
+          <a class="header-cta" href="#consultation">상담 요청서 작성</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="shell hero-grid">
+          <div class="hero-copy">
+            <div class="eyebrow">Administrative strategy · Seoul</div>
+            <h1 class="serif" id="hero-title">복잡한 행정 앞에서<br><span class="accent">가능한 다음 단계</span>를<br>설계합니다.</h1>
+            <p class="hero-lead">기업의 성장과 공공시장 진입, 사람의 이동에는 정확한 행정 판단이 필요합니다. 강지혜 대표행정사가 상담 내용을 직접 확인하고 기업행정·공공조달·출입국·비자의 진행 방향과 준비사항을 검토합니다.</p>
+            <div class="hero-actions">
+              <a class="primary" href="#consultation">상담 요청서 작성</a>
+              <a class="secondary" href="#kakao">카카오 상담</a>
+              <a class="secondary" href="tel:01084150023">전화 010-8415-0023</a>
+            </div>
+            <div class="hero-note">대표행정사 1:1 직접 상담 · 문정역 인근</div>
+          </div>
+
+          <aside class="portrait-wrap reveal-media" data-reveal data-reveal-key="portrait" data-revealed="false" aria-label="강지혜 대표행정사">
+            <div class="portrait-side">REPRESENTATIVE ADMINISTRATIVE ATTORNEY</div>
+            <div class="portrait-frame" role="img" aria-label="강지혜 대표행정사 브로슈어 사진"></div>
+            <div class="portrait-label"><strong class="serif">강지혜 대표행정사</strong><span>JIHYE KANG</span></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="practice-summary" id="practice" aria-label="세 전문 영역">
+        <div class="shell practice-grid reveal-group" data-reveal data-reveal-key="practice" data-revealed="false">
+          <a class="practice practice-card" href="#navigator"><span class="index">01</span><h2>기업행정</h2><p>기업인증 · 인허가 · 법인설립 · 안전보건평가</p><span class="arrow" aria-hidden="true">↗</span></a>
+          <a class="practice practice-card" href="#navigator"><span class="index">02</span><h2>공공조달</h2><p>나라장터 · 직접생산 · MAS · 혁신·우수제품</p><span class="arrow" aria-hidden="true">↗</span></a>
+          <a class="practice practice-card" href="#navigator"><span class="index">03</span><h2>출입국·비자</h2><p>취업·투자·결혼비자 · 영주권 · 국적 · 체류연장</p><span class="arrow" aria-hidden="true">↗</span></a>
+        </div>
+      </section>
+
+      <section class="navigator-section" id="navigator" aria-labelledby="navigator-title">
+        <div class="shell navigator-shell">
+          <div class="navigator-intro reveal" data-reveal data-reveal-key="navigator-copy" data-revealed="false">
+            <div class="eyebrow">Decision navigator</div>
+            <h2 class="serif" id="navigator-title">업무 이름을 몰라도<br>괜찮습니다.</h2>
+            <p>현재 처한 상황에서 시작하면 필요한 행정 절차와 준비 방향을 찾을 수 있습니다. 정확한 업무는 상담 과정에서 함께 확인합니다.</p>
+            <div class="navigator-steps"><span>STEP 01 · 상황 선택</span><div class="step-line" aria-hidden="true"><i></i><i></i><i></i></div></div>
+          </div>
+
+          <div class="finder-panel">
+            <input type="radio" name="need" id="need-procurement">
+            <input type="radio" name="need" id="need-enterprise">
+            <input type="radio" name="need" id="need-visa">
+            <input type="radio" name="need" id="need-unknown">
+            <div class="question-label">QUESTION 01</div>
+            <h3>지금 가장 가까운 상황을 선택해 보세요.</h3>
+            <p class="finder-guide">선택하면 우선 확인할 경로를 미리 보여드립니다.</p>
+            <div class="choices">
+              <label class="choice" for="need-procurement"><span class="choice-icon">◇</span><span><strong>공공기관 입찰을 준비 중이에요</strong><small>나라장터 · 직접생산 · MAS</small></span></label>
+              <label class="choice" for="need-enterprise"><span class="choice-icon">□</span><span><strong>기업 인증이나 인허가가 필요해요</strong><small>기업인증 · 평가 · 법인 설립</small></span></label>
+              <label class="choice" for="need-visa"><span class="choice-icon">○</span><span><strong>외국인 채용·체류를 준비해요</strong><small>취업 · 투자 · 체류자격</small></span></label>
+              <label class="choice" for="need-unknown"><span class="choice-icon">＋</span><span><strong>어떤 절차가 필요한지 모르겠어요</strong><small>상황을 먼저 확인해 안내</small></span></label>
+            </div>
+            <div class="route-result" aria-live="polite">
+              <div class="route-copy route-default"><small>업무 찾기</small><strong>가장 가까운 상황을 선택하면 우선 확인할 내용을 보여드립니다.</strong></div>
+              <div class="route-copy route-procurement"><small>선택한 경로</small><strong>공공조달 진입 준비 → 현재 보유 요건 확인</strong></div>
+              <div class="route-copy route-enterprise"><small>선택한 경로</small><strong>기업 목적 확인 → 적합한 인증·인허가 비교</strong></div>
+              <div class="route-copy route-visa"><small>선택한 경로</small><strong>입국·체류 목적 확인 → 가능한 체류자격 검토</strong></div>
+              <div class="route-copy route-unknown"><small>선택한 경로</small><strong>사실관계 정리 → 필요한 행정 절차 함께 찾기</strong></div>
+              <a href="#consultation">상담 요청으로 이어가기 →</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="principles" id="principles" aria-labelledby="principles-title">
+        <div class="shell">
+          <div class="section-head reveal" data-reveal data-reveal-key="principles-heading" data-revealed="false">
+            <div><div class="eyebrow">How we work</div><h2 class="serif" id="principles-title">한 가지 답보다<br>현실적인 진행 경로와 대안</h2></div>
+            <p>서류 작성에만 머물지 않습니다. 의뢰인의 목표와 사실관계를 기준으로 변수와 대체 경로까지 검토하고, 필요한 경우 현장을 확인합니다.</p>
+          </div>
+          <div class="principle-grid reveal-group" data-reveal data-reveal-key="principles-group" data-revealed="false">
+            <article class="principle"><span class="index">01</span><h3>대표 1:1 밀착 처리</h3><p>상담부터 진행 방향, 보완사항까지 강지혜 대표행정사가 직접 확인합니다.</p></article>
+            <article class="principle"><span class="index">02</span><h3>다각적 분석과 대안 경로</h3><p>행정 절차의 변수와 불승인 가능성을 검토하고 대체 진행 방향을 함께 살핍니다.</p></article>
+            <article class="principle"><span class="index">03</span><h3>현장 중심 사실조사</h3><p>필요한 경우 현장과 실태를 확인해 서류와 실제 상황의 간극을 줄입니다.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="insights" id="insights" aria-labelledby="insights-title">
+        <div class="shell">
+          <div class="section-head reveal" data-reveal data-reveal-key="insights-heading" data-revealed="false">
+            <div><div class="eyebrow">Latest insight</div><h2 class="serif" id="insights-title">먼저 읽어보는<br>최신 전문정보</h2></div>
+            <p>업무를 맡기 전에도 판단에 도움이 되는 정보를 확인할 수 있도록 제도와 절차를 쉽게 정리합니다. 게시 전 대표행정사가 내용을 검토합니다.</p>
+          </div>
+          <div class="insight-grid reveal-group" data-reveal data-reveal-key="insights-group" data-revealed="false">
+            <article class="article-card" id="guide-1"><div class="article-meta"><span>공공조달</span><span>검토 · 2026.07</span></div><h3 class="serif">나라장터 진입 전,<br>우리 기업이 먼저 확인할 것</h3><p>직접생산확인, 공장등록, 다수공급자계약의 목적과 준비 순서를 살펴봅니다.</p><a href="https://m.blog.naver.com/wisdom_jhk" target="_blank" rel="noreferrer">안내문 읽기 →</a></article>
+            <article class="article-card featured" id="guide-2"><div class="article-meta"><span>기업행정</span><span>검토 · 2026.07</span></div><h3 class="serif">벤처·이노비즈·메인비즈,<br>목적에 따라 무엇이 다를까요?</h3><p>기업의 현재 단계와 활용 목적에 따라 달라지는 기본 검토사항을 정리합니다.</p><a href="https://m.blog.naver.com/wisdom_jhk" target="_blank" rel="noreferrer">네이버 블로그 보기 →</a></article>
+            <article class="article-card" id="guide-3"><div class="article-meta"><span>출입국·비자</span><span>검토 · 2026.07</span></div><h3 class="serif">외국인 전문인력 채용 전<br>E-7 요건 확인하기</h3><p>직종, 경력, 학력과 고용기업 요건을 검토할 때 필요한 질문을 안내합니다.</p><a href="https://m.blog.naver.com/wisdom_jhk" target="_blank" rel="noreferrer">안내문 읽기 →</a></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="credential-bar" id="representative" aria-label="대표행정사 주요 이력">
+        <div class="shell credential-grid">
+          <div class="representative"><span class="rep-monogram">KJH</span><div><strong>강지혜 대표행정사</strong><p>상담 내용을 직접 확인하고 업무 방향을 안내합니다.</p></div></div>
+          <div class="credential"><small>EDUCATION</small><b>한양대학교 경영학 학사·석사<br>아주대학교 대학원 교육학·상담 석사</b></div>
+          <div class="credential"><small>PROCUREMENT</small><b>남서울대학교 AI공공조달학 석사과정<br>공공조달연구소 이사</b></div>
+          <div class="credential"><small>QUALIFICATION</small><b>제11회 행정사<br>ISO 45001 심사원</b></div>
+        </div>
+      </section>
+
+      <section class="consultation" id="consultation" aria-labelledby="consultation-title">
+        <div class="shell consultation-grid">
+          <div class="consultation-copy reveal" data-reveal data-reveal-key="consultation-copy" data-revealed="false">
+            <div class="eyebrow">Request a consultation</div>
+            <h2 class="serif" id="consultation-title">현재 상황과 원하는 목표를<br>상담 요청서에 남겨주세요.</h2>
+            <p>내용을 확인한 뒤 등록된 연락처로 안내드립니다. 상담 요청 전 개인정보 수집·이용 동의를 확인합니다.</p>
+          </div>
+          <div class="office-card">
+            <h3 class="serif">지혜행정사사무소</h3>
+            <div class="office-data">
+              <span><b>대표행정사</b>강지혜 행정사</span><span><b>전화</b><a href="tel:01084150023">010-8415-0023</a></span>
+              <span><b>팩스</b>0504-051-0023</span><span><b>이메일</b><a href="mailto:kjihye0023@naver.com">kjihye0023@naver.com</a></span>
+              <span><b>주소</b>서울특별시 송파구 법원로 92, 212호<br>(문정동, 파트너스1)</span><span><b>위치</b><a href="https://naver.me/GprFCirq" target="_blank" rel="noreferrer">문정역 인근 · 지도 보기</a></span>
+            </div>
+            <div class="office-actions"><a class="primary" href="#consultation">상담 요청서 작성</a><a class="secondary" id="kakao" href="#kakao">카카오</a><a class="secondary" href="tel:01084150023">전화</a></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="shell footer-grid">
+        <div class="footer-brand"><strong>지혜행정사사무소</strong><span>JIHYE Administrative Attorney · 대표 강지혜</span></div>
+        <div class="footer-links"><a href="#privacy">개인정보처리방침</a><a href="mailto:kjihye0023@naver.com?subject=마케팅%20수신%20철회">마케팅 수신 철회</a><span>서울 송파구 법원로 92, 212호</span></div>
+      </div>
+    </footer>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
