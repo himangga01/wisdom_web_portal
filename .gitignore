@@ -1,1 +1,7 @@
 .worktrees/
+.codex-remote-attachments/
+.superpowers/
+prototypes/homepage-motion/node_modules/
+prototypes/homepage-motion/dist/
+prototypes/homepage-motion/playwright-report/
+prototypes/homepage-motion/test-results/
