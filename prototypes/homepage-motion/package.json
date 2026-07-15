@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "capture": "npm run build && node scripts/capture-motion.mjs",
-    "standalone": "npm run build && node scripts/build-standalone.mjs"
+    "standalone": "npm run build && node scripts/build-standalone.mjs",
+    "verify:standalone": "npm run standalone && node scripts/verify-standalone.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

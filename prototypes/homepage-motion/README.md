@@ -28,6 +28,7 @@ npm run test:e2e
 npm run build
 npm run capture
 npm run standalone
+npm.cmd run verify:standalone
 ```
 
 - `test`: 모션 상태와 홈페이지 정적 계약 검사
@@ -35,6 +36,10 @@ npm run standalone
 - `build`: TypeScript 검사와 Vite 운영 빌드
 - `capture`: 데스크톱·모바일 PNG와 모바일 스크롤 WebM 생성
 - `standalone`: 별도 서버 없이 바로 열 수 있는 단일 HTML 생성
+
+`verify:standalone`은 운영 빌드 후 CSS·JavaScript·대표 사진을 포함한
+`.superpowers/brainstorm/renders/wisdom-homepage-cinematic-demo.html`을 만들고,
+Chromium에서 서버 없이 직접 열어 12개 모션과 모바일 너비를 검사합니다.
 
 ## 시안 범위
 
