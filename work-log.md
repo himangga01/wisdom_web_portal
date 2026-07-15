@@ -57,3 +57,13 @@
 - 독립 HTML: 142,838바이트, SHA-256 `D6F7DCD60409FF965C4CB40823F767F90B47A06527D3BF1A4EF835E3724BE5DF`; 작업트리와 메인 프로젝트 복사본 일치
 - 시네마틱 보존: 캡처 명령을 실행하지 않았고 데스크톱 PNG `22D76E30…E8A3`, 모바일 PNG `03B96A79…4117`, 스크롤 WebM `B8F55A77…E7175` 해시 유지
 - 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체
+
+## 2026-07-15 · 운영 포털 Task 1 기반 구성
+
+- 작업 브랜치: `feat/production-portal`; 기준 커밋 `ea54b6b`
+- 워크스페이스: Node.js 24, npm 12, `apps/*`, `packages/*`
+- 공용 패키지: `packages/shared`의 계약, 상담 검증, 환경 파서, 디자인 토큰
+- 테스트 우선 구현: 계약 7개, 상담 7개, 환경 6개, 디자인 토큰 2개
+- 보안 기본값: 운영 비밀값 3종 필수, 운영 인메모리 DB 금지, 이메일 `receipt-only`
+- 플랫폼 안내: Windows `npm.cmd`, macOS `npm`
+- 범위 보존: `prototypes/homepage-motion` 수정 없음

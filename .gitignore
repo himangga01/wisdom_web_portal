@@ -1,6 +1,15 @@
 .worktrees/
 .codex-remote-attachments/
 .superpowers/
+node_modules/
+packages/*/dist/
+apps/*/dist/
+apps/*/.astro/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+data/
 prototypes/homepage-motion/node_modules/
 prototypes/homepage-motion/dist/
 prototypes/homepage-motion/playwright-report/

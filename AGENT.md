@@ -33,3 +33,8 @@
 - 실제 DOM·CSSOM 리소스와 메인 문서 외 브라우저 요청을 검사했으며 `consoleErrors`, `pageErrors`, `requestFailures`, `externalRequests`는 모두 비어 있었다.
 - 동적 C1 독립 HTML은 142,838바이트, SHA-256 `D6F7DCD60409FF965C4CB40823F767F90B47A06527D3BF1A4EF835E3724BE5DF`이며 작업트리와 메인 프로젝트 복사본이 일치한다.
 - 캡처를 다시 실행하지 않았고 기존 시네마틱 PNG 2개와 WebM 1개의 SHA-256이 변경 전 기준과 일치함을 확인했다.
+- 운영 포털 Task 1에서 Node.js 24·npm 12 기반 루트 워크스페이스와 `packages/shared`를 구성했다.
+- 출시 언어 4개, 상담 분류·상태·연락 방식, 알림·글 상태, 접수 응답·API 오류 계약을 Zod와 TypeScript 타입으로 중앙화했다.
+- 상담 요청의 필수 개인정보 동의, 조건부 이메일, 문자열·전화번호 정규화와 길이 경계를 테스트 우선으로 구현했다.
+- 운영 비밀값 누락과 인메모리 운영 DB를 거부하고 `NODE_ENV=test`에서만 안전한 기본값을 제공하는 환경 파서를 추가했다.
+- 승인된 bronze/sand/ivory 색상과 18개·500ms·64px·60ms 홈페이지 리빌 수치를 공용 디자인 토큰으로 고정했다.
