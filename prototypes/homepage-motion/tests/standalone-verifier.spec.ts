@@ -76,20 +76,48 @@ function successPayload(stdout: string) {
   return JSON.parse(outputLine) as {
     contract: unknown;
     rootTokens: unknown;
-    initialStates: {
-      left: { direction: string; translatePx: number; durationMs: number };
-      right: { direction: string; translatePx: number; durationMs: number };
+    preReveal: {
+      motionEnabled: boolean;
+      states: Array<{
+        key: string;
+        direction: string;
+        delay: string;
+        revealed: string;
+        opacity: number;
+        filter: string;
+        translate: { x: number; y: number };
+        durationMs: number;
+        delayMs: number;
+        transitionProperties: string[];
+        timingFunctions: string[];
+      }>;
+      overflow: { scrollWidth: number; clientWidth: number; overflow: boolean };
     };
-    overflowChecks: Array<{ stage: string; overflow: boolean }>;
+    final: {
+      states: Array<{
+        key: string;
+        revealed: string;
+        opacity: number;
+        filter: string;
+        translate: string;
+      }>;
+    };
+    overflow: {
+      sampleCount: number;
+      overflowedFrames: Array<{ scrollWidth: number; clientWidth: number }>;
+      maxDurationDelayMs: number;
+      waitedMs: number;
+    };
     failures: {
       consoleErrors: string[];
       pageErrors: string[];
       requestFailures: string[];
+      externalRequests: string[];
     };
   };
 }
 
-test("verifies the complete pre-scroll contract and every overflow checkpoint", () => {
+test("verifies all pre-reveal and final motion states with continuous overflow evidence", () => {
   const navigationLinks = `
     <a href="https://example.com/guide">External guide</a>
     <a href="mailto:hello@example.com">Email</a>
@@ -106,11 +134,44 @@ test("verifies the complete pre-scroll contract and every overflow checkpoint", 
   const payload = successPayload(result.stdout);
   expect(payload.contract).toEqual(expectedContract);
   expect(payload.rootTokens).toEqual({ duration: "500ms", distance: "64px", stagger: "60ms" });
-  expect(payload.initialStates.left).toMatchObject({ direction: "left", translatePx: -64, durationMs: 500 });
-  expect(payload.initialStates.right).toMatchObject({ direction: "right", translatePx: 64, durationMs: 500 });
-  expect(payload.overflowChecks).toHaveLength(20);
-  expect(payload.overflowChecks.every(({ overflow }) => !overflow)).toBe(true);
-  expect(payload.failures).toEqual({ consoleErrors: [], pageErrors: [], requestFailures: [] });
+  expect(payload.preReveal.motionEnabled).toBe(true);
+  expect(payload.preReveal.states).toHaveLength(18);
+  expect(payload.preReveal.states.map(({ key, direction, delay }) => ({ key, direction, delay }))).toEqual(expectedContract);
+  payload.preReveal.states.forEach((state, index) => {
+    expect(state).toMatchObject({
+      revealed: "false",
+      opacity: 0.08,
+      filter: "blur(2px)",
+      translate: {
+        x: expectedContract[index].direction === "left" ? -64 : 64,
+        y: 0,
+      },
+      durationMs: 500,
+      delayMs: Number(expectedContract[index].delay),
+      transitionProperties: ["opacity", "filter", "translate"],
+      timingFunctions: [
+        "cubic-bezier(0.16, 1, 0.3, 1)",
+        "cubic-bezier(0.16, 1, 0.3, 1)",
+        "cubic-bezier(0.16, 1, 0.3, 1)",
+      ],
+    });
+  });
+  expect(payload.preReveal.overflow).toMatchObject({ overflow: false, scrollWidth: 390, clientWidth: 390 });
+  expect(payload.final.states).toHaveLength(18);
+  expect(payload.final.states.map(({ key }) => key)).toEqual(expectedContract.map(({ key }) => key));
+  payload.final.states.forEach((state) => {
+    expect(state).toMatchObject({ revealed: "true", opacity: 1, filter: "none", translate: "none" });
+  });
+  expect(payload.overflow.sampleCount).toBeGreaterThan(0);
+  expect(payload.overflow.overflowedFrames).toEqual([]);
+  expect(payload.overflow.maxDurationDelayMs).toBe(620);
+  expect(payload.overflow.waitedMs).toBeGreaterThanOrEqual(650);
+  expect(payload.failures).toEqual({
+    consoleErrors: [],
+    pageErrors: [],
+    requestFailures: [],
+    externalRequests: [],
+  });
 });
 
 test("rejects a changed reveal order or token before scrolling", () => {
@@ -138,6 +199,67 @@ test("rejects an incorrect representative unrevealed motion state", () => {
 
   expect(result.status, result.output).not.toBe(0);
   expect(result.output).toContain("Unrevealed motion state mismatch");
+});
+
+test("rejects changed computed 60ms and 120ms delay mappings", () => {
+  const mutations = [
+    ["changed-computed-60ms.html", "--reveal-delay:var(--stagger-dynamic)", "--reveal-delay:61ms"],
+    ["changed-computed-120ms.html", "--reveal-delay:.12s", "--reveal-delay:121ms"],
+  ] as const;
+  for (const [fileName, currentValue, changedValue] of mutations) {
+    const changedDelay = baseHtml.replace(currentValue, changedValue);
+    expect(changedDelay).not.toBe(baseHtml);
+    const result = runVerifier(writeFixture(fileName, changedDelay));
+    expect(result.status, result.output).not.toBe(0);
+    expect(result.output).toContain("Unrevealed motion state mismatch");
+  }
+});
+
+test("rejects malformed two-axis translate and malformed duration or delay tokens", () => {
+  const malformedTranslate = baseHtml.replace(
+    "translate:calc(var(--distance-dynamic) * -1) 0",
+    "translate:-64px 40px",
+  );
+  const translateResult = runVerifier(writeFixture("malformed-translate.html", malformedTranslate));
+  expect(translateResult.status, translateResult.output).not.toBe(0);
+  expect(translateResult.output).toContain("Unrevealed motion state mismatch");
+
+  const malformedDuration = baseHtml
+    .replace(/--duration-dynamic:(?:500ms|\.5s)/, "--duration-dynamic:500garbagems")
+    .replace("</head>", "<style>.motion-enabled [data-reveal]{transition-duration:500ms!important}</style></head>");
+  expect(malformedDuration).toContain("--duration-dynamic:500garbagems");
+  const durationResult = runVerifier(writeFixture("malformed-duration.html", malformedDuration));
+  expect(durationResult.status, durationResult.output).not.toBe(0);
+  expect(durationResult.output).toContain("Root motion token mismatch");
+
+  const malformedDelay = baseHtml.replace(
+    "--reveal-delay:var(--stagger-dynamic)",
+    "--reveal-delay:60garbagems",
+  );
+  const delayResult = runVerifier(writeFixture("malformed-delay.html", malformedDelay));
+  expect(delayResult.status, delayResult.output).not.toBe(0);
+  expect(delayResult.output).toContain("Unrevealed motion state mismatch");
+});
+
+test("rejects overflow that exists only in the frozen pre-reveal state", () => {
+  const style = `<style>
+    html.motion-enabled:has([data-reveal-key="hero-copy"][data-revealed="false"]) body::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: calc(100vw + 80px);
+      height: 1px;
+    }
+  </style>`;
+  const result = runVerifier(writeFixture(
+    "pre-reveal-overflow.html",
+    baseHtml.replace("</head>", `${style}</head>`),
+  ));
+
+  expect(result.status, result.output).not.toBe(0);
+  expect(result.output).toContain("pre-reveal");
+  expect(result.output).toContain("scrollWidth");
 });
 
 test("rejects external executable and rendered resources without rejecting navigation", () => {
@@ -177,6 +299,83 @@ test("rejects external executable and rendered resources without rejecting navig
     expect(result.output).toContain(resource);
   }
   expect(result.output).not.toContain("https://example.com/safe-navigation");
+});
+
+test("rejects quoted greater-than attributes and additional DOM resource forms", () => {
+  const resources = `
+    <iframe title="quoted > marker" src="about:blank?quoted-resource"></iframe>
+    <video><track src="about:blank?track-resource" default></video>
+    <input type="image" src="about:blank?input-image-resource" alt="submit">
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <image href="about:blank?svg-image-resource"></image>
+      <use href="about:blank?svg-use-resource#icon"></use>
+    </svg>
+  `;
+  const result = runVerifier(writeFixture(
+    "additional-dom-resources.html",
+    baseHtml.replace("</body>", `${resources}</body>`),
+  ));
+
+  expect(result.status, result.output).not.toBe(0);
+  for (const resource of [
+    "about:blank?quoted-resource",
+    "about:blank?track-resource",
+    "about:blank?input-image-resource",
+    "about:blank?svg-image-resource",
+    "about:blank?svg-use-resource#icon",
+  ]) {
+    expect(result.output).toContain(resource);
+  }
+});
+
+test("rejects CSS @import and image-set references from actual rules", () => {
+  const resources = `<style>
+    @import "http://127.0.0.1:4173/src/dynamic-motion.css";
+    .external-image-set {
+      width: 1px;
+      height: 1px;
+      background-image: image-set("http://127.0.0.1:4173/images/representative-brochure.jpg" 1x);
+    }
+  </style><div class="external-image-set"></div>`;
+  const result = runVerifier(writeFixture(
+    "css-rule-resources.html",
+    baseHtml.replace("</body>", `${resources}</body>`),
+  ));
+
+  expect(result.status, result.output).not.toBe(0);
+  expect(result.output).toContain("http://127.0.0.1:4173/src/dynamic-motion.css");
+  expect(result.output).toContain("http://127.0.0.1:4173/images/representative-brochure.jpg");
+});
+
+test("rejects a successful dynamically initiated external request", () => {
+  const runtimeRequest = `<script>
+    const requestProbe = new Image();
+    requestProbe.addEventListener("load", () => requestProbe.remove(), { once: true });
+    requestProbe.src = "http://127.0.0.1:4173/images/representative-brochure.jpg";
+    document.documentElement.append(requestProbe);
+  </script>`;
+  const result = runVerifier(writeFixture(
+    "successful-runtime-request.html",
+    baseHtml.replace("</body>", `${runtimeRequest}</body>`),
+  ));
+
+  expect(result.status, result.output).not.toBe(0);
+  expect(result.output).toContain("External browser requests");
+  expect(result.output).toContain("http://127.0.0.1:4173/images/representative-brochure.jpg");
+});
+
+test("allows data-src and inert url text in comments and scripts", () => {
+  const inertText = `
+    <!-- url("https://example.com/comment-only.png") -->
+    <div data-src="https://example.com/lazy-only.png"></div>
+    <script>window.__inertResourceText = 'url("https://example.com/script-only.png")';</script>
+  `;
+  const result = runVerifier(writeFixture(
+    "inert-resource-text.html",
+    baseHtml.replace("</body>", `${inertText}</body>`),
+  ));
+
+  expect(result.status, result.output).toBe(0);
 });
 
 test("fails on console errors, page errors, and failed requests", () => {

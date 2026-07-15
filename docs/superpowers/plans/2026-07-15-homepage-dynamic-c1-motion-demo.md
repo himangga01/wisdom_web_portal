@@ -674,3 +674,8 @@ Expected: 작업트리 출력 없음. 최근 로그에 세 구현 커밋과 이 
 | 외부 자산 없는 단일 HTML | Task 3 |
 | 기존 시네마틱 HTML 보존 | Task 3 |
 | 작업 기록과 운영 사진 교체 주의 | Task 3 |
+
+## 완료 후 정정 · 2026-07-15
+
+- 동적 C1 캡처 파일명은 `wisdom-homepage-dynamic-c1-desktop.png`, `wisdom-homepage-dynamic-c1-mobile.png`, `wisdom-homepage-dynamic-c1-scroll.webm`이다. 위 단계의 과거 명칭은 당시 실행 기록으로 유지한다.
+- reveal 전환의 최대 `500ms + 120ms` 뒤 프레임 여유를 포함해 캡처와 독립 HTML 최종 상태 검증은 한 번만 `650ms`를 기다린다.

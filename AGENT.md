@@ -28,3 +28,8 @@
 - 최종 검증 결과는 Vitest 17/17, Playwright 16/16 통과다.
 - 동적 C1 독립 HTML은 142,717바이트이며 `file://`에서 18개 대상 리빌, 390px 가로 너비 일치, 페이지 오류 없음으로 검증했다.
 - 운영 배포 전 대표 사진은 고해상도 상반신 원본으로 교체해야 한다.
+- 최종 재검증 결과는 Vitest 20/20, Playwright 31/31 통과이며 TypeScript·Vite 운영 빌드와 독립 HTML 검증도 성공했다.
+- 강화된 검증기는 정지된 Observer 페이지에서 18개 미노출 상태의 opacity·blur·translate·500ms·0/60/120ms를 전수 확인하고, 일반 페이지에서 18개 최종 상태와 64개 프레임의 가로 넘침 없음(`390 === 390`, 최종 대기 650ms)을 확인했다.
+- 실제 DOM·CSSOM 리소스와 메인 문서 외 브라우저 요청을 검사했으며 `consoleErrors`, `pageErrors`, `requestFailures`, `externalRequests`는 모두 비어 있었다.
+- 동적 C1 독립 HTML은 142,838바이트, SHA-256 `D6F7DCD60409FF965C4CB40823F767F90B47A06527D3BF1A4EF835E3724BE5DF`이며 작업트리와 메인 프로젝트 복사본이 일치한다.
+- 캡처를 다시 실행하지 않았고 기존 시네마틱 PNG 2개와 WebM 1개의 SHA-256이 변경 전 기준과 일치함을 확인했다.

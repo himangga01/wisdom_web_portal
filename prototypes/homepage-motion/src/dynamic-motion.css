@@ -65,11 +65,11 @@
     translate: var(--distance-dynamic) 0;
   }
 
-  .motion-enabled [data-reveal-delay="60"][data-revealed="true"] {
+  .motion-enabled [data-reveal-delay="60"] {
     --reveal-delay: var(--stagger-dynamic);
   }
 
-  .motion-enabled [data-reveal-delay="120"][data-revealed="true"] {
+  .motion-enabled [data-reveal-delay="120"] {
     --reveal-delay: 120ms;
   }
 

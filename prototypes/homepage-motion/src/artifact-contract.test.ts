@@ -37,6 +37,12 @@ describe("homepage demo artifact contract", () => {
     expect(readme).toContain("npx.cmd playwright install chromium");
   });
 
+  it("uses the cross-platform verifier command in the generic workflow", () => {
+    expect(readme).toContain("npm run standalone\nnpm run verify:standalone");
+    expect(readme).not.toContain("npm run standalone\nnpm.cmd run verify:standalone");
+    expect(readme).toContain("npm.cmd run verify:standalone");
+  });
+
   it("documents the dynamic capture names and precise standalone checks", () => {
     expect(readme).toContain("wisdom-homepage-dynamic-c1-desktop.png");
     expect(readme).toContain("wisdom-homepage-dynamic-c1-mobile.png");

@@ -30,6 +30,12 @@ npm run test:e2e
 npm run build
 npm run capture
 npm run standalone
+npm run verify:standalone
+```
+
+Windows PowerShell에서 `npm.ps1` 실행 정책 오류가 발생하면 검증 명령만 다음과 같이 바꿉니다.
+
+```powershell
 npm.cmd run verify:standalone
 ```
 
@@ -41,12 +47,14 @@ npm.cmd run verify:standalone
 
 `verify:standalone`은 운영 빌드 후 CSS·JavaScript·대표 사진을 포함한
 `.superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html`을 만들고,
-실행·렌더링 리소스가 모두 파일 안에 포함됐는지 먼저 검사합니다. 일반 `https`,
-`mailto`, `tel`, 해시 내비게이션 링크는 허용합니다. 이어 Chromium에서 서버 없이
-직접 열어 스크롤 전에 18개 대상의 정확한 key·direction·delay 순서와
-`500ms`·`±64px`·`60ms` 모션 토큰, 좌우 미노출 상태를 확인합니다. 390px 화면의
-가로 넘침은 스크롤 전·각 reveal 중·완료 후마다 검사하며, `console.error`·`pageerror`·
-`requestfailed`가 하나라도 발생하면 검증을 실패시킵니다.
+실제 DOM·CSSOM의 실행·렌더링 리소스와 브라우저 요청을 검사합니다. 일반 `https`,
+`mailto`, `tel`, 해시 내비게이션 링크는 허용합니다. 이어 Chromium에서
+`IntersectionObserver`를 시작 전에 정지한 별도 페이지를 열어 18개 대상 모두의
+key·direction·delay 순서, `500ms`·`±64px`·`60ms` 토큰, opacity·blur·translate와
+전환 속성·지연을 확인합니다. 일반 페이지에서는 reveal 전부터 `requestAnimationFrame`으로
+390px 가로 넘침을 전환 완료 후 650ms 시점까지 연속 검사하고, 18개 최종 상태도 확인합니다.
+`console.error`·`pageerror`·`requestfailed` 또는 메인 문서 외 외부 요청이 하나라도 발생하면
+검증을 실패시킵니다.
 기존 `wisdom-homepage-cinematic-demo.html`은 비교용으로 보존합니다.
 
 ## 시안 범위

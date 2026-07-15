@@ -46,3 +46,14 @@
 - 독립 실행 검사: `file://`에서 18개 대상 리빌, `scrollWidth: 390`, `clientWidth: 390`, `pageErrors: []`
 - 독립 HTML: `.superpowers/brainstorm/renders/wisdom-homepage-dynamic-c1-demo.html` (142,717바이트)
 - 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체
+
+## 2026-07-15 · 동적 C1 독립 HTML 최종 재검증
+
+- 최종 자동 검사: Vitest 20/20, Playwright 31/31, TypeScript·Vite 운영 빌드 성공
+- 사전 상태 검사: Observer를 애플리케이션 시작 전에 정지하고 18개 대상의 `data-revealed="false"`, opacity 0.08, blur 2px, 좌우 64px, 500ms, 0/60/120ms를 전수 확인
+- 최종 상태 검사: 18개 대상의 `data-revealed="true"`, opacity 1, filter/translate 해제를 전수 확인
+- 전환 중 가로 넘침: 최대 620ms 뒤 프레임 여유를 포함해 650ms를 한 번 기다렸고, 64개 `requestAnimationFrame` 표본 모두 `scrollWidth: 390`, `clientWidth: 390`
+- 리소스·런타임 검사: 실제 DOM·CSSOM 리소스와 메인 문서 외 요청을 검사했으며 console/page/request 실패 및 외부 요청 0건
+- 독립 HTML: 142,838바이트, SHA-256 `D6F7DCD60409FF965C4CB40823F767F90B47A06527D3BF1A4EF835E3724BE5DF`; 작업트리와 메인 프로젝트 복사본 일치
+- 시네마틱 보존: 캡처 명령을 실행하지 않았고 데스크톱 PNG `22D76E30…E8A3`, 모바일 PNG `03B96A79…4117`, 스크롤 WebM `B8F55A77…E7175` 해시 유지
+- 운영 전 남은 작업: 대표 사진을 고해상도 상반신 원본으로 교체
