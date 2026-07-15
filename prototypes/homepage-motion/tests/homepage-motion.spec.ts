@@ -39,12 +39,22 @@ test("shows final state from the first frame for reduced motion", async ({ page 
   await expect(page.locator("html")).not.toHaveClass(/motion-enabled/);
   const states = await page.locator("[data-reveal]").evaluateAll((targets) => targets.map((target) => {
     const style = getComputedStyle(target);
-    return { opacity: style.opacity, transform: style.transform, duration: style.transitionDuration };
+    return {
+      opacity: style.opacity,
+      translate: style.translate,
+      transform: style.transform,
+      duration: style.transitionDuration,
+    };
   }));
-  expect(states.every((state) => state.opacity === "1" && state.transform === "none" && state.duration === "0s")).toBe(true);
+  expect(states.every((state) =>
+    state.opacity === "1"
+    && state.translate === "none"
+    && state.transform === "none"
+    && state.duration === "0s"
+  )).toBe(true);
 });
 
-test("applies the approved cinematic motion tokens", async ({ page }) => {
+test("applies the approved dynamic c1 motion tokens", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, "IntersectionObserver", {
     configurable: true,
     value: class {
@@ -58,38 +68,31 @@ test("applies the approved cinematic motion tokens", async ({ page }) => {
   const rootTokens = await page.locator("html").evaluate((root) => {
     const style = getComputedStyle(root);
     return {
-      duration: style.getPropertyValue("--duration-cinematic").trim(),
-      mediaDuration: style.getPropertyValue("--duration-media").trim(),
-      distance: style.getPropertyValue("--distance-cinematic").trim(),
+      duration: style.getPropertyValue("--duration-dynamic").trim(),
+      distance: style.getPropertyValue("--distance-dynamic").trim(),
+      stagger: style.getPropertyValue("--stagger-dynamic").trim(),
     };
   });
-  expect(rootTokens).toEqual({
-    duration: "900ms",
-    mediaDuration: "780ms",
-    distance: "32px",
-  });
+  expect(rootTokens).toEqual({ duration: "500ms", distance: "64px", stagger: "60ms" });
 
-  const heading = page.locator('[data-reveal-key="principles-heading"]');
-  await expect.poll(() => heading.evaluate((target) => {
+  const left = page.locator('[data-reveal-key="principles-heading"]');
+  await expect.poll(() => left.evaluate((target) => {
     const style = getComputedStyle(target);
     return {
       opacity: style.opacity,
       filter: style.filter,
-      duration: style.transitionDuration,
+      translate: style.translate,
+      duration: style.transitionDuration.split(",")[0].trim(),
     };
-  })).toEqual({
-    opacity: "0.12",
-    filter: "blur(6px)",
-    duration: "0.9s",
-  });
+  })).toEqual({ opacity: "0.08", filter: "blur(2px)", translate: "-64px", duration: "0.5s" });
 
-  const interactiveOpacity = await page
-    .locator('[data-reveal-key="navigator-choices"]')
-    .evaluate((target) => getComputedStyle(target).opacity);
-  expect(interactiveOpacity).toBe("1");
+  const rightTranslate = await page
+    .locator('[data-reveal-key="portrait"]')
+    .evaluate((target) => getComputedStyle(target).translate);
+  expect(rightTranslate).toBe("64px");
 });
 
-test("stages cards and exposes a two pixel scroll progress line", async ({ page }) => {
+test("stages dynamic cards and keeps hover transform independent", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, "IntersectionObserver", {
     configurable: true,
     value: class {
@@ -100,10 +103,19 @@ test("stages cards and exposes a two pixel scroll progress line", async ({ page 
   }));
   await page.goto("/");
 
-  const delays = await page.locator("#practice .practice-card > :first-child").evaluateAll((contents) =>
-    contents.map((content) => getComputedStyle(content).transitionDelay),
+  const cards = page.locator("#practice .practice-card");
+  await cards.evaluateAll((targets) => targets.forEach((target) => {
+    (target as HTMLElement).dataset.revealed = "true";
+  }));
+  const delays = await cards.evaluateAll((targets) =>
+    targets.map((target) => getComputedStyle(target).getPropertyValue("--reveal-delay").trim()),
   );
-  expect(delays).toEqual(["0s", "0.1s", "0.2s"]);
+  expect(delays).toEqual(["0ms", "60ms", "120ms"]);
+
+  await expect.poll(() => cards.first().evaluate((target) => getComputedStyle(target).translate)).toBe("none");
+  await cards.first().hover();
+  await expect.poll(() => cards.first().evaluate((target) => getComputedStyle(target).transform)).not.toBe("none");
+  expect(await cards.first().evaluate((target) => getComputedStyle(target).translate)).toBe("none");
 
   const progress = await page.locator(".scroll-progress").evaluate((element) => {
     const style = getComputedStyle(element);
