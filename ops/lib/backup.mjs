@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   copyFile,
@@ -6,17 +6,19 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   readdir,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 
 import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
+import { hashSecureRegularFile, readSecureRegularFile } from "./monitor-files.mjs";
 import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
+
+const MAX_BACKUP_STATUS_BYTES = 16 * 1024;
+const MAX_BACKUP_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024;
 
 function fail(code, message) {
   const error = new Error(message);
@@ -79,8 +81,20 @@ async function exists(candidate) {
   }
 }
 
-async function sha256(filePath) {
-  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+async function hashBackupFile(filePath, code) {
+  return hashSecureRegularFile(filePath, {
+    code,
+    maxBytes: MAX_BACKUP_ARTIFACT_BYTES,
+    requireProtected: true,
+  });
+}
+
+async function readBackupStatus(filePath, code) {
+  return JSON.parse((await readSecureRegularFile(filePath, {
+    code,
+    maxBytes: MAX_BACKUP_STATUS_BYTES,
+    requireProtected: true,
+  })).toString("utf8"));
 }
 
 async function syncFile(filePath) {
@@ -136,11 +150,13 @@ async function verifiedPair(artifactPath, statusPath, kind) {
       !artifact.isFile() || artifact.isSymbolicLink() ||
       !statusFile.isFile() || statusFile.isSymbolicLink()
     ) return false;
-    const status = JSON.parse(await readFile(statusPath, "utf8"));
+    const status = await readBackupStatus(statusPath, "BACKUP_DAILY_INCONSISTENT");
+    const artifactHash = await hashBackupFile(artifactPath, "BACKUP_DAILY_INCONSISTENT");
     return status.verified === true &&
       status.kind === kind &&
       status.encryptedBytes === artifact.size &&
-      status.encryptedSha256 === await sha256(artifactPath);
+      status.encryptedBytes === artifactHash.size &&
+      status.encryptedSha256 === artifactHash.sha256;
   } catch {
     return false;
   }
@@ -193,13 +209,15 @@ async function createOnlineBackupLocked(config, adapters) {
     if (
       verifiedInspection.integrity !== "ok" ||
       verifiedInspection.schemaVersion !== inspection.schemaVersion ||
-      await sha256(verifiedSnapshot) !== await sha256(snapshot)
+      (await hashBackupFile(verifiedSnapshot, "BACKUP_VERIFICATION_FAILED")).sha256 !==
+        (await hashBackupFile(snapshot, "BACKUP_VERIFICATION_FAILED")).sha256
     ) {
       fail("BACKUP_VERIFICATION_FAILED", "Encrypted backup verification failed");
     }
 
-    const encryptedSha256 = await sha256(pendingArtifact);
-    const encryptedBytes = (await stat(pendingArtifact)).size;
+    const encryptedArtifact = await hashBackupFile(pendingArtifact, "BACKUP_VERIFICATION_FAILED");
+    const encryptedSha256 = encryptedArtifact.sha256;
+    const encryptedBytes = encryptedArtifact.size;
     const hourlyMetadata = statusFor("hourly", config, inspection, encryptedSha256, encryptedBytes);
     const writeStatus = adapters.storage?.writeStatus ?? atomicJson;
     let hourlyPublished = false;
@@ -281,7 +299,7 @@ export async function applyBackupRetention(backupRoot, limits) {
     if (!metadata.isFile() || metadata.isSymbolicLink()) fail("BACKUP_RETENTION_INVALID", "Backup status cannot be a symlink");
     let status;
     try {
-      status = JSON.parse(await readFile(statusPath, "utf8"));
+      status = await readBackupStatus(statusPath, "BACKUP_RETENTION_INVALID");
     } catch {
       continue;
     }
@@ -290,7 +308,17 @@ export async function applyBackupRetention(backupRoot, limits) {
     if (!(await exists(artifactPath))) continue;
     const artifactMetadata = await lstat(artifactPath);
     if (!artifactMetadata.isFile() || artifactMetadata.isSymbolicLink()) fail("BACKUP_RETENTION_INVALID", "Backup artifact cannot be a symlink");
-    if (artifactMetadata.size !== status.encryptedBytes || await sha256(artifactPath) !== status.encryptedSha256) continue;
+    let artifactHash;
+    try {
+      artifactHash = await hashBackupFile(artifactPath, "BACKUP_RETENTION_INVALID");
+    } catch {
+      continue;
+    }
+    if (
+      artifactMetadata.size !== status.encryptedBytes ||
+      artifactHash.size !== status.encryptedBytes ||
+      artifactHash.sha256 !== status.encryptedSha256
+    ) continue;
     records[status.kind].push({ statusPath, artifactPath, createdAt: Date.parse(status.createdAt) });
   }
 

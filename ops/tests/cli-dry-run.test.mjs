@@ -59,6 +59,8 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
       thresholds: {
         backupFreshnessMinutes: 90,
         diskFreePercentMinimum: 15,
+        queueStallMinutes: 15,
+        retentionOverdueMaximum: 0,
         notificationFailureBacklogMaximum: 0,
         publicationFailureBacklogMaximum: 0,
         indexNowFailureBacklogMaximum: 0,

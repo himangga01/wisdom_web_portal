@@ -23,6 +23,16 @@ function fail(code, message) {
   throw error;
 }
 
+function rollbackFailure(operation, cause, recoveryCause) {
+  const error = new Error(
+    `${operation} failed after the release pointer changed and the previous release could not be recovered`,
+    { cause },
+  );
+  error.code = "RELEASE_ROLLBACK_FAILED";
+  error.recoveryCause = recoveryCause;
+  return error;
+}
+
 function samePath(left, right) {
   const a = path.resolve(left);
   const b = path.resolve(right);
@@ -147,14 +157,15 @@ async function deployReleaseLocked(input, adapter, plan) {
       }
     }
     let pointerRestored = !switched;
+    let recoveryCause;
     if (switched) {
       try {
         await adapter.restoreCurrent(previous, plan.currentLink);
         pointerRestored = true;
         await adapter.restartServices();
         await adapter.checkActiveHealth();
-      } catch {
-        // The original error remains primary; failed recovery requires operator intervention.
+      } catch (recoveryError) {
+        recoveryCause = recoveryError;
       }
     }
     if (destinationCreated && pointerRestored) {
@@ -163,6 +174,9 @@ async function deployReleaseLocked(input, adapter, plan) {
       } catch {
         // Preserve the deployment failure; cleanup is fail-closed against an active pointer.
       }
+    }
+    if (recoveryCause !== undefined) {
+      throw rollbackFailure("Deployment", error, recoveryCause);
     }
     throw error;
   }
@@ -227,14 +241,18 @@ async function rollbackReleaseLocked(input, adapter, plan, destination) {
         // Preserve the original rollback error.
       }
     }
+    let recoveryCause;
     if (switched) {
       try {
         await adapter.restoreCurrent(previous, plan.currentLink);
         await adapter.restartServices();
         await adapter.checkActiveHealth();
-      } catch {
-        // Preserve the original rollback error; recovery failure is handled by the runbook.
+      } catch (recoveryError) {
+        recoveryCause = recoveryError;
       }
+    }
+    if (recoveryCause !== undefined) {
+      throw rollbackFailure("Rollback", error, recoveryCause);
     }
     throw error;
   }

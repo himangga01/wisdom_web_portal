@@ -131,6 +131,7 @@ const emailHref = `mailto:${content.office.email}`;
         <div class="consent-document-body" data-consent-body></div>
       </details>
     </fieldset>
+    <button class="button button-secondary full-field" type="button" data-consent-retry hidden>{form.retryConsent}</button>
   </div>
   <button class="button button-primary form-submit" type="submit" disabled>{form.submit}</button>
   <div class="form-status" data-form-status role="status" aria-live="polite" hidden></div>

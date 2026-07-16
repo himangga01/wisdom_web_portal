@@ -1,11 +1,62 @@
 import AxeBuilder from "@axe-core/playwright";
-import { consultationRequestSchema } from "@wisdom/shared";
-import { expect, test } from "@playwright/test";
+import { consultationRequestSchema, type Locale } from "@wisdom/shared";
+import { expect, test, type Page } from "@playwright/test";
 
 import { PUBLIC_ROUTE_ENTRIES } from "../src/lib/routes.js";
 import { siteContent } from "../src/content/site-content.js";
 
 const publicOrigin = "https://www.jihye-office.kr";
+
+const localizedConsultationCases: ReadonlyArray<{
+  locale: Locale;
+  pathname: string;
+  retryLabel: string;
+}> = [
+  { locale: "ko", pathname: "/consultation", retryLabel: "동의 문서 다시 불러오기" },
+  { locale: "en", pathname: "/en/consultation", retryLabel: "Retry loading consent documents" },
+  { locale: "zh-Hans", pathname: "/zh-hans/consultation", retryLabel: "重新加载同意文件" },
+  { locale: "zh-Hant", pathname: "/zh-hant/consultation", retryLabel: "重新載入同意文件" },
+];
+
+async function hangFirstRequestUntilTimeout(
+  page: Page,
+  endpoint: "consent" | "consultation",
+): Promise<void> {
+  await page.addInitScript(({ requestKind }) => {
+    const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const hungRequestTimeoutCall = requestKind === "consent" ? 0 : 1;
+    let timeoutCalls = 0;
+    Object.defineProperty(AbortSignal, "timeout", {
+      configurable: true,
+      value: (milliseconds: number) => nativeTimeout(
+        timeoutCalls++ === hungRequestTimeoutCall ? Math.min(milliseconds, 25) : milliseconds,
+      ),
+    });
+
+    const targetPath = requestKind === "consent"
+      ? "/api/v1/consent-documents"
+      : "/api/v1/consultations";
+    const originalFetch = window.fetch.bind(window);
+    let requestHung = false;
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      const path = new URL(url, window.location.origin).pathname;
+      if (!requestHung && path === targetPath) {
+        requestHung = true;
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return;
+          const rejectOnAbort = () => reject(
+            signal.reason ?? new DOMException("Request timed out", "TimeoutError"),
+          );
+          if (signal.aborted) rejectOnAbort();
+          else signal.addEventListener("abort", rejectOnAbort, { once: true });
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof window.fetch;
+  }, { requestKind: endpoint });
+}
 
 function consentResponse(locale: string, versionDate = "2026-07-16") {
   const document = (kind: "privacy" | "marketing") => ({
@@ -310,6 +361,84 @@ test("matches native phone validity to the shared eight-to-twenty digit contract
     expect(await phone.inputValue(), value).toBe(value);
     expect(await phone.evaluate((control: HTMLInputElement) => control.checkValidity()), value)
       .toBe(valid);
+  }
+});
+
+test("recovers a timed-out initial consent load through an accessible localized retry", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await hangFirstRequestUntilTimeout(page, "consent");
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    const locale = new URL(route.request().url()).searchParams.get("locale") ?? "ko";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(consentResponse(locale)),
+    });
+  });
+
+  for (const { locale, pathname, retryLabel } of localizedConsultationCases) {
+    await page.goto(pathname);
+    const formContent = siteContent[locale].forms.consultation;
+    const status = page.locator("[data-form-status]");
+    const retry = page.getByRole("button", { name: retryLabel });
+
+    await expect(status).toHaveAttribute("role", "alert");
+    await expect(status).toHaveText(formContent.status.configurationFailure);
+    await expect(retry).toBeVisible();
+    await expect(page.locator('[name="privacyConsent"]')).toBeDisabled();
+
+    await retry.click();
+
+    await expect(retry).toBeHidden();
+    await expect(page.locator('[name="privacyConsent"]')).toBeEnabled();
+    await expect(page.getByRole("button", { name: formContent.submit })).toBeEnabled();
+  }
+});
+
+test("returns a timed-out submission to a localized retryable form", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await hangFirstRequestUntilTimeout(page, "consultation");
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    const locale = new URL(route.request().url()).searchParams.get("locale") ?? "ko";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(consentResponse(locale)),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        receiptId: "receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        receivedAt: "2026-07-17T02:00:00.000Z",
+        status: "received",
+      }),
+    });
+  });
+
+  for (const { locale, pathname } of localizedConsultationCases) {
+    await page.goto(pathname);
+    const formContent = siteContent[locale].forms.consultation;
+    await page.selectOption('[name="category"]', "procurement");
+    await page.fill('[name="name"]', "Hong Gildong");
+    await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+    await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+    await page.check('[name="privacyConsent"]');
+    const form = page.locator("[data-consultation-form]");
+    const status = page.locator("[data-form-status]");
+    const submit = page.getByRole("button", { name: formContent.submit });
+
+    await submit.click();
+
+    await expect(status).toHaveAttribute("role", "alert");
+    await expect(status).toHaveText(formContent.status.failure);
+    await expect(form).not.toHaveAttribute("aria-busy", "true");
+    await expect(submit).toBeEnabled();
+
+    await submit.click();
+    await expect(status).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
   }
 });
 

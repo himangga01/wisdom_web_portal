@@ -103,6 +103,49 @@ function insertLegacyConsentRows(
   );
 }
 
+function insertConsentEventFixture(
+  db: ReturnType<typeof openDatabase>,
+  snapshot: {
+    id?: string;
+    sequence?: number;
+    kind?: "privacy" | "marketing";
+    documentVersion?: string;
+    documentSha256?: Buffer;
+  } = {},
+): void {
+  const documentSha256 = Buffer.alloc(32, 81);
+  db.sqlite.prepare(`
+    INSERT OR IGNORE INTO consultations (
+      id, receipt_id, status, locale, category, preferred_contact,
+      pii_envelope, pii_key_id, phone_blind_index, blind_index_key_id,
+      marketing_accepted, received_at_ms, updated_at_ms,
+      retention_expires_at_ms, row_version
+    ) VALUES ('consent-ledger-consultation', 'consent-ledger-receipt', 'received',
+      'ko', 'other', 'email', 'opaque-envelope', 'pii-v1', ?, 'pii-v1',
+      0, 0, 0, 10_000, 1)
+  `).run(Buffer.alloc(32, 80));
+  db.sqlite.prepare(`
+    INSERT OR IGNORE INTO consent_documents (
+      id, bundle_id, kind, locale, version, title, body_markdown,
+      content_sha256, retention_months, state, created_at_ms
+    ) VALUES ('consent-ledger-document', 'consent-ledger-bundle', 'privacy', 'ko',
+      'privacy-ledger-v1', 'Privacy', '# Privacy', ?, 12, 'draft', 0)
+  `).run(documentSha256);
+  db.sqlite.prepare(`
+    INSERT INTO consent_events (
+      id, consultation_id, document_id, kind, decision, sequence,
+      document_version, document_sha256, actor_type, request_id, occurred_at_ms
+    ) VALUES (?, 'consent-ledger-consultation', 'consent-ledger-document', ?,
+      'accepted', ?, ?, ?, 'visitor', 'consent-ledger-request', 0)
+  `).run(
+    snapshot.id ?? "consent-ledger-event",
+    snapshot.kind ?? "privacy",
+    snapshot.sequence ?? 1,
+    snapshot.documentVersion ?? "privacy-ledger-v1",
+    snapshot.documentSha256 ?? documentSha256,
+  );
+}
+
 describe("SQLite durability and migrations", () => {
   it("keeps SQLite user_version synchronized with the exact migration history", () => {
     const db = openDatabase(":memory:");
@@ -186,8 +229,8 @@ describe("SQLite durability and migrations", () => {
       expect(exitCode).toBe(0);
       expect(coordinator.sqlite.prepare(
         "SELECT max(version) version FROM schema_migrations",
-      ).get()).toEqual({ version: 4 });
-      expect(coordinator.sqlite.pragma("user_version", { simple: true })).toBe(4);
+      ).get()).toEqual({ version: SCHEMA_VERSION });
+      expect(coordinator.sqlite.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
     } finally {
       if (coordinator.sqlite.inTransaction) coordinator.sqlite.exec("ROLLBACK");
       closeDatabase(coordinator);
@@ -229,7 +272,7 @@ describe("SQLite durability and migrations", () => {
 
   it("appends the article publication and immutable consent schemas without rewriting v1 or v2", () => {
     testDatabase = createTestDatabase();
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(5);
     expect(testDatabase.db.sqlite.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     ).all()).toEqual([
@@ -237,6 +280,7 @@ describe("SQLite durability and migrations", () => {
       { version: 2, name: "admin-notification-withdrawal" },
       { version: 3, name: "article-publication-pipeline" },
       { version: 4, name: "immutable-consent-bundles" },
+      { version: 5, name: "append-only-consent-events" },
     ]);
     const tables = new Set((testDatabase.db.sqlite.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table'
@@ -253,12 +297,12 @@ describe("SQLite durability and migrations", () => {
     ]) expect(tables.has(table), table).toBe(true);
   });
 
-  it("appends v4 consent bundle identity and effective-time immutability", () => {
+  it("retains v4 consent bundle identity and effective-time immutability", () => {
     testDatabase = createTestDatabase();
     const db = testDatabase.db.sqlite;
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(5);
     expect(db.prepare(
-      "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1",
+      "SELECT version, name FROM schema_migrations WHERE version = 4",
     ).get()).toEqual({ version: 4, name: "immutable-consent-bundles" });
 
     const schemaObjects = new Set((db.prepare(`
@@ -288,6 +332,63 @@ describe("SQLite durability and migrations", () => {
     expect(() => db.prepare(`
       UPDATE consent_documents SET effective_at_ms = 2_000 WHERE id = 'consent-original'
     `).run()).toThrow(/effective/i);
+  });
+
+  it("makes consent events append-only", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000);
+      insertConsentEventFixture(db);
+
+      expect(() => db.sqlite.prepare(`
+        UPDATE consent_events SET decision = 'withdrawn'
+        WHERE id = 'consent-ledger-event'
+      `).run()).toThrow(/immutable/i);
+      expect(() => db.sqlite.prepare(`
+        DELETE FROM consent_events WHERE id = 'consent-ledger-event'
+      `).run()).toThrow(/immutable/i);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  it.each([
+    {
+      label: "kind",
+      snapshot: { kind: "marketing" as const },
+    },
+    {
+      label: "version",
+      snapshot: { documentVersion: "forged-version" },
+    },
+    {
+      label: "content hash",
+      snapshot: { documentSha256: Buffer.alloc(32, 82) },
+    },
+  ])("binds consent event $label to the referenced document snapshot", ({ snapshot }) => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000);
+      expect(() => insertConsentEventFixture(db, snapshot)).toThrow(/snapshot/i);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  it("rejects a v5 upgrade when a retained consent event snapshot is inconsistent", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000, 4);
+      insertConsentEventFixture(db, { documentVersion: "forged-version" });
+
+      expect(() => runMigrations(db, 2_000)).toThrow(/consent event snapshot/i);
+      expect(db.sqlite.pragma("user_version", { simple: true })).toBe(4);
+      expect(db.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 4 });
+    } finally {
+      closeDatabase(db);
+    }
   });
 
   it.each([
@@ -348,7 +449,7 @@ describe("SQLite durability and migrations", () => {
   );
 
   it.each(["active", "retired"] as const)(
-    "upgrades a canonical %s v3 consent bundle to v4",
+    "upgrades a canonical %s v3 consent bundle to the latest schema",
     (state) => {
       const db = openDatabase(":memory:");
       try {
@@ -356,10 +457,10 @@ describe("SQLite durability and migrations", () => {
         insertLegacyConsentRows(db, canonicalLegacyConsentRows(state));
 
         expect(() => runMigrations(db, 2_000)).not.toThrow();
-        expect(db.sqlite.pragma("user_version", { simple: true })).toBe(4);
+        expect(db.sqlite.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
         expect(db.sqlite.prepare(
           "SELECT max(version) version FROM schema_migrations",
-        ).get()).toEqual({ version: 4 });
+        ).get()).toEqual({ version: SCHEMA_VERSION });
         expect(db.sqlite.prepare(`
           SELECT count(*) count FROM consent_documents WHERE bundle_id = ?
         `).get(`legacy-${state}`)).toEqual({ count: 8 });
@@ -1053,7 +1154,7 @@ describe("SQLite durability and migrations", () => {
       runMigrations(restarted, 3_000);
       expect(restarted.sqlite.prepare(
         "SELECT version, name FROM schema_migrations ORDER BY version",
-      ).all()).toHaveLength(4);
+      ).all()).toHaveLength(5);
       expect(restarted.sqlite.prepare(
         "SELECT body_markdown FROM article_revisions WHERE id = 'legacy-revision'",
       ).get()).toEqual({ body_markdown: "# Legacy body" });
@@ -1224,6 +1325,7 @@ describe("SQLite durability and migrations", () => {
       { version: 2 },
       { version: 3 },
       { version: 4 },
+      { version: 5 },
     ]);
     expect(upgraded.sqlite.prepare("SELECT id FROM consultations").all()).toEqual([{ id: "consultation-v1" }]);
     expect(upgraded.sqlite.prepare("SELECT admin_id FROM admin_sessions").all()).toEqual([{ admin_id: "admin-v1" }]);
@@ -1259,7 +1361,7 @@ describe("SQLite durability and migrations", () => {
     closeDatabase(upgraded);
     const restarted = openDatabase(path);
     runMigrations(restarted, 4_000);
-    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 4 });
+    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 5 });
     closeDatabase(restarted);
     rmSync(directory, { force: true, recursive: true });
   });

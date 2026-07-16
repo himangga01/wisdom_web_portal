@@ -852,11 +852,39 @@ BEGIN
 END;
 `;
 
+const FIFTH_MIGRATION = `
+CREATE TRIGGER consent_events_document_snapshot_insert
+BEFORE INSERT ON consent_events
+WHEN NOT EXISTS (
+  SELECT 1 FROM consent_documents document
+  WHERE document.id = NEW.document_id
+    AND document.kind = NEW.kind
+    AND document.version = NEW.document_version
+    AND document.content_sha256 = NEW.document_sha256
+)
+BEGIN
+  SELECT RAISE(ABORT, 'consent event snapshot must match referenced document');
+END;
+
+CREATE TRIGGER consent_events_immutable_update
+BEFORE UPDATE ON consent_events
+BEGIN
+  SELECT RAISE(ABORT, 'consent events are immutable');
+END;
+
+CREATE TRIGGER consent_events_immutable_delete
+BEFORE DELETE ON consent_events
+BEGIN
+  SELECT RAISE(ABORT, 'consent events are immutable');
+END;
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
   { version: 3, name: "article-publication-pipeline", sql: THIRD_MIGRATION },
   { version: 4, name: "immutable-consent-bundles", sql: FOURTH_MIGRATION },
+  { version: 5, name: "append-only-consent-events", sql: FIFTH_MIGRATION },
 ] as const;
 
 export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
@@ -956,6 +984,40 @@ const REQUIRED_SCHEMA_DEFINITIONS = [
         ))
       BEGIN
         SELECT RAISE(ABORT, 'invalid consent document state transition');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_events_document_snapshot_insert",
+    sql: `CREATE TRIGGER consent_events_document_snapshot_insert
+      BEFORE INSERT ON consent_events
+      WHEN NOT EXISTS (
+        SELECT 1 FROM consent_documents document
+        WHERE document.id = NEW.document_id
+          AND document.kind = NEW.kind
+          AND document.version = NEW.document_version
+          AND document.content_sha256 = NEW.document_sha256
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'consent event snapshot must match referenced document');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_events_immutable_update",
+    sql: `CREATE TRIGGER consent_events_immutable_update
+      BEFORE UPDATE ON consent_events
+      BEGIN
+        SELECT RAISE(ABORT, 'consent events are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_events_immutable_delete",
+    sql: `CREATE TRIGGER consent_events_immutable_delete
+      BEFORE DELETE ON consent_events
+      BEGIN
+        SELECT RAISE(ABORT, 'consent events are immutable');
       END`,
   },
   {
@@ -1206,6 +1268,22 @@ function assertCanonicalConsentBundlesBeforeV4(sqlite: Database.Database): void 
   }
 }
 
+function assertConsentEventSnapshotsBeforeV5(sqlite: Database.Database): void {
+  const invalid = sqlite.prepare(`
+    SELECT 1 invalid
+    FROM consent_events event
+    LEFT JOIN consent_documents document ON document.id = event.document_id
+    WHERE document.id IS NULL
+      OR document.kind <> event.kind
+      OR document.version <> event.document_version
+      OR document.content_sha256 <> event.document_sha256
+    LIMIT 1
+  `).get();
+  if (invalid !== undefined) {
+    throw new Error("Database contains a consent event snapshot that does not match its document");
+  }
+}
+
 export function assertRollbackCompatibleMigration(
   db: ControlDatabase,
   targetVersion = SCHEMA_VERSION,
@@ -1249,6 +1327,7 @@ export function runMigrations(
     for (const migration of MIGRATIONS) {
       if (migration.version > targetVersion || applied.has(migration.version)) continue;
       if (migration.version === 4) assertCanonicalConsentBundlesBeforeV4(sqlite);
+      if (migration.version === 5) assertConsentEventSnapshotsBeforeV5(sqlite);
       sqlite.exec(migration.sql);
       sqlite.prepare(
         "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",

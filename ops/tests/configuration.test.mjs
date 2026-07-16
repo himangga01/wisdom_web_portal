@@ -261,6 +261,7 @@ test("launchd templates keep executables absolute and secrets out of plists", as
     "com.jihye.portal.control.plist.template",
     "com.jihye.portal.monitor.plist.template",
     "com.jihye.portal.notification-worker.plist.template",
+    "com.jihye.portal.retention.plist.template",
   ]);
 
   for (const file of files) {
@@ -287,7 +288,7 @@ test("control processes receive only the common runtime contract and independent
     "WITHDRAWAL_TOKEN_SECRET=com.jihye.portal.withdrawal-token",
   ];
 
-  for (const service of ["control", "notification-worker", "content-worker"]) {
+  for (const service of ["control", "notification-worker", "content-worker", "retention"]) {
     const plist = await render(`launchd/com.jihye.portal.${service}.plist.template`);
     const mappings = [...plist.matchAll(/<string>([A-Z][A-Z0-9_]+=[A-Za-z0-9._-]+)<\/string>/g)]
       .map((match) => match[1])
@@ -331,6 +332,17 @@ test("backup schedule and log rotation are bounded", async () => {
   assert.doesNotMatch(newsyslog, /world|777/i);
 });
 
+test("retention enforcement runs on a fixed bounded cadence in apply mode", async () => {
+  const retention = await render("launchd/com.jihye.portal.retention.plist.template");
+
+  assert.match(retention, /<key>StartInterval<\/key><integer>3600<\/integer>/);
+  assert.match(retention, /apps\/control\/dist\/cli\/purge\.js/);
+  assert.match(retention, /<string>--apply<\/string>/);
+  assert.match(retention, /<string>--batch-size<\/string><string>1000<\/string>/);
+  assert.match(retention, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/keychain-exec\.mjs/);
+  assert.doesNotMatch(retention, /\/Users\/wisdom\/portal\/ops\/scripts/);
+});
+
 test("monitoring template keeps external uptime separate from executable local checks", async () => {
   const monitoring = await render("monitoring/checks.json.template");
   const parsed = JSON.parse(monitoring);
@@ -343,6 +355,8 @@ test("monitoring template keeps external uptime separate from executable local c
   });
   assert.equal(parsed.local.thresholds.backupFreshnessMinutes, 90);
   assert.equal(parsed.local.thresholds.diskFreePercentMinimum, 15);
+  assert.equal(parsed.local.thresholds.queueStallMinutes, 15);
+  assert.equal(parsed.local.thresholds.retentionOverdueMaximum, 0);
   assert.equal(parsed.local.thresholds.notificationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.publicationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.indexNowFailureBacklogMaximum, 0);
@@ -390,6 +404,8 @@ test("runbooks and release gate require local monitor and independent external u
   assert.match(deployment, /com\.jihye\.portal\.monitor-hermes-hmac/);
   assert.match(deployment, /--monitor-config/);
   assert.match(deployment, /launchctl[\s\S]*com\.jihye\.portal\.monitor/i);
+  assert.match(deployment, /com\.jihye\.portal\.retention[\s\S]*(?:hour|시간)/i);
+  assert.match(incidents, /RETENTION_OVERDUE[\s\S]*(?:purge|보유기간)/i);
   assert.match(incidents, /HERMES_HANDOFF_FAILED[\s\S]*metadata/i);
   assert.match(deployment, /apply mode[\s\S]*HMAC[\s\S]*before[\s\S]*checks/i);
   assert.match(incidents, /DB_TIMEOUT[\s\S]*child process[\s\S]*hard timeout/i);

@@ -723,6 +723,69 @@ describe("notification worker privacy rechecks", () => {
     `).get()).toEqual({ state: "sent", provider_message_id: "smtp-full-id" });
   });
 
+  it("rechecks an authoritative purge after deferred SMTP DNS before decrypting or sending PII", async () => {
+    const processNext = requiredFunction<ProcessNext>("processNextNotification");
+    const createAdapter = requiredFunction<(options: Record<string, unknown>) => {
+      deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
+    }>("createSmtpNotificationAdapter");
+    testDatabase = createTestDatabase();
+    seedConsultation(testDatabase.db);
+    enableEmail(testDatabase.db, "full-inquiry");
+    enqueue(testDatabase.db, "delivery-purge-race", "consultation.purge-race");
+
+    let signalLookupStarted!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => { signalLookupStarted = resolve; });
+    let releaseLookup!: (addresses: Array<{ address: string; family: 4 }>) => void;
+    const lookupResult = new Promise<Array<{ address: string; family: 4 }>>((resolve) => {
+      releaseLookup = resolve;
+    });
+    const decryptPii = vi.fn(() => ({
+      name: "must-not-decrypt",
+      phone: "010-0000-0000",
+      email: "private@example.test",
+      message: "must-not-send",
+    }));
+    const sendMail = vi.fn(async () => ({ messageId: "must-not-send" }));
+    const adapter = createAdapter({
+      payloadMode: "full-inquiry",
+      fullInquiryApproved: true,
+      smtp: {
+        host: "smtp.example.com", port: 465, secure: true,
+        from: "office@example.test", to: "owner@example.test",
+      },
+      decryptPii,
+      sendMail,
+      lookup: async () => {
+        signalLookupStarted();
+        return await lookupResult;
+      },
+    });
+
+    const processing = processNext({
+      db: testDatabase.db,
+      workerId: "worker-purge-race",
+      adminOrigin: "https://admin.example.test",
+      now: () => 10,
+      attemptId: () => "attempt-purge-race",
+      adapters: { email: adapter },
+    });
+    await lookupStarted;
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations
+      SET pii_envelope = NULL, pii_key_id = NULL,
+          phone_blind_index = NULL, email_blind_index = NULL,
+          blind_index_key_id = NULL, purged_at_ms = 20, updated_at_ms = 20
+      WHERE id = 'consultation-1'
+    `).run();
+    releaseLookup([{ address: "93.184.216.34", family: 4 }]);
+
+    await expect(processing).resolves.toEqual({
+      kind: "cancelled", outcomeCode: "CONSULTATION_PURGED",
+    });
+    expect(decryptPii).not.toHaveBeenCalled();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
   it("turns a non-public SMTP DNS answer into a channel-local retry without network or PII access", async () => {
     const processNext = requiredFunction<ProcessNext>("processNextNotification");
     const createAdapter = requiredFunction<(options: Record<string, unknown>) => {

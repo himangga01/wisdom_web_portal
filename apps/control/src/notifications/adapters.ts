@@ -60,6 +60,10 @@ export interface NotificationDeliveryResult {
   providerMessageId: string;
 }
 
+export interface PreparedNotificationDelivery {
+  deliver(input: NotificationMetadata): Promise<NotificationDeliveryResult>;
+}
+
 interface SmtpSettings {
   host: string;
   port: number;
@@ -135,21 +139,22 @@ function marketingCopy(locale: string): (typeof MARKETING_COPY)[keyof typeof MAR
 
 export function createSmtpNotificationAdapter(options: SmtpAdapterOptions) {
   const timeoutMs = providerTimeoutMs(options.providerTimeoutMs);
-  return {
-    async deliver(input: NotificationMetadata): Promise<NotificationDeliveryResult> {
-      validateTlsSmtp(options.smtp);
-      if (options.payloadMode === "full-inquiry" && options.fullInquiryApproved !== true) {
-        throw new Error("Full-inquiry email delivery requires the explicit administrator gate");
-      }
-      const deadline = performance.now() + timeoutMs;
-      const lookup = options.lookup ?? (async (hostname, lookupOptions) =>
-        await dnsLookup(hostname, lookupOptions) as SmtpLookupAddress[]);
-      const resolved = await withProviderTimeout(
-        lookup(options.smtp.host, { all: true, verbatim: true }),
-        timeoutMs,
-        "SMTP",
-      );
-      const pinnedAddress = assertPublicSmtpResolution(resolved);
+  const prepare = async (): Promise<PreparedNotificationDelivery> => {
+    validateTlsSmtp(options.smtp);
+    if (options.payloadMode === "full-inquiry" && options.fullInquiryApproved !== true) {
+      throw new Error("Full-inquiry email delivery requires the explicit administrator gate");
+    }
+    const deadline = performance.now() + timeoutMs;
+    const lookup = options.lookup ?? (async (hostname, lookupOptions) =>
+      await dnsLookup(hostname, lookupOptions) as SmtpLookupAddress[]);
+    const resolved = await withProviderTimeout(
+      lookup(options.smtp.host, { all: true, verbatim: true }),
+      timeoutMs,
+      "SMTP",
+    );
+    const pinnedAddress = assertPublicSmtpResolution(resolved);
+    return {
+      async deliver(input: NotificationMetadata): Promise<NotificationDeliveryResult> {
       let recipient = options.smtp.to;
       let lines = [
         `Receipt: ${escapeHtml(input.receiptId)}`,
@@ -215,6 +220,13 @@ export function createSmtpNotificationAdapter(options: SmtpAdapterOptions) {
       } finally {
         closeTransport?.();
       }
+      },
+    };
+  };
+  return {
+    prepare,
+    async deliver(input: NotificationMetadata): Promise<NotificationDeliveryResult> {
+      return await (await prepare()).deliver(input);
     },
   };
 }

@@ -91,9 +91,15 @@ function boundedCount(value) {
 }
 
 export async function queryDatabaseAggregates(databasePath, {
+  nowMs = Date.now(),
+  staleBeforeMs = nowMs - 15 * 60_000,
   afterSqliteOpen,
   beforeFinalIdentityCheck,
 } = {}) {
+  if (
+    !Number.isSafeInteger(nowMs) || nowMs < 0 ||
+    !Number.isSafeInteger(staleBeforeMs) || staleBeforeMs < 0 || staleBeforeMs > nowMs
+  ) fail();
   if (afterSqliteOpen !== undefined && typeof afterSqliteOpen !== "function") fail();
   if (beforeFinalIdentityCheck !== undefined && typeof beforeFinalIdentityCheck !== "function") fail();
   const { default: Database } = await import("better-sqlite3");
@@ -127,6 +133,25 @@ export async function queryDatabaseAggregates(databasePath, {
               )) AS count
       `),
       indexNowFailures: count("SELECT count(*) count FROM publication_outbox WHERE state = 'failed'"),
+      notificationStalled: Number(database.prepare(`
+        SELECT count(*) count FROM notification_outbox
+        WHERE (state = 'pending' AND available_at_ms <= ?)
+          OR (state = 'processing' AND lease_expires_at_ms <= ?)
+      `).get(staleBeforeMs, nowMs).count),
+      translationStalled: Number(database.prepare(`
+        SELECT count(*) count FROM article_translation_jobs
+        WHERE (state = 'queued' AND available_at_ms <= ?)
+          OR (state = 'running' AND lease_expires_at_ms <= ?)
+      `).get(staleBeforeMs, nowMs).count),
+      indexNowStalled: Number(database.prepare(`
+        SELECT count(*) count FROM publication_outbox
+        WHERE (state = 'pending' AND available_at_ms <= ?)
+          OR (state = 'processing' AND lease_expires_at_ms <= ?)
+      `).get(staleBeforeMs, nowMs).count),
+      retentionOverdue: Number(database.prepare(`
+        SELECT count(*) count FROM consultations
+        WHERE purged_at_ms IS NULL AND retention_expires_at_ms <= ?
+      `).get(nowMs).count),
     };
     if (!Object.values(result).every(boundedCount)) fail();
     await beforeFinalIdentityCheck?.();
@@ -142,8 +167,13 @@ export async function queryDatabaseAggregates(databasePath, {
 }
 
 async function main() {
-  if (process.argv.length !== 4 || process.argv[2] !== "--database") fail();
-  const result = await queryDatabaseAggregates(process.argv[3]);
+  if (
+    process.argv.length !== 8 || process.argv[2] !== "--database" ||
+    process.argv[4] !== "--now-ms" || process.argv[6] !== "--stale-before-ms"
+  ) fail();
+  const nowMs = Number(process.argv[5]);
+  const staleBeforeMs = Number(process.argv[7]);
+  const result = await queryDatabaseAggregates(process.argv[3], { nowMs, staleBeforeMs });
   const output = JSON.stringify(result);
   if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) fail();
   process.stdout.write(`${output}\n`);

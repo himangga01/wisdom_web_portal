@@ -32,7 +32,12 @@ async function main() {
     age: createAgeAdapter({ executable: ageExecutable }),
     services: createMacServiceAdapter(),
   });
-  printJson({ dryRun: false, restored: true, quarantinePath: result.quarantinePath });
+  printJson({
+    dryRun: false,
+    restored: true,
+    quarantinePath: result.quarantinePath,
+    retentionPurgedCount: result.retentionPurgedCount,
+  });
 }
 
 main().catch((error) => {

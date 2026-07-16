@@ -200,6 +200,7 @@ interface LocaleText {
           invalid: string;
         };
         submit: string;
+        retryConsent: string;
     };
   };
   footer: {
@@ -348,6 +349,7 @@ const localizedText = {
           invalid: "입력 내용을 다시 확인해 주세요.",
         },
         submit: "상담 요청 보내기",
+        retryConsent: "동의 문서 다시 불러오기",
       },
     },
     footer: {
@@ -555,6 +557,7 @@ const localizedText = {
           invalid: "Review the form fields and try again.",
         },
         submit: "Send consultation request",
+        retryConsent: "Retry loading consent documents",
       },
     },
     footer: {
@@ -768,6 +771,7 @@ const localizedText = {
           invalid: "请检查输入内容后重试。",
         },
         submit: "提交咨询申请",
+        retryConsent: "重新加载同意文件",
       },
     },
     footer: {
@@ -975,6 +979,7 @@ const localizedText = {
           invalid: "請檢查輸入內容後重試。",
         },
         submit: "提交諮詢申請",
+        retryConsent: "重新載入同意文件",
       },
     },
     footer: {

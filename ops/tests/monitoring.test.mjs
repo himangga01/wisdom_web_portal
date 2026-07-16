@@ -46,6 +46,8 @@ function configValue(overrides = {}) {
       thresholds: {
         backupFreshnessMinutes: 90,
         diskFreePercentMinimum: 15,
+        queueStallMinutes: 15,
+        retentionOverdueMaximum: 0,
         notificationFailureBacklogMaximum: 0,
         publicationFailureBacklogMaximum: 0,
         indexNowFailureBacklogMaximum: 0,
@@ -79,6 +81,10 @@ function healthyAdapters(overrides = {}) {
       notificationFailures: 0,
       publicationFailures: 0,
       indexNowFailures: 0,
+      notificationStalled: 0,
+      translationStalled: 0,
+      indexNowStalled: 0,
+      retentionOverdue: 0,
     }),
     loadIncidentState: async () => undefined,
     writeIncidentState: async () => {},
@@ -133,6 +139,36 @@ test("a healthy local run is bounded, machine-readable, and sends no handoff", a
   assert.equal(report.handoff, "not-required");
   assert.ok(report.checks.every(({ state }) => state === "healthy"));
   assert.ok(Buffer.byteLength(JSON.stringify(report)) < 16 * 1024);
+});
+
+test("aged queue work and overdue retained PII make the monitor unhealthy", async () => {
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date("2026-07-16T01:00:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000109",
+    dryRun: true,
+  }, healthyAdapters({
+    readBacklogs: async () => ({
+      notificationFailures: 0,
+      publicationFailures: 0,
+      indexNowFailures: 0,
+      notificationStalled: 2,
+      translationStalled: 3,
+      indexNowStalled: 4,
+      retentionOverdue: 1,
+    }),
+  }));
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(
+    report.checks.filter(({ state }) => state === "failed").map(({ id, code, value }) => ({ id, code, value })),
+    [
+      { id: "notification-stalled", code: "NOTIFICATION_QUEUE_STALLED", value: 2 },
+      { id: "translation-stalled", code: "TRANSLATION_QUEUE_STALLED", value: 3 },
+      { id: "indexnow-stalled", code: "INDEXNOW_QUEUE_STALLED", value: 4 },
+      { id: "retention-overdue", code: "RETENTION_OVERDUE", value: 1 },
+    ],
+  );
 });
 
 test("apply mode validates the independent HMAC secret before any health or state operation", async () => {
@@ -417,22 +453,43 @@ test("system backlog reader opens only aggregate operational tables", async () =
   const { default: Database } = await import("better-sqlite3");
   const database = new Database(databasePath);
   database.exec(`
-    CREATE TABLE notification_outbox (state TEXT NOT NULL);
-    CREATE TABLE publication_outbox (state TEXT NOT NULL);
+    CREATE TABLE notification_outbox (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE publication_outbox (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE article_translation_jobs (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE consultations (retention_expires_at_ms INTEGER NOT NULL, purged_at_ms INTEGER);
     CREATE TABLE release_activations (state TEXT NOT NULL);
     CREATE TABLE releases (state TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
-    INSERT INTO notification_outbox VALUES ('failed'), ('sent');
-    INSERT INTO publication_outbox VALUES ('failed'), ('sent');
+    INSERT INTO notification_outbox VALUES
+      ('failed', 0, NULL), ('sent', 0, NULL), ('pending', 89999, NULL), ('processing', 99999, 99999);
+    INSERT INTO publication_outbox VALUES
+      ('failed', 0, NULL), ('sent', 0, NULL), ('pending', 89999, NULL), ('processing', 99999, 99999);
+    INSERT INTO article_translation_jobs VALUES
+      ('queued', 89999, NULL), ('succeeded', 0, NULL), ('running', 99999, 99999);
+    INSERT INTO consultations VALUES (100000, NULL), (100000, 99999), (100001, NULL);
     INSERT INTO release_activations VALUES ('prepared'), ('committed');
     INSERT INTO releases VALUES ('active', 100), ('failed', 90), ('failed', 110);
   `);
   database.close();
 
-  const result = await createSystemMonitoringAdapters().readBacklogs(databasePath, { timeoutMs: 1_000 });
+  const result = await createSystemMonitoringAdapters().readBacklogs(databasePath, {
+    timeoutMs: 1_000,
+    nowMs: 100000,
+    staleBeforeMs: 90000,
+  });
   assert.deepEqual(result, {
     notificationFailures: 1,
     publicationFailures: 2,
     indexNowFailures: 1,
+    notificationStalled: 2,
+    translationStalled: 2,
+    indexNowStalled: 2,
+    retentionOverdue: 1,
   });
 });
 

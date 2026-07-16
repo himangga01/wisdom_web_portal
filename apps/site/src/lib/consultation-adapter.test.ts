@@ -116,6 +116,32 @@ describe("consultation form adapter", () => {
     );
   });
 
+  it("aborts a hung consent configuration request with a bounded timeout signal", async () => {
+    const { loadConsentConfiguration } = await import("./consultation-adapter.js");
+    const timeoutController = new AbortController();
+    const timeoutSignal = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchRef = vi.fn((
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+    }));
+
+    try {
+      const request = loadConsentConfiguration("en", { fetchRef });
+
+      expect(timeoutSignal).toHaveBeenCalledWith(10_000);
+      expect(requestSignal).toBe(timeoutController.signal);
+      timeoutController.abort(new DOMException("Consent request timed out", "TimeoutError"));
+      await expect(request).rejects.toMatchObject({ name: "TimeoutError" });
+    } finally {
+      timeoutController.abort();
+      timeoutSignal.mockRestore();
+    }
+  });
+
   it("rejects incomplete or semantically invalid consent documents", async () => {
     const { parseConsentConfiguration } = await import("./consultation-adapter.js");
     const response = {
@@ -189,6 +215,38 @@ describe("consultation form adapter", () => {
       },
       body: JSON.stringify(submission),
     });
+  });
+
+  it("aborts a hung consultation submission with a bounded timeout signal", async () => {
+    const { buildConsultationSubmission, postConsultation } = await import("./consultation-adapter.js");
+    const timeoutController = new AbortController();
+    const timeoutSignal = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchRef = vi.fn((
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+    }));
+
+    try {
+      const request = postConsultation(
+        buildConsultationSubmission(formData(), consentConfiguration),
+        {
+          fetchRef,
+          idempotencyKey: "00000000-0000-4000-8000-000000000001",
+        },
+      );
+
+      expect(timeoutSignal).toHaveBeenCalledWith(10_000);
+      expect(requestSignal).toBe(timeoutController.signal);
+      timeoutController.abort(new DOMException("Consultation request timed out", "TimeoutError"));
+      await expect(request).rejects.toMatchObject({ name: "TimeoutError" });
+    } finally {
+      timeoutController.abort();
+      timeoutSignal.mockRestore();
+    }
   });
 
   it("reuses the idempotency key for the same serialized envelope and rotates on token changes", async () => {

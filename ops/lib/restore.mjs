@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -7,14 +7,17 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   rename,
   rm,
 } from "node:fs/promises";
 import path from "node:path";
 
 import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
+import { hashSecureRegularFile, readSecureRegularFile } from "./monitor-files.mjs";
 import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
+
+const MAX_BACKUP_STATUS_BYTES = 16 * 1024;
+const MAX_BACKUP_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024;
 
 function fail(code, message) {
   const error = new Error(message);
@@ -65,6 +68,19 @@ async function syncDirectory(directory) {
   }
 }
 
+async function readBackupStatus(statusPath) {
+  try {
+    return JSON.parse((await readSecureRegularFile(statusPath, {
+      code: "RESTORE_STATUS_INVALID",
+      maxBytes: MAX_BACKUP_STATUS_BYTES,
+      requireProtected: true,
+    })).toString("utf8"));
+  } catch (error) {
+    if (error?.code === "RESTORE_STATUS_INVALID") throw error;
+    fail("RESTORE_STATUS_INVALID", "Backup status is not valid bounded JSON");
+  }
+}
+
 export function planRestore(input) {
   for (const [name, candidate] of Object.entries({
     backupRoot: input.backupRoot,
@@ -102,7 +118,7 @@ export function planRestore(input) {
     status: backup.replace(/\.age$/u, ".json"),
     target,
     tempRoot,
-    steps: ["assert-services-stopped", "verify-encrypted-hash", "decrypt", "integrity-and-schema", "quarantine-old", "atomic-replace", "start-and-ready"],
+    steps: ["assert-services-stopped", "verify-encrypted-hash", "decrypt", "integrity-and-schema", "enforce-current-retention", "quarantine-old", "atomic-replace", "start-and-ready"],
   };
 }
 
@@ -127,6 +143,7 @@ async function restoreBackupLocked(input, plan, adapters) {
   let quarantined = false;
   let replaced = false;
   let serviceStopAttempted = false;
+  let retentionPurgedCount = 0;
   try {
     await adapters.services.assertStopped();
     if (adapters.services.stop) {
@@ -148,10 +165,20 @@ async function restoreBackupLocked(input, plan, adapters) {
       const metadata = await lstat(candidate);
       if (!metadata.isFile() || metadata.isSymbolicLink()) fail("RESTORE_INPUT_INVALID", "Backup inputs must be regular non-symlink files");
     }
-    const status = JSON.parse(await readFile(plan.status, "utf8"));
-    const encryptedSha256 = createHash("sha256").update(await readFile(plan.backup)).digest("hex");
-    if (status.verified !== true || status.encryptedSha256 !== encryptedSha256) {
-      fail("BACKUP_HASH_MISMATCH", "Encrypted backup hash does not match its verified status");
+    const status = await readBackupStatus(plan.status);
+    const encrypted = await hashSecureRegularFile(plan.backup, {
+      code: "RESTORE_INPUT_INVALID",
+      maxBytes: MAX_BACKUP_ARTIFACT_BYTES,
+      requireProtected: true,
+    });
+    if (
+      status.verified !== true ||
+      !Number.isSafeInteger(status.encryptedBytes) || status.encryptedBytes < 0 ||
+      !/^[a-f0-9]{64}$/u.test(status.encryptedSha256 ?? "") ||
+      status.encryptedBytes !== encrypted.size ||
+      status.encryptedSha256 !== encrypted.sha256
+    ) {
+      fail("BACKUP_HASH_MISMATCH", "Encrypted backup hash or size does not match its verified status");
     }
 
     work = await mkdtemp(path.join(plan.tempRoot, ".restore-work-"));
@@ -171,6 +198,22 @@ async function restoreBackupLocked(input, plan, adapters) {
     await mkdir(path.dirname(plan.target), { recursive: true, mode: 0o700 });
     await copyFile(decrypted, staged, constants.COPYFILE_EXCL);
     await chmod(staged, 0o600);
+    if (typeof adapters.sqlite.enforceRetention !== "function") {
+      fail("RESTORE_RETENTION_UNAVAILABLE", "Restore retention enforcement is unavailable");
+    }
+    const retention = await adapters.sqlite.enforceRetention(staged, now.valueOf());
+    if (!Number.isSafeInteger(retention?.purgedCount) || retention.purgedCount < 0) {
+      fail("RESTORE_RETENTION_INVALID", "Restore retention returned an invalid result");
+    }
+    retentionPurgedCount = retention.purgedCount;
+    const retainedInspection = await adapters.sqlite.inspect(staged);
+    if (
+      retainedInspection.integrity !== "ok" ||
+      retainedInspection.schemaVersion !== inspection.schemaVersion ||
+      !(await adapters.sqlite.schemaCompatible(retainedInspection))
+    ) {
+      fail("RESTORE_RETENTION_INVALID", "Restore retention failed post-mutation verification");
+    }
     await syncFile(staged);
 
     await adapters.services.assertStopped();
@@ -189,7 +232,12 @@ async function restoreBackupLocked(input, plan, adapters) {
     replaced = true;
     await adapters.services.start();
     await adapters.services.checkReady();
-    return { ...plan, dryRun: false, quarantinePath: quarantined ? quarantinePath : undefined };
+    return {
+      ...plan,
+      dryRun: false,
+      quarantinePath: quarantined ? quarantinePath : undefined,
+      retentionPurgedCount,
+    };
   } catch (error) {
     let recoveryCause;
     if (replaced) {

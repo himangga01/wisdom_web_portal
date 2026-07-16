@@ -160,10 +160,15 @@ test("rollback validates a retained release and health before atomic switch", as
 });
 
 test("post-switch health failure restores the previous pointer and services", async () => {
+  let healthChecks = 0;
   const { adapter, calls } = createAdapter({
     checkActiveHealth: async () => {
-      calls.push("active-health-failed");
-      throw Object.assign(new Error("active unhealthy"), { code: "ACTIVE_NOT_READY" });
+      healthChecks++;
+      if (healthChecks === 1) {
+        calls.push("active-health-failed");
+        throw Object.assign(new Error("active unhealthy"), { code: "ACTIVE_NOT_READY" });
+      }
+      calls.push("active-health-recovered");
     },
   });
 
@@ -173,9 +178,166 @@ test("post-switch health failure restores the previous pointer and services", as
     "active-health-failed",
     "restore-current",
     "restart-services",
-    "active-health-failed",
+    "active-health-recovered",
     "remove-incomplete",
   ]);
+});
+
+test("deploy surfaces a distinct rollback failure with both causes", async (t) => {
+  const cases = [
+    {
+      name: "pointer restore",
+      overrides: (calls) => ({
+        restoreCurrent: async () => {
+          calls.push("restore-current-failed");
+          throw Object.assign(new Error("private restore detail"), { code: "POINTER_RESTORE_FAILED" });
+        },
+      }),
+      recoveryCode: "POINTER_RESTORE_FAILED",
+    },
+    {
+      name: "service restart",
+      overrides: (calls) => {
+        let restarts = 0;
+        return {
+          restartServices: async () => {
+            restarts++;
+            calls.push(`restart-services-${restarts}`);
+            if (restarts === 2) {
+              throw Object.assign(new Error("private restart detail"), { code: "SERVICE_RESTART_FAILED" });
+            }
+          },
+        };
+      },
+      recoveryCode: "SERVICE_RESTART_FAILED",
+    },
+    {
+      name: "recovery health",
+      overrides: (calls) => {
+        let checks = 0;
+        return {
+          checkActiveHealth: async () => {
+            checks++;
+            calls.push(`active-health-${checks}`);
+            throw Object.assign(
+              new Error(checks === 1 ? "active unhealthy" : "private recovery health detail"),
+              { code: checks === 1 ? "ACTIVE_NOT_READY" : "RECOVERY_NOT_READY" },
+            );
+          },
+        };
+      },
+      recoveryCode: "RECOVERY_NOT_READY",
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const base = createAdapter();
+      const overrides = item.overrides(base.calls);
+      let healthChecks = 0;
+      const adapter = {
+        ...base.adapter,
+        checkActiveHealth: async () => {
+          healthChecks++;
+          base.calls.push(`active-health-${healthChecks}`);
+          if (healthChecks === 1) {
+            throw Object.assign(new Error("active unhealthy"), { code: "ACTIVE_NOT_READY" });
+          }
+        },
+        ...overrides,
+      };
+
+      await assert.rejects(deployRelease({ ...fixture, dryRun: false }, adapter), (error) => {
+        assert.equal(error.code, "RELEASE_ROLLBACK_FAILED");
+        assert.equal(error.cause?.code, "ACTIVE_NOT_READY");
+        assert.equal(error.recoveryCause?.code, item.recoveryCode);
+        assert.doesNotMatch(error.message, /private/u);
+        return true;
+      });
+    });
+  }
+});
+
+test("rollback surfaces a distinct rollback failure with both causes", async (t) => {
+  const rollbackInput = {
+    releaseRoot: fixture.releaseRoot,
+    currentLink: fixture.currentLink,
+    releaseId: "20260715T010203Z-fedcba9",
+    canaryPort: 18788,
+    dryRun: false,
+  };
+  const cases = [
+    {
+      name: "pointer restore",
+      overrides: (calls) => ({
+        restoreCurrent: async () => {
+          calls.push("restore-current-failed");
+          throw Object.assign(new Error("private restore detail"), { code: "POINTER_RESTORE_FAILED" });
+        },
+      }),
+      recoveryCode: "POINTER_RESTORE_FAILED",
+    },
+    {
+      name: "service restart",
+      overrides: (calls) => {
+        let restarts = 0;
+        return {
+          restartServices: async () => {
+            restarts++;
+            calls.push(`restart-services-${restarts}`);
+            if (restarts === 2) {
+              throw Object.assign(new Error("private restart detail"), { code: "SERVICE_RESTART_FAILED" });
+            }
+          },
+        };
+      },
+      recoveryCode: "SERVICE_RESTART_FAILED",
+    },
+    {
+      name: "recovery health",
+      overrides: (calls) => {
+        let checks = 0;
+        return {
+          checkActiveHealth: async () => {
+            checks++;
+            calls.push(`active-health-${checks}`);
+            throw Object.assign(
+              new Error(checks === 1 ? "active unhealthy" : "private recovery health detail"),
+              { code: checks === 1 ? "ACTIVE_NOT_READY" : "RECOVERY_NOT_READY" },
+            );
+          },
+        };
+      },
+      recoveryCode: "RECOVERY_NOT_READY",
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const base = createAdapter({ exists: async () => true });
+      const overrides = item.overrides(base.calls);
+      let healthChecks = 0;
+      const adapter = {
+        ...base.adapter,
+        checkActiveHealth: async () => {
+          healthChecks++;
+          base.calls.push(`active-health-${healthChecks}`);
+          if (healthChecks === 1) {
+            throw Object.assign(new Error("active unhealthy"), { code: "ACTIVE_NOT_READY" });
+          }
+        },
+        ...overrides,
+      };
+
+      await assert.rejects(rollbackRelease(rollbackInput, adapter), (error) => {
+        assert.equal(error.code, "RELEASE_ROLLBACK_FAILED");
+        assert.equal(error.cause?.code, "ACTIVE_NOT_READY");
+        assert.equal(error.recoveryCause?.code, item.recoveryCode);
+        assert.doesNotMatch(error.message, /private/u);
+        return true;
+      });
+    });
+  }
 });
 
 test("a pointer rename followed by fsync failure is observed and rolled back", async () => {

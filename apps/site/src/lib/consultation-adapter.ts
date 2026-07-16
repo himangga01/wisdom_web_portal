@@ -10,6 +10,7 @@ import {
 
 const CONSENT_ENDPOINT = "/api/v1/consent-documents";
 const CONSULTATION_ENDPOINT = "/api/v1/consultations";
+const REQUEST_TIMEOUT_MS = 10_000;
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -141,6 +142,7 @@ export async function loadConsentConfiguration(
     headers: { Accept: "application/json" },
     credentials: "same-origin",
     cache: "no-store",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Consent configuration unavailable: ${response.status}`);
   return parseConsentConfiguration(await response.json(), locale);
@@ -197,6 +199,7 @@ export async function postConsultation(
     },
     credentials: "same-origin",
     body: JSON.stringify(submission),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const body: unknown = await response.json().catch(() => undefined);
 

@@ -36,6 +36,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     const localeControl = form.elements.namedItem("locale");
     const contactMethods = Array.from(form.querySelectorAll<HTMLInputElement>('[name="preferredContact"]'));
     const consentFieldset = form.querySelector<HTMLFieldSetElement>("[data-consent-fieldset]");
+    const consentRetry = form.querySelector<HTMLButtonElement>("[data-consent-retry]");
     const status = form.querySelector<HTMLElement>("[data-form-status]");
     const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
     const idempotencyKeyFor = createConsultationIdempotencyKeyCache();
@@ -58,12 +59,27 @@ export function initializeConsultationForms(documentRef: Document = document): v
       status.textContent = message;
     };
 
+    const hideStatus = (): void => {
+      if (!status) return;
+      status.hidden = true;
+      status.dataset.state = "";
+      status.setAttribute("role", "status");
+      status.textContent = "";
+    };
+
+    const setConsentRetryAvailable = (available: boolean): void => {
+      if (!consentRetry) return;
+      consentRetry.hidden = !available;
+      consentRetry.disabled = !available;
+    };
+
     const syncSubmitAvailability = (): void => {
       if (submit) submit.disabled = submitting || activeConsent === undefined;
     };
 
     const resetConsentDisplay = (): void => {
       activeConsent = undefined;
+      setConsentRetryAvailable(false);
       for (const control of [privacy, marketing]) {
         if (control instanceof HTMLInputElement) {
           control.checked = false;
@@ -102,12 +118,14 @@ export function initializeConsultationForms(documentRef: Document = document): v
     ): Promise<ConsentConfiguration | undefined> => {
       const generation = ++consentLoadGeneration;
       consentLocale = locale;
+      hideStatus();
       resetConsentDisplay();
       if (!locale) return undefined;
       const loaded = await loadConsentConfiguration(locale).catch(() => undefined);
       if (generation !== consentLoadGeneration || selectedLocale() !== locale) return loaded;
       if (!loaded) {
         consentFieldset?.setAttribute("aria-busy", "false");
+        setConsentRetryAvailable(true);
         showStatus("error", form.dataset.statusConfigurationFailure ?? "");
         return undefined;
       }
@@ -116,6 +134,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
         renderConsentDocument("marketing", loaded.documents.marketing);
       } catch {
         consentFieldset?.setAttribute("aria-busy", "false");
+        setConsentRetryAvailable(true);
         showStatus("error", form.dataset.statusConfigurationFailure ?? "");
         return undefined;
       }
@@ -161,6 +180,9 @@ export function initializeConsultationForms(documentRef: Document = document): v
     form.addEventListener("change", (event) => {
       updateEmailConstraint();
       if (event.target === localeControl) void refreshConsent();
+    });
+    consentRetry?.addEventListener("click", () => {
+      void refreshConsent();
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();

@@ -109,10 +109,13 @@ function validateConfig(value) {
   const thresholds = local.thresholds;
   if (!exactKeys(thresholds, [
     "backupFreshnessMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
-    "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum",
+    "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum", "queueStallMinutes",
+    "retentionOverdueMaximum",
   ]) ||
     !integer(thresholds.backupFreshnessMinutes, 1, 1_440) ||
     !integer(thresholds.diskFreePercentMinimum, 1, 99) ||
+    !integer(thresholds.queueStallMinutes, 1, 1_440) ||
+    !integer(thresholds.retentionOverdueMaximum, 0, 1_000_000) ||
     !integer(thresholds.notificationFailureBacklogMaximum, 0, 1_000_000) ||
     !integer(thresholds.publicationFailureBacklogMaximum, 0, 1_000_000) ||
     !integer(thresholds.indexNowFailureBacklogMaximum, 0, 1_000_000)
@@ -379,11 +382,29 @@ export async function runLocalMonitor({
         ? healthy("control-ready")
         : failed("control-ready", "CONTROL_NOT_READY")),
     safeCheck("backlogs", "BACKLOG_CHECK_FAILED", checkMs, async (signal) => {
-      const values = await adapters.readBacklogs(local.databasePath, { signal, timeoutMs: checkMs });
+      const nowMs = now.valueOf();
+      const values = await adapters.readBacklogs(local.databasePath, {
+        signal,
+        timeoutMs: checkMs,
+        nowMs,
+        staleBeforeMs: nowMs - local.thresholds.queueStallMinutes * 60_000,
+      });
       const notification = boundedCount(values?.notificationFailures);
       const publication = boundedCount(values?.publicationFailures);
       const indexNow = boundedCount(values?.indexNowFailures);
-      if ([notification, publication, indexNow].includes(undefined)) return failed("backlogs", "BACKLOG_RESULT_INVALID");
+      const notificationStalled = boundedCount(values?.notificationStalled);
+      const translationStalled = boundedCount(values?.translationStalled);
+      const indexNowStalled = boundedCount(values?.indexNowStalled);
+      const retentionOverdue = boundedCount(values?.retentionOverdue);
+      if ([
+        notification,
+        publication,
+        indexNow,
+        notificationStalled,
+        translationStalled,
+        indexNowStalled,
+        retentionOverdue,
+      ].includes(undefined)) return failed("backlogs", "BACKLOG_RESULT_INVALID");
       return [
         notification > local.thresholds.notificationFailureBacklogMaximum
           ? failed("notification-backlog", "NOTIFICATION_FAILURE_BACKLOG", notification)
@@ -394,6 +415,18 @@ export async function runLocalMonitor({
         indexNow > local.thresholds.indexNowFailureBacklogMaximum
           ? failed("indexnow-backlog", "INDEXNOW_FAILURE_BACKLOG", indexNow)
           : healthy("indexnow-backlog", indexNow),
+        notificationStalled > 0
+          ? failed("notification-stalled", "NOTIFICATION_QUEUE_STALLED", notificationStalled)
+          : healthy("notification-stalled", notificationStalled),
+        translationStalled > 0
+          ? failed("translation-stalled", "TRANSLATION_QUEUE_STALLED", translationStalled)
+          : healthy("translation-stalled", translationStalled),
+        indexNowStalled > 0
+          ? failed("indexnow-stalled", "INDEXNOW_QUEUE_STALLED", indexNowStalled)
+          : healthy("indexnow-stalled", indexNowStalled),
+        retentionOverdue > local.thresholds.retentionOverdueMaximum
+          ? failed("retention-overdue", "RETENTION_OVERDUE", retentionOverdue)
+          : healthy("retention-overdue", retentionOverdue),
       ];
     }, {
       MONITOR_CHECK_TIMEOUT: "DB_TIMEOUT",
@@ -526,7 +559,12 @@ export function createSystemMonitoringAdapters({
       response.body?.cancel();
       return response.status === 200;
     },
-    readBacklogs: async (databasePath, { signal, timeoutMs }) => {
+    readBacklogs: async (databasePath, {
+      signal,
+      timeoutMs,
+      nowMs = Date.now(),
+      staleBeforeMs = nowMs - 15 * 60_000,
+    }) => {
       await assertSecureRealDirectory(path.dirname(databasePath), {
         code: "MONITOR_DATABASE_INVALID",
         requireProtected: true,
@@ -540,7 +578,18 @@ export function createSystemMonitoringAdapters({
       }
       let output;
       try {
-        output = await execute(nodeBinary, [databaseHelper, "--database", canonical], {
+        if (!integer(nowMs, 0, Number.MAX_SAFE_INTEGER) || !integer(staleBeforeMs, 0, nowMs)) {
+          fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate time bounds are invalid");
+        }
+        output = await execute(nodeBinary, [
+          databaseHelper,
+          "--database",
+          canonical,
+          "--now-ms",
+          String(nowMs),
+          "--stale-before-ms",
+          String(staleBeforeMs),
+        ], {
           encoding: "utf8",
           env: {
             LANG: "C",
@@ -579,7 +628,15 @@ export function createSystemMonitoringAdapters({
       } catch {
         fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate result was invalid");
       }
-      if (!exactKeys(result, ["indexNowFailures", "notificationFailures", "publicationFailures"]) ||
+      if (!exactKeys(result, [
+        "indexNowFailures",
+        "indexNowStalled",
+        "notificationFailures",
+        "notificationStalled",
+        "publicationFailures",
+        "retentionOverdue",
+        "translationStalled",
+      ]) ||
         !Object.values(result).every((value) => boundedCount(value) !== undefined)) {
         fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate result was invalid");
       }

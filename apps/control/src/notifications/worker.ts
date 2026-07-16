@@ -1,5 +1,9 @@
 import type { ControlDatabase } from "../db/client.js";
-import type { NotificationDeliveryResult, NotificationMetadata } from "./adapters.js";
+import type {
+  NotificationDeliveryResult,
+  NotificationMetadata,
+  PreparedNotificationDelivery,
+} from "./adapters.js";
 import {
   cancelClaimedNotification,
   claimNotification,
@@ -8,8 +12,8 @@ import {
 } from "./outbox.js";
 import { mintMarketingWithdrawalCapability } from "../withdrawal/service.js";
 
-export interface NotificationAdapter {
-  deliver(input: NotificationMetadata): Promise<NotificationDeliveryResult>;
+export interface NotificationAdapter extends PreparedNotificationDelivery {
+  prepare?(): Promise<PreparedNotificationDelivery>;
 }
 
 export interface NotificationWorkerLogEvent {
@@ -167,8 +171,15 @@ export async function processNextNotification(
     }
   }
 
-  // The capability insert and adapter construction may have yielded to another
-  // connection. This is the last synchronous privacy check before external I/O.
+  let preparedAdapter: PreparedNotificationDelivery = adapter;
+  try {
+    preparedAdapter = adapter.prepare ? await adapter.prepare() : adapter;
+  } catch {
+    return fail("PROVIDER_ERROR");
+  }
+
+  // Provider preparation may yield for DNS without touching PII. Re-read the
+  // authoritative row after that I/O, immediately before decrypting or sending.
   checkedAtMs = clock();
   row = readDeliveryRow();
   if (!row) {
@@ -207,7 +218,7 @@ export async function processNextNotification(
   };
   let delivered: NotificationDeliveryResult;
   try {
-    delivered = await adapter.deliver(metadata);
+    delivered = await preparedAdapter.deliver(metadata);
   } catch {
     return fail("PROVIDER_ERROR");
   }

@@ -26,6 +26,10 @@ Cloudflare DNS hostname, tunnel ingress, 인증서 상태를 확인한다. apex,
 
 실패 수, oldest age, 채널만 확인한다. 수신자나 본문을 로그에 남기지 않는다. 설정/Keychain/SMTP 또는 Hermes loopback 상태를 고친 뒤 제한적으로 requeue한다.
 
+## stalled queue 또는 retention overdue
+
+`NOTIFICATION_QUEUE_STALLED`, `TRANSLATION_QUEUE_STALLED`, `INDEXNOW_QUEUE_STALLED`가 발생하면 15분 기준을 넘긴 집계 수와 worker/lease 상태만 확인한다. `RETENTION_OVERDUE`이면 `com.jihye.portal.retention`의 최근 실행 상태와 purge의 안전한 결과 수치부터 확인한다. 어느 경우에도 상담 본문이나 연락처를 조회·출력하지 말고, 개인정보 보유기간 purge와 WAL 확인 절차에 따라 남은 배치를 처리한다.
+
 ## local monitor 또는 Hermes handoff
 
 `monitor.stdout.log`의 bounded JSON에서 실패한 check ID, 안전한 오류 코드, 숫자 값만 확인한다. `HERMES_HANDOFF_FAILED`이면 등록된 loopback Hermes 프로세스 상태와 `com.jihye.portal.monitor-hermes-hmac` Keychain 접근을 각각 확인한다. Hermes에는 metadata와 오류 코드만 전달하며 raw HTTP response, endpoint query, credential, 상담 데이터는 수집하거나 재전송하지 않는다. 복구 뒤 `monitor.mjs --validate-only`, 이어서 `--dry-run`으로 검사하고, 정상 상태에서 handoff가 발생하지 않는지 확인한 다음 launchd job을 한 번 kickstart한다. 이 경로는 Telegram bot이나 목적지를 직접 호출하지 않는다.

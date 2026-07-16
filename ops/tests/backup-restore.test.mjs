@@ -34,6 +34,7 @@ function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptEr
         bytes: Buffer.byteLength(await readFile(database)),
       }),
       schemaCompatible: async ({ schemaVersion }) => schemaVersion === 3,
+      enforceRetention: async () => ({ purgedCount: 0 }),
     },
     age: {
       encrypt: async ({ input, output }) => {
@@ -54,6 +55,13 @@ function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptEr
     },
   };
 }
+
+test("backup and restore verification never read an entire file into memory", async () => {
+  for (const modulePath of ["../lib/backup.mjs", "../lib/restore.mjs"]) {
+    const source = await readFile(new URL(modulePath, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /\breadFile\s*\(/u, `${modulePath} must use bounded or streaming reads`);
+  }
+});
 
 test("online backup is consistent, encrypted, verified, and leaves no plaintext", async () => {
   const root = await fixtureDirectory("backup");
@@ -351,6 +359,38 @@ test("retention keeps 24 hourly and 14 daily verified snapshots", async () => {
   assert.ok(names.includes("hourly-20260727T000000Z.age"));
 });
 
+test("retention ignores oversized status files without reading or deleting their artifacts", async () => {
+  const backupRoot = await fixtureDirectory("retention-oversized-status");
+  const encrypted = "ciphertext";
+  const encryptedSha256 = createHash("sha256").update(encrypted).digest("hex");
+  const recentBase = "hourly-20260716T020000Z";
+  const oversizedBase = "hourly-20260716T010000Z";
+  const metadata = {
+    verified: true,
+    kind: "hourly",
+    encryptedSha256,
+    encryptedBytes: Buffer.byteLength(encrypted),
+  };
+
+  await writeFile(path.join(backupRoot, `${recentBase}.age`), encrypted);
+  await writeFile(path.join(backupRoot, `${recentBase}.json`), JSON.stringify({
+    ...metadata,
+    createdAt: "2026-07-16T02:00:00.000Z",
+  }));
+  await writeFile(path.join(backupRoot, `${oversizedBase}.age`), encrypted);
+  await writeFile(path.join(backupRoot, `${oversizedBase}.json`), JSON.stringify({
+    ...metadata,
+    createdAt: "2026-07-16T01:00:00.000Z",
+    padding: "x".repeat(17 * 1024),
+  }));
+
+  const result = await applyBackupRetention(backupRoot, { hourly: 1, daily: 1 });
+  const names = await readdir(backupRoot);
+  assert.equal(result.deletedArtifacts, 0);
+  assert.ok(names.includes(`${oversizedBase}.age`));
+  assert.ok(names.includes(`${oversizedBase}.json`));
+});
+
 test("backup freshness alerts after 90 minutes", async () => {
   const backupRoot = await fixtureDirectory("freshness");
   const artifact = path.join(backupRoot, "hourly-20260716T010000Z.age");
@@ -383,6 +423,7 @@ test("restore is dry-run by default and apply requires exact absolute target con
 
   assert.equal(plan.dryRun, true);
   assert.equal(plan.target, path.resolve(target));
+  assert.ok(plan.steps.includes("enforce-current-retention"));
   assert.throws(() => planRestore({
     backupRoot,
     backup,
@@ -392,6 +433,89 @@ test("restore is dry-run by default and apply requires exact absolute target con
     confirmDestroy: `${path.resolve(target)}x`,
   }), { code: "RESTORE_CONFIRMATION_MISMATCH" });
   assert.throws(() => planRestore({ backupRoot, backup, target: "portal.sqlite", tempRoot }), { code: "RESTORE_INPUT_INVALID" });
+});
+
+test("restore rejects a verified hash when the encrypted byte count does not match", async () => {
+  const root = await fixtureDirectory("restore-size-mismatch");
+  const backupRoot = path.join(root, "backups");
+  const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
+  const status = path.join(backupRoot, "hourly-20260716T010203Z.json");
+  const target = path.join(root, "portal.sqlite");
+  const encrypted = "verified-ciphertext";
+  await mkdir(backupRoot, { recursive: true });
+  await writeFile(backup, encrypted);
+  await writeFile(status, JSON.stringify({
+    verified: true,
+    schemaVersion: 3,
+    encryptedSha256: createHash("sha256").update(encrypted).digest("hex"),
+    encryptedBytes: Buffer.byteLength(encrypted) + 1,
+  }));
+  await writeFile(target, "unchanged");
+  let decryptCalled = false;
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup,
+    target,
+    tempRoot: path.join(root, "temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters(),
+    age: {
+      ...fakeAdapters().age,
+      decrypt: async () => {
+        decryptCalled = true;
+      },
+    },
+    services: { assertStopped: async () => undefined },
+  }), { code: "BACKUP_HASH_MISMATCH" });
+
+  assert.equal(decryptCalled, false);
+  assert.equal(await readFile(target, "utf8"), "unchanged");
+});
+
+test("restore rejects an oversized status file before decrypting the artifact", async () => {
+  const root = await fixtureDirectory("restore-oversized-status");
+  const backupRoot = path.join(root, "backups");
+  const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
+  const status = path.join(backupRoot, "hourly-20260716T010203Z.json");
+  const target = path.join(root, "portal.sqlite");
+  const encrypted = "verified-ciphertext";
+  await mkdir(backupRoot, { recursive: true });
+  await writeFile(backup, encrypted);
+  await writeFile(status, JSON.stringify({
+    verified: true,
+    schemaVersion: 3,
+    encryptedSha256: createHash("sha256").update(encrypted).digest("hex"),
+    encryptedBytes: Buffer.byteLength(encrypted),
+    padding: "x".repeat(17 * 1024),
+  }));
+  await writeFile(target, "unchanged");
+  let decryptCalled = false;
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup,
+    target,
+    tempRoot: path.join(root, "temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters(),
+    age: {
+      ...fakeAdapters().age,
+      decrypt: async () => {
+        decryptCalled = true;
+      },
+    },
+    services: { assertStopped: async () => undefined },
+  }), { code: "RESTORE_STATUS_INVALID" });
+
+  assert.equal(decryptCalled, false);
+  assert.equal(await readFile(target, "utf8"), "unchanged");
 });
 
 test("guarded restore verifies encrypted metadata and preserves the old DB in quarantine", async () => {
@@ -437,6 +561,59 @@ test("guarded restore verifies encrypted metadata and preserves the old DB in qu
   assert.equal(await readFile(result.quarantinePath, "utf8"), "old-production-database");
   assert.deepEqual(serviceCalls, ["stopped", "stopped", "start", "ready"]);
   assert.deepEqual(await readdir(restoreTemp), []);
+});
+
+test("restore enforces current retention on the staged database before replacement and startup", async () => {
+  const root = await fixtureDirectory("restore-retention");
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, expiredPii: "must-not-return" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "old-production-db");
+  const calls = [];
+  const adapters = fakeAdapters();
+  adapters.sqlite.enforceRetention = async (databasePath, nowMs) => {
+    calls.push(["retention", path.basename(databasePath), nowMs]);
+    await writeFile(databasePath, JSON.stringify({ schemaVersion: 3, expiredPii: null }));
+    return { purgedCount: 1 };
+  };
+
+  await restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+    now: new Date("2026-07-16T03:04:05.000Z"),
+  }, {
+    ...adapters,
+    services: {
+      assertStopped: async () => calls.push(["stopped"]),
+      start: async () => calls.push(["start"]),
+      checkReady: async () => calls.push(["ready"]),
+    },
+  });
+
+  assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { schemaVersion: 3, expiredPii: null });
+  assert.deepEqual(calls, [
+    ["stopped"],
+    ["retention", calls[1][1], Date.parse("2026-07-16T03:04:05.000Z")],
+    ["stopped"],
+    ["start"],
+    ["ready"],
+  ]);
+  assert.match(calls[1][1], /^\.portal\.sqlite\.restore-/u);
 });
 
 test("restore rechecks service quiescence immediately before replacing the database", async () => {
@@ -714,7 +891,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
     assert.equal(restored.pragma("integrity_check", { simple: true }), "ok");
-    assert.equal(restored.pragma("user_version", { simple: true }), 4);
+    assert.equal(restored.pragma("user_version", { simple: true }), 5);
   } finally {
     restored.close();
   }
