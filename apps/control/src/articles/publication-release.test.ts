@@ -20,7 +20,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createStaticKeyProvider } from "../crypto/index.js";
-import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import { activateConsentBundle, seedCompleteConsentBundles } from "../consent/service.js";
 import {
   claimIndexNowDelivery,
   completeIndexNowDelivery,
@@ -84,6 +85,8 @@ function insertRevision(
 
 beforeEach(() => {
   fixture = createTestDatabase();
+  seedCompleteConsentBundles(fixture.db, consentBundle(), NOW - 10_000);
+  activateConsentBundle(fixture.db, "bundle-2026-07-16", NOW - 9_000);
   root = mkdtempSync(join(tmpdir(), "wisdom-publication-release-"));
   mkdirSync(join(root, "releases"));
   mkdirSync(join(root, "site"));
@@ -136,6 +139,15 @@ function write(relativePath: string, contents: string, outputDirectory: string) 
   writeFileSync(path, contents, "utf8");
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function prepareRelease(
   snapshot: PublicationSnapshot,
   outputDirectory: string,
@@ -151,6 +163,20 @@ function prepareRelease(
     ).join("") + (korean
       ? `<link rel="alternate" hreflang="x-default" href="https://www.example.com${korean.route}">`
       : ""));
+  }
+  for (const document of snapshot.consentBundle.documents) {
+    const prefix = document.locale === "ko" ? ""
+      : document.locale === "en" ? "en/"
+        : document.locale === "zh-Hans" ? "zh-hans/" : "zh-hant/";
+    const route = document.kind === "privacy" ? "privacy" : "marketing/withdraw";
+    write(`${prefix}${route}/index.html`, `<html><body><article
+      data-consent-kind="${document.kind}"
+      data-consent-version="${escapeHtml(document.version)}"
+      data-consent-effective-at="${document.effectiveAt}"
+      data-consent-sha256="${document.contentSha256}"
+      data-consent-retention-months="${document.retentionMonths}">
+      <h2>${escapeHtml(document.title)}</h2><pre>${escapeHtml(document.bodyMarkdown)}</pre>
+      </article></body></html>`, outputDirectory);
   }
   write("index.html", "<html><body><a href=\"/insights\">Insights</a></body></html>", outputDirectory);
   write("insights/index.html", `<html><body>${snapshot.documents.map((document) =>

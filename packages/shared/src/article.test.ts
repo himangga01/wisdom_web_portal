@@ -65,7 +65,16 @@ describe("article pipeline contracts", () => {
   it("validates the empty manifest and strict published entry/document shapes", () => {
     const manifestSchema = schema("publishedManifestSchema");
     const documentSchema = schema("publishedArticleDocumentSchema");
-    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [] }).success).toBe(true);
+    const consentBundle = {
+      contentFile: "consent-bundle.json",
+      contentFileSha256: "a".repeat(64),
+    };
+    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [] }).success).toBe(false);
+    expect(manifestSchema.safeParse({
+      schemaVersion: 1,
+      entries: [],
+      consentBundle,
+    }).success).toBe(true);
     const entry = {
       articleId: "11111111-1111-4111-8111-111111111111",
       locale: "en",
@@ -76,17 +85,17 @@ describe("article pipeline contracts", () => {
       contentFile: "articles/22222222-2222-4222-8222-222222222222.json",
       contentFileSha256: "b".repeat(64),
     };
-    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [entry] }).success).toBe(true);
+    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [entry], consentBundle }).success).toBe(true);
     expect(manifestSchema.safeParse({
-      schemaVersion: 1, entries: [{ ...entry, route: "/insights/wrong-locale" }],
+      schemaVersion: 1, entries: [{ ...entry, route: "/insights/wrong-locale" }], consentBundle,
     }).success).toBe(false);
     expect(manifestSchema.safeParse({
-      schemaVersion: 1, entries: [{ ...entry, contentFile: "../secret.json" }],
+      schemaVersion: 1, entries: [{ ...entry, contentFile: "../secret.json" }], consentBundle,
     }).success).toBe(false);
     expect(manifestSchema.safeParse({
-      schemaVersion: 1, entries: [{ ...entry, articleId: "legacy-text-id" }],
+      schemaVersion: 1, entries: [{ ...entry, articleId: "legacy-text-id" }], consentBundle,
     }).success).toBe(false);
-    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [], extra: true }).success).toBe(false);
+    expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [], consentBundle, extra: true }).success).toBe(false);
 
     const secondRevision = {
       ...entry,
@@ -101,7 +110,7 @@ describe("article pipeline contracts", () => {
         articleId: "44444444-4444-4444-8444-444444444444",
         slug: "different-slug",
       },
-    ]) expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [entry, duplicate] }).success).toBe(false);
+    ]) expect(manifestSchema.safeParse({ schemaVersion: 1, entries: [entry, duplicate], consentBundle }).success).toBe(false);
 
     const document = {
       schemaVersion: 1,

@@ -1,10 +1,13 @@
 import type {
   PublishedArticleDocument,
+  PublishedConsentBundle,
   PublishedManifest,
   PublishedManifestEntry,
 } from "@wisdom/shared";
 import {
   computePublishedArticleContentSha256,
+  computePublishedConsentDocumentSha256,
+  LOCALES,
   normalizeValidateAndRenderArticleMarkdown,
 } from "@wisdom/shared";
 import { createHash } from "node:crypto";
@@ -42,6 +45,31 @@ function semanticSha256(document: PublishedArticleDocument): string {
     sources: document.sources,
     locale: document.locale,
   });
+}
+
+function validConsentBundle(): PublishedConsentBundle {
+  return {
+    schemaVersion: 1,
+    bundleId: "bundle-2026-07-16",
+    documents: LOCALES.flatMap((locale) => (["privacy", "marketing"] as const).map((kind) => {
+      const semantic = {
+        kind,
+        locale,
+        version: `${kind}-2026-07-16`,
+        title: `${kind} ${locale}`,
+        bodyMarkdown: kind === "privacy" && locale === "en"
+          ? '<script>alert("text only")</script>\n\nExact privacy terms.'
+          : `Exact ${kind} terms for ${locale}.`,
+        retentionMonths: kind === "privacy" ? 12 as const : 24 as const,
+      };
+      return {
+        ...semantic,
+        contentSha256: computePublishedConsentDocumentSha256(semantic),
+        effectiveAt: "2026-07-16T00:00:00.000Z",
+        required: kind === "privacy",
+      };
+    })),
+  };
 }
 
 function validDocument(
@@ -86,6 +114,8 @@ function writeSnapshot(
   const directory = mkdtempSync(join(tmpdir(), "wisdom-published-content-"));
   temporaryDirectories.push(directory);
   mkdirSync(join(directory, "articles"));
+  const consentBytes = `${JSON.stringify(validConsentBundle(), null, 2)}\n`;
+  writeFileSync(join(directory, "consent-bundle.json"), consentBytes);
   const entries: PublishedManifestEntry[] = documents.map((document) => {
     const bytes = `${JSON.stringify(document, null, 2)}\n`;
     writeFileSync(join(directory, "articles", `${document.revisionId}.json`), bytes);
@@ -100,7 +130,14 @@ function writeSnapshot(
       contentFileSha256: sha256(bytes),
     };
   });
-  const manifest: PublishedManifest = { schemaVersion: 1, entries };
+  const manifest: PublishedManifest = {
+    schemaVersion: 1,
+    entries,
+    consentBundle: {
+      contentFile: "consent-bundle.json",
+      contentFileSha256: sha256(consentBytes),
+    },
+  };
   writeFileSync(
     join(directory, "manifest.json"),
     `${JSON.stringify(transformManifest ? transformManifest(manifest) : manifest, null, 2)}\n`,
@@ -135,7 +172,8 @@ describe("published article filesystem boundary", () => {
     const content = loadBuildPublishedContent({});
 
     expect(directory.replaceAll("\\", "/")).toMatch(/apps\/site\/published-content$/);
-    expect(content.manifest).toEqual({ schemaVersion: 1, entries: [] });
+    expect(content.manifest).toMatchObject({ schemaVersion: 1, entries: [] });
+    expect(content.consentBundle.documents).toHaveLength(8);
     expect(content.articles).toEqual([]);
     expect([...content.byRoute]).toEqual([]);
     expect([...content.byArticleId]).toEqual([]);
@@ -184,8 +222,38 @@ describe("published article filesystem boundary", () => {
     expect(Object.isFrozen(content.articles)).toBe(true);
     expect(Object.isFrozen(content.articles[0])).toBe(true);
     expect(Object.isFrozen(content.articles[0]?.sources)).toBe(true);
+    expect(Object.isFrozen(content.consentBundle)).toBe(true);
+    expect(Object.isFrozen(content.consentBundle.documents)).toBe(true);
     expect("set" in content.byRoute).toBe(false);
     expect("set" in content.byArticleId).toBe(false);
+  });
+
+  it("fails closed on a missing, tampered, or semantically inconsistent consent bundle", () => {
+    const missing = writeSnapshot([]);
+    rmSync(join(missing, "consent-bundle.json"));
+    expect(() => loadPublishedContent(missing)).toThrow(
+      /^PUBLISHED_CONTENT_CONSENT_MISSING: consent-bundle\.json$/,
+    );
+
+    const tampered = writeSnapshot([]);
+    writeFileSync(join(tampered, "consent-bundle.json"), "{}\n");
+    expect(() => loadPublishedContent(tampered)).toThrow(
+      /^PUBLISHED_CONTENT_CONSENT_HASH_MISMATCH: consent-bundle\.json$/,
+    );
+
+    const invalid = writeSnapshot([]);
+    const path = join(invalid, "consent-bundle.json");
+    const manifestPath = join(invalid, "manifest.json");
+    const bundle = JSON.parse(readFileSync(path, "utf8")) as PublishedConsentBundle;
+    bundle.documents[0]!.retentionMonths = 24;
+    const bytes = `${JSON.stringify(bundle, null, 2)}\n`;
+    writeFileSync(path, bytes);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PublishedManifest;
+    manifest.consentBundle.contentFileSha256 = sha256(bytes);
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    expect(() => loadPublishedContent(invalid)).toThrow(
+      /^PUBLISHED_CONTENT_CONSENT_INVALID: consent-bundle\.json$/,
+    );
   });
 
   it("loads the tracked release fixture through every validation gate", () => {

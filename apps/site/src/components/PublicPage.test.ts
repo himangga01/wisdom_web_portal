@@ -7,10 +7,10 @@ import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { describe, expect, it } from "vitest";
 
 import PublicPage from "./PublicPage.astro";
-import { siteContent } from "../content/site-content.js";
 import type { PublicRoute } from "../lib/routes.js";
 import type { PublishedContent } from "../content/published-articles.js";
 import { buildSearchIndex } from "../search/search-index.js";
+import { testPublishedConsentBundle, testPublishedManifest } from "../test/published-content.js";
 
 const searchOrigin = "https://www.jihye-office.kr";
 
@@ -20,7 +20,8 @@ function publishedContent(articles: readonly PublishedArticleDocument[]): Publis
     byArticleId.set(article.articleId, [...(byArticleId.get(article.articleId) ?? []), article]);
   }
   return {
-    manifest: { schemaVersion: 1, entries: [] },
+    manifest: testPublishedManifest(),
+    consentBundle: testPublishedConsentBundle(),
     articles,
     byRoute: new Map(articles.map((article) => [article.route, article])),
     byArticleId,
@@ -37,13 +38,14 @@ async function renderPage(
     : locale === "en" ? "/en"
       : locale === "zh-Hans" ? "/zh-hans" : "/zh-hant";
   const localizedRoute = route === "/" ? prefix || "/" : `${prefix}${route}`;
-  const searchDocument = buildSearchIndex(searchOrigin, publishedContent(articles)).byRoute.get(
+  const releaseContent = publishedContent(articles);
+  const searchDocument = buildSearchIndex(searchOrigin, releaseContent).byRoute.get(
     localizedRoute,
   );
   if (!searchDocument) throw new Error("Missing test search document");
   return container.renderToString(PublicPage, {
     partial: false,
-    props: { locale, route, articles, searchDocument },
+    props: { locale, route, articles, searchDocument, consentBundle: releaseContent.consentBundle },
     request: new Request(`https://example.test${route}`),
   });
 }
@@ -67,6 +69,9 @@ describe("public Astro page DOM", () => {
     expect(html).toContain('type="application/ld+json"');
     expect(html.toLowerCase()).not.toContain("nosourceinfo");
     expect(html).not.toMatch(/representative-brochure|https?:\/\/[^"']+\.(?:avif|webp|jpe?g|png)/i);
+    expect(html).not.toMatch(/portrait-asset-slot|data-asset-slot|reserved slot|approved representative portrait/i);
+    expect(html).toContain('class="brand-illustration" role="img"');
+    expect(html).toContain('aria-label="Bronze, sand, and ivory geometric brand illustration"');
   });
 
   it("renders the complete shared service group on a category route", async () => {
@@ -156,20 +161,30 @@ describe("public Astro page DOM", () => {
     );
   });
 
-  it("renders operational-draft policy gates and a useful localized 404", async () => {
-    const privacy = await renderPage("ko", "/privacy");
+  it("renders the sealed consent documents as escaped text with exact intake metadata", async () => {
+    const privacy = await renderPage("en", "/privacy");
     const withdrawal = await renderPage("en", "/marketing/withdraw");
-    const simplifiedPrivacy = await renderPage("zh-Hans", "/privacy");
-    const traditionalWithdrawal = await renderPage("zh-Hant", "/marketing/withdraw");
     const missing = await renderPage("zh-Hans", "/404");
+    const bundle = testPublishedConsentBundle();
+    const privacyDocument = bundle.documents.find(({ locale, kind }) => locale === "en" && kind === "privacy")!;
+    const marketingDocument = bundle.documents.find(({ locale, kind }) => locale === "en" && kind === "marketing")!;
 
-    expect(privacy).toContain("법률 검토 전 운영 금지");
-    expect(withdrawal).toContain("Do not use before legal review");
-    expect(simplifiedPrivacy).toContain("法律审查完成前禁止使用");
-    expect(traditionalWithdrawal).toContain("法律審查完成前禁止使用");
-    for (const locale of ["en", "zh-Hans", "zh-Hant"] as const) {
-      expect(siteContent[locale].policies.launchGate).not.toMatch(/[가-힣]/);
-    }
+    expect(privacy).toContain("&lt;script&gt;alert(&quot;text only&quot;)&lt;/script&gt;");
+    expect(privacy).not.toContain('<script>alert("text only")</script>');
+    expect(privacy).toContain(`data-consent-version="${privacyDocument.version}"`);
+    expect(privacy).toContain(`data-consent-effective-at="${privacyDocument.effectiveAt}"`);
+    expect(privacy).toContain(`data-consent-sha256="${privacyDocument.contentSha256}"`);
+    expect(privacy).toContain('data-consent-retention-months="12"');
+    expect(privacy).toContain("privacy-2026-07-16");
+    expect(withdrawal).toContain(marketingDocument.bodyMarkdown);
+    expect(withdrawal).toContain(`data-consent-version="${marketingDocument.version}"`);
+    expect(withdrawal).toContain(`data-consent-effective-at="${marketingDocument.effectiveAt}"`);
+    expect(withdrawal).toContain(`data-consent-sha256="${marketingDocument.contentSha256}"`);
+    expect(withdrawal).toContain('data-consent-retention-months="24"');
+    expect(withdrawal).toContain("one-time withdrawal link");
+    expect(withdrawal).toContain("support channels; they do not withdraw consent by themselves");
+    expect(privacy).not.toContain("Do not use before legal review");
+    expect(withdrawal).not.toContain("Do not use before legal review");
     expect(missing).toContain('name="robots" content="noindex, follow"');
     expect(privacy).toContain('name="robots" content="noindex, follow"');
     expect(withdrawal).toContain('name="robots" content="noindex, follow"');

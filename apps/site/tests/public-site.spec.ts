@@ -59,6 +59,42 @@ test("renders semantic navigation and real language alternatives", async ({ brow
   await expect(page.getByText("Direct production certificate", { exact: true })).toBeVisible();
 });
 
+test("renders the intentional brand illustration and sealed policy documents", async ({ page }) => {
+  await page.goto("/en");
+  const illustration = page.locator('.brand-illustration[role="img"]');
+  await expect(illustration).toHaveAttribute(
+    "aria-label",
+    "Bronze, sand, and ivory geometric brand illustration",
+  );
+  await expect(page.locator("picture[data-asset-slot], .portrait-asset-slot")).toHaveCount(0);
+
+  await page.goto("/en/privacy");
+  const privacy = page.locator('article[data-consent-kind="privacy"]');
+  await expect(privacy).toHaveAttribute(
+    "data-consent-sha256",
+    "24d8249c198ed4a94e556243dd251630ae693f7608c1b83be2059b23324fc3c0",
+  );
+  await expect(privacy).toHaveAttribute("data-consent-version", "privacy-2026-07-16");
+  await expect(privacy).toHaveAttribute("data-consent-effective-at", "2026-07-16T00:00:00.000Z");
+  await expect(privacy).toHaveAttribute("data-consent-retention-months", "12");
+  await expect(privacy.locator("pre")).toHaveText(
+    '<script>alert("text only")</script>\n\nExact privacy terms.',
+  );
+  await expect(privacy.locator("script")).toHaveCount(0);
+
+  await page.goto("/en/marketing/withdraw");
+  const marketing = page.locator('article[data-consent-kind="marketing"]');
+  await expect(marketing).toHaveAttribute(
+    "data-consent-sha256",
+    "9cc4da2279cc53a7cb8c40e2f1ee945aa3f2f2546ad1a7904772843579864940",
+  );
+  await expect(marketing).toHaveAttribute("data-consent-version", "marketing-2026-07-16");
+  await expect(marketing).toHaveAttribute("data-consent-effective-at", "2026-07-16T00:00:00.000Z");
+  await expect(marketing).toHaveAttribute("data-consent-retention-months", "24");
+  await expect(marketing).toContainText("one-time withdrawal link");
+  await expect(marketing).toContainText("support channels; they do not withdraw consent by themselves");
+});
+
 test("applies the exact C1 reveal contract once", async ({ page }) => {
   await page.addInitScript(() => {
     const observed = new Set<Element>();

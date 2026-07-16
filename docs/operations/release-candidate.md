@@ -8,11 +8,11 @@
 |---|---|---|---|
 | 4개 언어 공개 사이트 | `apps/site`, locale별 정적 경로와 실제 언어 전환 | Site unit/type/build, 3-browser E2E | 구현 완료 |
 | bronze/sand/ivory 디자인과 C1 모션 | 공용 토큰, 18개·500ms·64px·60ms, reduced-motion/no-JS 폴백 | 320/390/768/1440 overflow와 모션 브라우저 검사 | 구현 완료 |
-| 상담 접수와 동의 | 로컬 SQLite, 필수 개인정보 동의, 선택 마케팅 동의, 계정 없는 철회 | API·트랜잭션·멱등성·보존기간 테스트 | 구현 완료 |
+| 상담 접수와 동의 | 로컬 SQLite, 필수 개인정보 동의, 선택 마케팅 동의, 계정 없는 1회 링크 철회 | API·트랜잭션·멱등성·보존기간·정책 snapshot parity 테스트 | 구현 완료 |
 | 관리자 포털 | 별도 호스트, Argon2id, TOTP/복구 코드, CSRF, 감사 이벤트 | 인증·세션·상태전이·host routing 테스트 | 구현 완료 |
 | Telegram·이메일 알림 | Hermes metadata-only, SMTP `receipt-only` 기본, 관리자 선택 | lease/fencing/backoff와 PII 비노출 테스트 | 구현 완료 |
 | Hermes 글 작성과 Codex 번역 | HMAC draft intake, 명시적 번역, shell tool 비활성 Codex CLI 3회 검수, locale별 승인 | 스키마·stdin 입력·no-shell 실행·PII guard·작업 복구 테스트 | 구현 완료 |
-| 정적 발행과 롤백 | 검증된 snapshot/build, 원자 pointer 전환, active+retired 2개 보존 | 장애 주입·reconcile·rollback·retention 테스트 | 구현 완료 |
+| 정적 발행과 롤백 | 승인 글과 활성 8개 동의 문서를 함께 봉인한 snapshot/build, 원자 pointer 전환, active+retired 2개 보존 | 정책 body/hash/보존기간 parity·장애 주입·reconcile·rollback·retention 테스트 | 구현 완료 |
 | Google·Naver·AI 발견성 | canonical/hreflang/x-default, JSON-LD, sitemap/RSS/robots, IndexNow | DOM·feed·crawler·3-browser 검사 | 구현 완료 |
 | Mac mini 무도커 운영 | Caddy, Cloudflare Tunnel, launchd, Keychain, release scripts | 운영 구성·dry-run·release 테스트 | 구현 완료 |
 | 백업과 복구 | 시간별 age 암호화 SQLite online backup, 24 hourly/14 daily | 실제 SQLite fake-age backup/guarded restore drill | 구현 완료 |
@@ -24,12 +24,13 @@
 - [ ] 실제 apex·`www`·관리자 도메인과 DNS 소유권
 - [ ] Cloudflare Tunnel ID와 소유자 전용 credential 파일
 - [ ] 실제 Kakao 상담 URL; 미설정 상태에서는 Kakao CTA를 공개하지 않음
-- [ ] 원본 벡터 로고와 고해상도 대표 상반신 사진, AVIF/WebP/JPEG 파생본
+- [ ] 원본 벡터 로고. 대표 사진은 선택 입력이며, 제공·공개 승인을 받기 전에는 현재의 bronze/sand/ivory 브랜드 일러스트를 유지한다. 사진을 사용할 때만 고해상도 원본과 AVIF/WebP/JPEG 파생본을 준비한다.
 - [ ] SMTP 계정과 Keychain service reference, 수신자 메일 주소, `receipt-only`/`full-inquiry` 운영 선택
 - [ ] Hermes loopback endpoint와 독립 HMAC 키, Telegram 목적지의 Hermes 측 등록
 - [ ] owner 관리자 로컬 등록, TOTP 스캔, 복구 코드 오프라인 보관
-- [ ] 행정사 검토를 마친 개인정보 처리·수집 이용 동의문과 선택 마케팅 동의문 4개 언어 최종본
-- [ ] 개인정보 12개월·마케팅 24개월 보존기간 운영 확인
+- [ ] 행정사 및 개인정보 운영 책임자가 검토한 개인정보 수집·이용 동의문과 선택 마케팅 동의문 4개 언어 최종본을 seed·활성화하고, 공개 `/privacy`·`/marketing/withdraw`의 version/hash/시행일/보존기간이 상담 API 문서와 일치하는지 확인
+- [ ] 선택 마케팅 미동의 상담의 암호화된 전체 상담 envelope 12개월, 선택 마케팅 동의 상담의 암호화된 전체 상담 envelope 24개월 보존을 확인. 특히 마케팅 24개월은 연락처만이 아니라 이름·회사·연락처·상담 내용이 들어 있는 전체 envelope 범위이므로 대표행정사와 개인정보 운영 책임자의 명시적 승인을 기록
+- [ ] 사용자 제공 영문 상호 `JIHYE Administrative Attorney`와 영어·간체·번체의 행정사 전문 직함 표현을 대표행정사 및 관련 광고·표시 기준 검토자가 승인하고 기록
 - [ ] IndexNow ownership key와 Keychain service reference
 - [ ] Google Search Console·Naver Search Advisor 소유권 확인 값과 실제 제출
 - [ ] FileVault 재부팅 후 사람의 volume unlock 절차, UPS·유선 LAN·전원 복구 시험
@@ -51,7 +52,8 @@
 
 1. `ops/runbooks/deployment.md`의 Keychain·runtime·public seed·preflight 순서를 따른다.
 2. `PUBLIC_ORIGIN`을 실제 `www` HTTPS 원본으로 지정해 정적 빌드한다.
-3. application release와 public content release의 pointer를 혼용하지 않는다.
-4. 외부 tunnel을 시작하기 전에 `public-current` 전체 manifest와 readiness를 검증한다.
-5. 공개 후 Search Console/Search Advisor 등록, sitemap 제출, IndexNow 응답을 확인한다.
-6. 백업을 한 번 생성한 뒤 별도 test target에 복원하고 RPO/RTO 측정값을 기록한다.
+3. 활성 동의 bundle이 정확히 privacy+marketing × 4개 언어의 8개 문서인지 확인하고, public content manifest가 `consent-bundle.json` SHA-256을 봉인했는지 검증한다.
+4. application release와 public content release의 pointer를 혼용하지 않는다.
+5. 외부 tunnel을 시작하기 전에 `public-current` 전체 manifest와 readiness를 검증한다.
+6. 공개 후 Search Console/Search Advisor 등록, sitemap 제출, IndexNow 응답을 확인한다.
+7. 백업을 한 번 생성한 뒤 별도 test target에 복원하고 RPO/RTO 측정값을 기록한다.

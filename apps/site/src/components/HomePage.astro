@@ -49,11 +49,10 @@ const revealAttributes = (key: RevealKey) => {
     </div>
 
     <div class="portrait-stage" {...revealAttributes("portrait")}>
-      <picture class="portrait-asset-slot" data-asset-slot="representative-portrait" hidden aria-hidden="true"></picture>
-      <div class="portrait-geometry" role="img" aria-label={narrative.portraitLabel}>
-        <span class="geometry-orbit" aria-hidden="true"></span>
-        <span class="geometry-monogram" aria-hidden="true">智</span>
-        <span class="geometry-line" aria-hidden="true"></span>
+      <div class="brand-illustration" role="img" aria-label={narrative.portraitLabel}>
+        <span class="brand-orbit" aria-hidden="true"></span>
+        <span class="brand-monogram" aria-hidden="true">智</span>
+        <span class="brand-rule" aria-hidden="true"></span>
       </div>
       <div class="portrait-caption">
         <strong>{content.office.representative}</strong>

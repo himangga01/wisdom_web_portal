@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "bundleId": "bundle-2026-07-16",
+  "documents": [
+    {
+      "kind": "privacy",
+      "locale": "ko",
+      "version": "privacy-2026-07-16",
+      "title": "privacy ko",
+      "bodyMarkdown": "Exact privacy terms for ko.",
+      "retentionMonths": 12,
+      "contentSha256": "0870ba6ae972b613463f2bd5acb805d06b11f06802f22f831f14f2ce685a0480",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": true
+    },
+    {
+      "kind": "marketing",
+      "locale": "ko",
+      "version": "marketing-2026-07-16",
+      "title": "marketing ko",
+      "bodyMarkdown": "Exact marketing terms for ko.",
+      "retentionMonths": 24,
+      "contentSha256": "cfff374f6424db2e483823e7205556f18987c3ef389e5cbf78fd3be3a0cc5446",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": false
+    },
+    {
+      "kind": "privacy",
+      "locale": "en",
+      "version": "privacy-2026-07-16",
+      "title": "privacy en",
+      "bodyMarkdown": "<script>alert(\"text only\")</script>\n\nExact privacy terms.",
+      "retentionMonths": 12,
+      "contentSha256": "24d8249c198ed4a94e556243dd251630ae693f7608c1b83be2059b23324fc3c0",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": true
+    },
+    {
+      "kind": "marketing",
+      "locale": "en",
+      "version": "marketing-2026-07-16",
+      "title": "marketing en",
+      "bodyMarkdown": "Exact marketing terms for en.",
+      "retentionMonths": 24,
+      "contentSha256": "9cc4da2279cc53a7cb8c40e2f1ee945aa3f2f2546ad1a7904772843579864940",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": false
+    },
+    {
+      "kind": "privacy",
+      "locale": "zh-Hans",
+      "version": "privacy-2026-07-16",
+      "title": "privacy zh-Hans",
+      "bodyMarkdown": "Exact privacy terms for zh-Hans.",
+      "retentionMonths": 12,
+      "contentSha256": "4d32e940a277ef9c235109915e86a7a9b3b0f37a80ac9e415cd5d53564b00f79",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": true
+    },
+    {
+      "kind": "marketing",
+      "locale": "zh-Hans",
+      "version": "marketing-2026-07-16",
+      "title": "marketing zh-Hans",
+      "bodyMarkdown": "Exact marketing terms for zh-Hans.",
+      "retentionMonths": 24,
+      "contentSha256": "ee3e4349a408ba4dbcf2709e5c920d42a8a8af6b2df603cfc81ae9247fc91471",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": false
+    },
+    {
+      "kind": "privacy",
+      "locale": "zh-Hant",
+      "version": "privacy-2026-07-16",
+      "title": "privacy zh-Hant",
+      "bodyMarkdown": "Exact privacy terms for zh-Hant.",
+      "retentionMonths": 12,
+      "contentSha256": "7896a2664bfe6207268f25f394f5c01237aad1f47a42dca79d5d2fd660a98a56",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": true
+    },
+    {
+      "kind": "marketing",
+      "locale": "zh-Hant",
+      "version": "marketing-2026-07-16",
+      "title": "marketing zh-Hant",
+      "bodyMarkdown": "Exact marketing terms for zh-Hant.",
+      "retentionMonths": 24,
+      "contentSha256": "60e7768f4af736654c68b483ab03b6fdb33be4cda3bcdecf26c52cc075bccd5b",
+      "effectiveAt": "2026-07-16T00:00:00.000Z",
+      "required": false
+    }
+  ]
+}

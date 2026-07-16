@@ -2,8 +2,10 @@ import {
   computePublishedArticleContentSha256,
   normalizeValidateAndRenderArticleMarkdown,
   publishedArticleDocumentSchema,
+  publishedConsentBundleSchema,
   publishedManifestSchema,
   type PublishedArticleDocument,
+  type PublishedConsentBundle,
   type PublishedManifest,
   type PublishedManifestEntry,
 } from "@wisdom/shared";
@@ -14,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 export interface PublishedContent {
   manifest: PublishedManifest;
+  consentBundle: PublishedConsentBundle;
   articles: readonly PublishedArticleDocument[];
   byRoute: ReadonlyMap<string, PublishedArticleDocument>;
   byArticleId: ReadonlyMap<string, readonly PublishedArticleDocument[]>;
@@ -23,6 +26,7 @@ type PublishedEnvironment = Record<string, string | undefined>;
 
 const manifestByteLimit = 1_048_576;
 const articleByteLimit = 524_288;
+const consentByteLimit = 131_072;
 const aggregateArticleByteLimit = 16 * 1_048_576;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -32,7 +36,7 @@ function publishedContentError(code: string, safePath: string): Error {
 
 function parseCanonicalJson(
   bytes: Uint8Array,
-  kind: "MANIFEST" | "ARTICLE",
+  kind: "MANIFEST" | "ARTICLE" | "CONSENT",
   safePath: string,
 ): unknown {
   let text: string;
@@ -47,6 +51,50 @@ function parseCanonicalJson(
     throw publishedContentError(`${kind}_NOT_CANONICAL`, safePath);
   }
   return parsed;
+}
+
+function readConsentBundle(
+  directory: string,
+  realDirectory: string,
+  manifest: PublishedManifest,
+): PublishedConsentBundle {
+  const safePath = manifest.consentBundle.contentFile;
+  const path = join(directory, safePath);
+  let metadata;
+  try {
+    metadata = lstatSync(path);
+  } catch {
+    throw publishedContentError("CONSENT_MISSING", safePath);
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw publishedContentError("CONSENT_INVALID", safePath);
+  }
+  if (metadata.size > consentByteLimit) {
+    throw publishedContentError("CONSENT_TOO_LARGE", safePath);
+  }
+  let realFile: string;
+  let bytes: Buffer;
+  try {
+    realFile = realpathSync(path);
+    bytes = readFileSync(path);
+  } catch {
+    throw publishedContentError("CONSENT_INVALID", safePath);
+  }
+  const containment = relative(realDirectory, realFile);
+  if (containment.startsWith("..") || isAbsolute(containment)) {
+    throw publishedContentError("CONSENT_INVALID", safePath);
+  }
+  if (bytes.byteLength > consentByteLimit) {
+    throw publishedContentError("CONSENT_TOO_LARGE", safePath);
+  }
+  if (createHash("sha256").update(bytes).digest("hex")
+    !== manifest.consentBundle.contentFileSha256) {
+    throw publishedContentError("CONSENT_HASH_MISMATCH", safePath);
+  }
+  const parsed = parseCanonicalJson(bytes, "CONSENT", safePath);
+  const result = publishedConsentBundleSchema.safeParse(parsed);
+  if (!result.success) throw publishedContentError("CONSENT_INVALID", safePath);
+  return result.data;
 }
 
 export function resolveCheckedInPublishedContentDirectory(moduleUrl: string): string {
@@ -233,6 +281,7 @@ function verifySnapshotInventory(directory: string, manifest: PublishedManifest)
   const rootEntries = readdirSync(directory, { withFileTypes: true });
   for (const entry of rootEntries) {
     const allowed = entry.name === "manifest.json" && entry.isFile()
+      || entry.name === manifest.consentBundle.contentFile && entry.isFile()
       || entry.name === "articles" && entry.isDirectory();
     if (!allowed) throw publishedContentError("UNEXPECTED_FILE", entry.name);
   }
@@ -281,6 +330,12 @@ function freezeArticle(article: PublishedArticleDocument): PublishedArticleDocum
   return Object.freeze(article);
 }
 
+function freezeConsentBundle(bundle: PublishedConsentBundle): PublishedConsentBundle {
+  for (const document of bundle.documents) Object.freeze(document);
+  Object.freeze(bundle.documents);
+  return Object.freeze(bundle);
+}
+
 export function resolvePublishedContentDirectory(
   environment: PublishedEnvironment = process.env,
 ): string {
@@ -303,6 +358,7 @@ export function loadPublishedContent(directory: string): PublishedContent {
   }
   const manifest = readManifest(directory);
   verifySnapshotInventory(directory, manifest);
+  const consentBundle = freezeConsentBundle(readConsentBundle(directory, realDirectory, manifest));
   verifyArticleFileSizes(directory, manifest);
   const articles = manifest.entries.map((entry) => freezeArticle(
     readArticle(directory, realDirectory, entry),
@@ -322,6 +378,7 @@ export function loadPublishedContent(directory: string): PublishedContent {
   Object.freeze(manifest);
   return {
     manifest,
+    consentBundle,
     articles,
     byRoute: new ReadonlyMapView(byRoute),
     byArticleId: new ReadonlyMapView(byArticleId),

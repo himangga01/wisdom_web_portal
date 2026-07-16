@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import PublishedArticle from "./PublishedArticle.astro";
 import type { PublishedContent } from "../content/published-articles.js";
 import { buildSearchIndex } from "../search/search-index.js";
+import { testPublishedConsentBundle, testPublishedManifest } from "../test/published-content.js";
 
 const articleWithoutHash: Omit<PublishedArticleDocument, "contentSha256"> = {
   schemaVersion: 1,
@@ -48,7 +49,8 @@ function testContent(articles: readonly PublishedArticleDocument[]): PublishedCo
     byArticleId.set(item.articleId, [...(byArticleId.get(item.articleId) ?? []), item]);
   }
   return {
-    manifest: { schemaVersion: 1, entries: [] },
+    manifest: testPublishedManifest(),
+    consentBundle: testPublishedConsentBundle(),
     articles,
     byRoute: new Map(articles.map((item) => [item.route, item])),
     byArticleId,

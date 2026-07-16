@@ -11,6 +11,8 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   computePublishedArticleContentSha256,
+  computePublishedConsentDocumentSha256,
+  LOCALES,
   normalizeValidateAndRenderArticleMarkdown,
   publishedArticleDocumentSchema,
   publishedManifestSchema,
@@ -46,6 +48,29 @@ function canonicalJson(value: unknown): string {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function fixtureConsentBundle() {
+  return {
+    schemaVersion: 1 as const,
+    bundleId: "bundle-2026-07-16",
+    documents: LOCALES.flatMap((locale) => (["privacy", "marketing"] as const).map((kind) => {
+      const semantic = {
+        kind,
+        locale,
+        version: `${kind}-2026-07-16`,
+        title: `${kind} ${locale}`,
+        bodyMarkdown: `Exact ${kind} terms for ${locale}.`,
+        retentionMonths: kind === "privacy" ? 12 as const : 24 as const,
+      };
+      return {
+        ...semantic,
+        contentSha256: computePublishedConsentDocumentSha256(semantic),
+        effectiveAt: "2026-07-16T00:00:00.000Z",
+        required: kind === "privacy",
+      };
+    })),
+  };
 }
 
 function fixtureSnapshot(): PublicationSnapshot {
@@ -98,6 +123,7 @@ function fixtureSnapshot(): PublicationSnapshot {
       contentFile: `articles/${REVISION_ID}.json`,
       contentFileSha256: sha256(documentBytes),
     }],
+    consentBundle: fixtureConsentBundle(),
   };
 }
 
@@ -105,6 +131,32 @@ function writeFile(relativePath: string, contents: string) {
   const path = join(root, "dist", relativePath);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, "utf8");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function writePolicyPages(snapshot: PublicationSnapshot): void {
+  for (const document of snapshot.consentBundle.documents) {
+    const prefix = document.locale === "ko" ? ""
+      : document.locale === "en" ? "en/"
+        : document.locale === "zh-Hans" ? "zh-hans/" : "zh-hant/";
+    const route = document.kind === "privacy" ? "privacy" : "marketing/withdraw";
+    writeFile(`${prefix}${route}/index.html`, `<!doctype html><html><body><article
+      data-consent-kind="${document.kind}"
+      data-consent-version="${escapeHtml(document.version)}"
+      data-consent-effective-at="${document.effectiveAt}"
+      data-consent-sha256="${document.contentSha256}"
+      data-consent-retention-months="${document.retentionMonths}">
+      <h2>${escapeHtml(document.title)}</h2><pre>${escapeHtml(document.bodyMarkdown)}</pre>
+      </article></body></html>`);
+  }
 }
 
 function writeValidBuild(snapshot = fixtureSnapshot()) {
@@ -116,6 +168,7 @@ function writeValidBuild(snapshot = fixtureSnapshot()) {
     <link rel="alternate" hreflang="ko" href="https://www.example.com${article.route}">
     <link rel="alternate" hreflang="x-default" href="https://www.example.com${article.route}">
     </head><body><article>${article.bodyHtml}</article><a href="/">Home</a></body></html>`);
+  writePolicyPages(snapshot);
   writeFile("_astro/app.abc123.js", "console.log('public');\n");
   writeFile("robots.txt", "User-agent: *\nAllow: /\n");
   writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
@@ -244,6 +297,33 @@ describe("isolated Astro publication build", () => {
 });
 
 describe("static release verification", () => {
+  it("rejects a policy page that diverges from the sealed intake consent metadata or escaped body", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    const path = join(root, "dist", "privacy", "index.html");
+    const original = readFileSync(path, "utf8");
+
+    for (const tampered of [
+      original.replace('data-consent-version="privacy-2026-07-16"', 'data-consent-version="privacy-tampered"'),
+      original.replace('data-consent-effective-at="2026-07-16T00:00:00.000Z"', 'data-consent-effective-at="2026-07-17T00:00:00.000Z"'),
+      original.replace('data-consent-retention-months="12"', 'data-consent-retention-months="24"'),
+      original.replace("<h2>privacy ko</h2>", "<h2>privacy ko (modified)</h2>"),
+      original.replace("Exact privacy terms for ko.</pre>", "Exact privacy terms for ko. Extra text.</pre>"),
+      original.replace("Exact privacy terms for ko.", "Different policy text."),
+      original.replace(snapshot.consentBundle.documents[0]!.contentSha256, "0".repeat(64)),
+    ]) {
+      writeFileSync(path, tampered, "utf8");
+      expect(() => verifyAndSealPublicationBuild({
+        outputDirectory: join(root, "dist"),
+        snapshot,
+        requiredCoreRoutes: ["/", "/insights"],
+        forbiddenCanaries: [],
+        publicOrigin: PUBLIC_ORIGIN,
+      })).toThrow(/^PUBLICATION_POLICY_(?:METADATA|BODY)_MISMATCH$/);
+      rmSync(join(root, "dist", ".wisdom-release-manifest.json"), { force: true });
+    }
+  });
+
   it("exposes the sorted sitemap URL set and its newline-joined SHA-256", () => {
     const snapshot = fixtureSnapshot();
     writeValidBuild(snapshot);
@@ -274,10 +354,12 @@ describe("static release verification", () => {
       promotions: [],
       documents: [],
       entries: [],
+      consentBundle: fixtureConsentBundle(),
     };
     writeFile("index.html", '<html><body><a href="/insights">Insights</a></body></html>');
     writeFile("insights/index.html", '<html><body><a href="/">Home</a></body></html>');
     writeFile("robots.txt", "User-agent: *\nAllow: /\n");
+    writePolicyPages(snapshot);
     writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>
@@ -563,11 +645,19 @@ describe("static release verification", () => {
 
     expect(sealed.manifest.files.map(({ path }) => path)).toEqual([
       "_astro/app.abc123.js",
+      "en/marketing/withdraw/index.html",
+      "en/privacy/index.html",
       "index.html",
       "insights/index.html",
       "insights/procurement-guide/index.html",
+      "marketing/withdraw/index.html",
+      "privacy/index.html",
       "robots.txt",
       "sitemap.xml",
+      "zh-hans/marketing/withdraw/index.html",
+      "zh-hans/privacy/index.html",
+      "zh-hant/marketing/withdraw/index.html",
+      "zh-hant/privacy/index.html",
     ]);
     const manifestBytes = readFileSync(join(root, "dist", ".wisdom-release-manifest.json"));
     expect(sha256(manifestBytes)).toBe(sealed.manifestSha256);

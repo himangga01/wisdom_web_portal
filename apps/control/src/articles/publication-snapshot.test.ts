@@ -10,7 +10,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { blindIndex, createStaticKeyProvider } from "../crypto/index.js";
-import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import {
+  activateConsentBundle,
+  getPublicConsentDocuments,
+  seedCompleteConsentBundles,
+} from "../consent/service.js";
 import {
   capturePublicationSnapshot,
   writePublicationSnapshot,
@@ -72,6 +77,13 @@ function insertRevision(input: {
 
 beforeEach(() => {
   fixture = createTestDatabase();
+  const activeConsent = consentBundle();
+  activeConsent[0] = {
+    ...activeConsent[0]!,
+    bodyMarkdown: '<script>alert("not html")</script>\n\nExact privacy text.',
+  };
+  seedCompleteConsentBundles(fixture.db, activeConsent, NOW - 10_000);
+  activateConsentBundle(fixture.db, activeConsent[0]!.bundleId, NOW - 9_000);
   fixture.db.sqlite.prepare(`
     INSERT INTO admins (
       id, username, display_name, password_hash, status,
@@ -168,6 +180,51 @@ afterEach(() => {
 });
 
 describe("immutable publication snapshot", () => {
+  it("captures the exact active eight-document consent bundle used by consultation intake", () => {
+    const snapshot = capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: [{
+        articleId: ARTICLE_ID,
+        locale: "en",
+        revisionId: EN_REVISION_ID,
+        expectedRowVersion: 3,
+      }],
+      nowMs: NOW,
+    });
+    const publicEnglish = getPublicConsentDocuments(fixture.db, "en")!;
+
+    expect(snapshot.consentBundle.bundleId).toBe("bundle-2026-07-16");
+    expect(snapshot.consentBundle.documents).toHaveLength(8);
+    expect(Object.isFrozen(snapshot.consentBundle)).toBe(true);
+    expect(Object.isFrozen(snapshot.consentBundle.documents)).toBe(true);
+    expect(snapshot.consentBundle.documents.every((document) => Object.isFrozen(document))).toBe(true);
+    expect(snapshot.consentBundle.documents.map(({ kind, locale }) => `${kind}:${locale}`)).toEqual([
+      "privacy:ko", "marketing:ko", "privacy:en", "marketing:en",
+      "privacy:zh-Hans", "marketing:zh-Hans", "privacy:zh-Hant", "marketing:zh-Hant",
+    ]);
+    for (const kind of ["privacy", "marketing"] as const) {
+      const published = snapshot.consentBundle.documents.find((document) => (
+        document.locale === "en" && document.kind === kind
+      ));
+      expect(published).toMatchObject(publicEnglish.documents[kind]);
+    }
+  });
+
+  it("fails closed when no complete consistent active consent bundle exists", () => {
+    fixture.db.sqlite.prepare(
+      "UPDATE consent_documents SET state = 'retired' WHERE kind = 'privacy' AND locale = 'en'",
+    ).run();
+
+    expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: [{
+        articleId: ARTICLE_ID,
+        locale: "en",
+        revisionId: EN_REVISION_ID,
+        expectedRowVersion: 3,
+      }],
+      nowMs: NOW,
+    })).toThrow(/^PUBLICATION_CONSENT_BUNDLE_INVALID$/);
+  });
+
   it("contains existing public heads plus only the explicitly promoted approved head", () => {
     const snapshot = capturePublicationSnapshot(fixture.db, keyProvider, {
       promote: [{
@@ -258,6 +315,10 @@ describe("immutable publication snapshot", () => {
     const manifestBytes = readFileSync(join(outputDirectory, "manifest.json"));
     const manifest = publishedManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
     expect(manifestBytes.toString("utf8")).toBe(`${JSON.stringify(manifest, null, 2)}\n`);
+    const consentBytes = readFileSync(join(outputDirectory, manifest.consentBundle.contentFile));
+    expect(createHash("sha256").update(consentBytes).digest("hex"))
+      .toBe(manifest.consentBundle.contentFileSha256);
+    expect(JSON.parse(consentBytes.toString("utf8"))).toEqual(snapshot.consentBundle);
     for (const entry of manifest.entries) {
       const articleBytes = readFileSync(join(outputDirectory, entry.contentFile));
       expect(createHash("sha256").update(articleBytes).digest("hex")).toBe(entry.contentFileSha256);

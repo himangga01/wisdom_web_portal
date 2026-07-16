@@ -2,6 +2,7 @@ import type { Locale, PublishedArticleDocument, PublishedManifest } from "@wisdo
 import { describe, expect, it } from "vitest";
 
 import type { PublishedContent } from "../content/published-articles.js";
+import { testPublishedConsentBundle, testPublishedManifest } from "../test/published-content.js";
 import {
   articleLocaleLinks,
   articlesForLocale,
@@ -49,7 +50,8 @@ function content(articles: readonly PublishedArticleDocument[]): PublishedConten
     byArticleId.set(article.articleId, related);
   }
   return {
-    manifest: { schemaVersion: 1, entries: [] } satisfies PublishedManifest,
+    manifest: testPublishedManifest() satisfies PublishedManifest,
+    consentBundle: testPublishedConsentBundle(),
     articles,
     byRoute: new Map(articles.map((article) => [article.route, article])),
     byArticleId,

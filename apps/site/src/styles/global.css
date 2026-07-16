@@ -437,18 +437,41 @@ p {
   background: var(--wisdom-bronze);
 }
 
-.portrait-geometry {
+.brand-illustration {
   position: relative;
   display: grid;
   min-height: 370px;
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(circle, transparent 0 35%, color-mix(in srgb, var(--wisdom-bronze) 34%, transparent) 35.2% 35.6%, transparent 36%),
+    linear-gradient(90deg, transparent 49.8%, color-mix(in srgb, var(--wisdom-sand) 45%, transparent) 50%, transparent 50.2%),
+    radial-gradient(circle, transparent 0 35%, color-mix(in srgb, var(--wisdom-bronze) 42%, transparent) 35.2% 35.6%, transparent 36%),
     linear-gradient(150deg, var(--wisdom-brown), var(--wisdom-ink));
 }
 
-.geometry-orbit {
+.brand-illustration::before,
+.brand-illustration::after {
+  position: absolute;
+  content: "";
+}
+
+.brand-illustration::before {
+  inset: 9% 12%;
+  border: 1px solid color-mix(in srgb, var(--wisdom-sand) 42%, transparent);
+  border-radius: 48% 52% 42% 58%;
+  transform: rotate(-12deg);
+}
+
+.brand-illustration::after {
+  top: 18%;
+  left: 17%;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--wisdom-bronze) 26%, transparent);
+}
+
+.brand-orbit {
   position: absolute;
   width: min(17rem, 72%);
   aspect-ratio: 1;
@@ -457,7 +480,7 @@ p {
   box-shadow: 0 0 0 2.7rem color-mix(in srgb, var(--wisdom-bronze) 10%, transparent);
 }
 
-.geometry-monogram {
+.brand-monogram {
   z-index: 1;
   color: var(--wisdom-ivory);
   font-family: var(--wisdom-font-serif);
@@ -465,7 +488,7 @@ p {
   line-height: 1;
 }
 
-.geometry-line {
+.brand-rule {
   position: absolute;
   right: 15%;
   bottom: 17%;
@@ -1325,21 +1348,28 @@ p {
   gap: 1.2rem;
 }
 
-.launch-gate {
-  display: grid;
-  gap: 0.45rem;
-  padding: 1.3rem;
-  border: 2px solid var(--wisdom-brown);
-  background: color-mix(in srgb, var(--wisdom-sand) 36%, transparent);
+.policy-document > h2 {
+  margin: 0;
+  font-family: var(--wisdom-font-serif);
 }
 
-.launch-gate strong {
-  font-size: 1.05rem;
+.policy-document-meta {
+  padding: 1.25rem;
+  border: 1px solid var(--wisdom-sand);
+  background: color-mix(in srgb, var(--wisdom-white) 72%, transparent);
 }
 
-.policy-document > section {
-  padding: 1.5rem 0;
-  border-bottom: 1px solid var(--wisdom-sand);
+.policy-document-body {
+  max-width: 100%;
+  margin: 0;
+  padding: clamp(1.2rem, 3vw, 2rem);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border-left: 3px solid var(--wisdom-bronze);
+  background: color-mix(in srgb, var(--wisdom-sand) 24%, var(--wisdom-ivory));
+  color: var(--wisdom-ink);
+  font: inherit;
+  line-height: 1.85;
 }
 
 .withdrawal-steps {
@@ -1516,7 +1546,7 @@ p {
     min-height: 430px;
   }
 
-  .portrait-geometry {
+  .brand-illustration {
     min-height: 310px;
   }
 
@@ -1582,7 +1612,7 @@ p {
     padding: 1.5rem;
   }
 
-  .portrait-geometry {
+  .brand-illustration {
     min-height: 255px;
   }
 

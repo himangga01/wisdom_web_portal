@@ -126,6 +126,10 @@ export type PublishedManifestEntry = z.infer<typeof publishedManifestEntrySchema
 export const publishedManifestSchema = z.object({
   schemaVersion: z.literal(1),
   entries: z.array(publishedManifestEntrySchema),
+  consentBundle: z.object({
+    contentFile: z.literal("consent-bundle.json"),
+    contentFileSha256: sha256HexSchema,
+  }).strict(),
 }).strict().superRefine((value, context) => {
   const identities = new Set<string>();
   const slugs = new Set<string>();

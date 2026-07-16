@@ -22,6 +22,14 @@
 
 이후 application 배포는 `deploy.mjs`의 dry-run을 확인한 다음 `--apply`한다. 새 release에서 Mac native dependency 설치, build, migration, canary live/ready, manifest 검증을 모두 통과해야 pointer를 전환한다. 전환 후 launchd와 active health가 실패하면 이전 pointer와 서비스를 복구한다. public 정적 산출물은 동일 release ID를 사용해도 별도 public release/pointer 계약으로 게시한다.
 
+## 공개 콘텐츠와 동의 문서 사전 확인
+
+1. 공개 빌드 전에 관리자에서 동일 bundle ID의 개인정보·마케팅 문서가 `ko`, `en`, `zh-Hans`, `zh-Hant` 모두 활성 상태인지 확인한다. 하나라도 없거나 version·hash·시행일·보존기간 역할이 맞지 않으면 snapshot 생성은 중단되어야 한다.
+2. 상담 API의 개인정보 12개월·마케팅 24개월 metadata와 공개 `/privacy`·`/marketing/withdraw`의 `data-consent-sha256`, 보존기간, 본문을 대조한다. 공개 본문은 Markdown을 HTML로 실행하지 않고 escaped text로 보여야 한다.
+3. 선택 마케팅 동의 시 24개월 보존 대상은 이름·회사·연락처·상담 내용을 포함한 암호화된 전체 상담 envelope다. 대표행정사와 개인정보 운영 책임자가 이 범위와 4개 언어 문구를 서면 승인하기 전에는 tunnel을 열지 않는다.
+4. 영문 상호 `JIHYE Administrative Attorney`와 영어·간체·번체의 전문 직함은 대표행정사 및 관련 광고·표시 기준 검토자의 승인을 기록한다. Codex 번역 결과만으로 승인 처리하지 않는다.
+5. 마케팅 철회는 확인 이메일의 hash 저장된 1회 링크로만 mutation한다. 전화·이메일은 링크 사용 지원 수단이며, 상담원이 별도 검증 절차 없이 전화·메일 요청만으로 철회를 완료했다고 안내하지 않는다.
+
 정상 public 발행의 authoritative seal은 `.wisdom-release-manifest.json`이다. canonical pretty JSON+LF, snapshot manifest SHA-256, lexical strict 파일 목록, 각 파일의 size/SHA-256, exact inventory를 매번 재검증한다. `.ops-public-release.json`은 최초 bootstrap에만 허용되며 Wisdom seal과 혼용하거나 정상 발행 이후 fallback으로 사용할 수 없다.
 
 검색엔진 운영 파일도 verified public release에 포함한다. 배포 후 `/sitemap.xml`은 `Content-Type: application/xml; charset=utf-8`, `/rss.xml`은 `application/rss+xml; charset=utf-8`인지 확인한다. Naver 소유권 확인 raw 파일은 Site와 동일하게 루트의 `naver` + 24~128자리 ASCII 영숫자·밑줄·하이픈 + `.html` 형식만 허용하며 Caddy가 `X-Robots-Tag: noindex, nofollow`를 붙인다. 더 넓은 `/naver*` matcher나 임의 파일명을 허용하지 말고, 파일 변경 시 새 public manifest와 pointer로 게시한다.

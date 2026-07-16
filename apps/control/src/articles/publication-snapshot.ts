@@ -13,15 +13,19 @@ import {
   normalizeValidateAndRenderArticleMarkdown,
   publishedArticleDocumentSchema,
   publishedArticleRoute,
+  publishedConsentBundleSchema,
   publishedManifestSchema,
   publishedSourceSchema,
   type Locale,
   type PublishedArticleDocument,
+  type PublishedConsentBundle,
+  type PublishedManifest,
   type PublishedManifestEntry,
 } from "@wisdom/shared";
 
 import type { KeyProvider } from "../crypto/index.js";
 import type { ControlDatabase } from "../db/client.js";
+import { getActiveConsentBundle } from "../consent/service.js";
 import { checkArticleForRetainedConsultationPii } from "./no-pii.js";
 
 export interface PublicationPromotion {
@@ -38,6 +42,7 @@ export interface PublicationSnapshot {
   readonly promotions: readonly PublicationPromotion[];
   readonly baseReleaseId: string | null;
   readonly baseReleaseGeneration: number;
+  readonly consentBundle: PublishedConsentBundle;
 }
 
 interface SnapshotRow {
@@ -75,6 +80,12 @@ function canonicalJson(value: unknown): string {
 
 function sha256Hex(bytes: string | Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function freezePublishedConsentBundle(bundle: PublishedConsentBundle): PublishedConsentBundle {
+  for (const document of bundle.documents) Object.freeze(document);
+  Object.freeze(bundle.documents);
+  return Object.freeze(bundle);
 }
 
 function utcInstant(milliseconds: number): string {
@@ -288,7 +299,48 @@ function captureInsideTransaction(
       contentFileSha256: sha256Hex(bytes),
     } satisfies PublishedManifestEntry;
   });
-  const manifest = publishedManifestSchema.parse({ schemaVersion: 1, entries });
+  const activeConsentBundle = getActiveConsentBundle(db);
+  if (!activeConsentBundle) throw new Error("PUBLICATION_CONSENT_BUNDLE_INVALID");
+  let consentBundle: PublishedConsentBundle;
+  try {
+    consentBundle = publishedConsentBundleSchema.parse({
+      schemaVersion: 1,
+      bundleId: activeConsentBundle.bundleId,
+      documents: (["ko", "en", "zh-Hans", "zh-Hant"] as const).flatMap((locale) => (
+        (["privacy", "marketing"] as const).map((kind) => {
+          const document = activeConsentBundle.documents.find((candidate) => (
+            candidate.locale === locale && candidate.kind === kind
+          ));
+          if (!document || document.effectiveAtMs === undefined) {
+            throw new Error("PUBLICATION_CONSENT_BUNDLE_INVALID");
+          }
+          return {
+            kind,
+            locale,
+            version: document.version,
+            title: document.title,
+            bodyMarkdown: document.bodyMarkdown,
+            contentSha256: document.contentSha256.toString("hex"),
+            effectiveAt: utcInstant(document.effectiveAtMs),
+            retentionMonths: document.retentionMonths,
+            required: kind === "privacy",
+          };
+        })
+      )),
+    });
+  } catch {
+    throw new Error("PUBLICATION_CONSENT_BUNDLE_INVALID");
+  }
+  consentBundle = freezePublishedConsentBundle(consentBundle);
+  const consentBytes = canonicalJson(consentBundle);
+  const manifest = publishedManifestSchema.parse({
+    schemaVersion: 1,
+    entries,
+    consentBundle: {
+      contentFile: "consent-bundle.json",
+      contentFileSha256: sha256Hex(consentBytes),
+    },
+  });
   const activeRelease = db.sqlite.prepare(`
     SELECT id, activation_generation FROM releases WHERE state = 'active'
   `).get() as { id: string; activation_generation: number } | undefined;
@@ -299,6 +351,19 @@ function captureInsideTransaction(
     promotions: Object.freeze([...promotions.values()].map((promotion) => Object.freeze(promotion))),
     baseReleaseId: activeRelease?.id ?? null,
     baseReleaseGeneration: activeRelease?.activation_generation ?? 0,
+    consentBundle,
+  });
+}
+
+export function publicationSnapshotManifest(snapshot: PublicationSnapshot): PublishedManifest {
+  const consentBytes = canonicalJson(publishedConsentBundleSchema.parse(snapshot.consentBundle));
+  return publishedManifestSchema.parse({
+    schemaVersion: 1,
+    entries: snapshot.entries,
+    consentBundle: {
+      contentFile: "consent-bundle.json",
+      contentFileSha256: sha256Hex(consentBytes),
+    },
   });
 }
 
@@ -324,6 +389,12 @@ export function writePublicationSnapshot(
   }
   const articlesDirectory = join(outputDirectory, "articles");
   mkdirSync(articlesDirectory, { mode: 0o700 });
+  const manifest = publicationSnapshotManifest(snapshot);
+  writeFileSync(
+    join(outputDirectory, manifest.consentBundle.contentFile),
+    canonicalJson(snapshot.consentBundle),
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
   const byRevision = new Map(snapshot.documents.map((document) => [document.revisionId, document]));
   for (const entry of snapshot.entries) {
     const document = byRevision.get(entry.revisionId);
@@ -340,7 +411,7 @@ export function writePublicationSnapshot(
   }
   writeFileSync(
     join(outputDirectory, "manifest.json"),
-    canonicalJson(publishedManifestSchema.parse({ schemaVersion: 1, entries: snapshot.entries })),
+    canonicalJson(manifest),
     { encoding: "utf8", flag: "wx", mode: 0o600 },
   );
 }

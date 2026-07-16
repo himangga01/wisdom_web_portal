@@ -1,6 +1,11 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
-import { consentVersionSchema, LOCALES, type Locale } from "@wisdom/shared";
+import {
+  computePublishedConsentDocumentSha256,
+  consentVersionSchema,
+  LOCALES,
+  type Locale,
+} from "@wisdom/shared";
 
 import type { ControlDatabase } from "../db/client.js";
 
@@ -43,16 +48,7 @@ interface ConsentRow {
 }
 
 function contentDigest(document: ConsentDocumentSeed): Buffer {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      kind: document.kind,
-      locale: document.locale,
-      version: document.version,
-      title: document.title,
-      bodyMarkdown: document.bodyMarkdown,
-      retentionMonths: document.retentionMonths,
-    }), "utf8")
-    .digest();
+  return Buffer.from(computePublishedConsentDocumentSha256(document), "hex");
 }
 
 function assertSeed(document: ConsentDocumentSeed): void {

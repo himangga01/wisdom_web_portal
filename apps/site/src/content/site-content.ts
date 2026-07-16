@@ -101,11 +101,12 @@ interface LocalePageNarrative {
   locationIntro: string;
   privacy: {
     intro: string;
-    sections: readonly { title: string; body: string }[];
+    support: string;
   };
   marketingWithdraw: {
     intro: string;
     steps: readonly string[];
+    support: string;
   };
   notFoundBody: string;
   formOptions: {
@@ -227,8 +228,6 @@ interface LocaleText {
   policies: {
     privacyHeading: string;
     marketingWithdrawHeading: string;
-    draftNotice: string;
-    launchGate: string;
   };
   serviceCatalog: Record<ServiceCategorySlug, ServiceCategoryTranslation>;
 }
@@ -289,7 +288,7 @@ const localizedText = {
       insights: "기업행정, 조달, 출입국 실무 안내를 확인합니다.",
       consultation: "상담에 필요한 기본 정보를 안전하게 전달합니다.",
       location: "문정역 인근 사무소 주소와 연락처를 안내합니다.",
-      privacy: "개인정보 처리방침 운영 초안을 확인합니다.",
+      privacy: "현재 적용 중인 개인정보 수집·이용 동의 문서를 확인합니다.",
       marketingWithdraw: "마케팅 수신 동의 철회 방법을 안내합니다.",
       notFound: "요청한 페이지를 찾을 수 없습니다.",
     },
@@ -377,8 +376,6 @@ const localizedText = {
     policies: {
       privacyHeading: "개인정보 처리방침",
       marketingWithdrawHeading: "마케팅 수신 동의 철회",
-      draftNotice: "운영 초안 — 법률 검토 완료 전 공개하거나 사용하지 않습니다.",
-      launchGate: "법률 검토 전 운영 금지",
     },
     serviceCatalog: {
       procurement: {
@@ -498,7 +495,7 @@ const localizedText = {
       insights: "Read practical guidance on business, procurement, and immigration matters.",
       consultation: "Send the basic information needed to review your consultation request.",
       location: "Find the office near Munjeong Station and view contact details.",
-      privacy: "Review the draft operational privacy policy.",
+      privacy: "Review the active privacy consent document used for consultation intake.",
       marketingWithdraw: "Learn how to withdraw marketing communications consent.",
       notFound: "The requested page could not be found.",
     },
@@ -586,8 +583,6 @@ const localizedText = {
     policies: {
       privacyHeading: "Privacy Policy",
       marketingWithdrawHeading: "Withdraw Marketing Consent",
-      draftNotice: "Operational draft — do not publish or use before legal review is complete.",
-      launchGate: "Do not use before legal review",
     },
     serviceCatalog: {
       procurement: {
@@ -713,7 +708,7 @@ const localizedText = {
       insights: "查看企业行政、采购和出入境实务指南。",
       consultation: "提交审核咨询所需的基本信息。",
       location: "查看文井站附近事务所的地址和联系方式。",
-      privacy: "查看个人信息处理方针运营草案。",
+      privacy: "查看咨询表单当前使用的个人信息同意文件。",
       marketingWithdraw: "了解撤回营销信息接收同意的方法。",
       notFound: "无法找到您请求的页面。",
     },
@@ -801,8 +796,6 @@ const localizedText = {
     policies: {
       privacyHeading: "个人信息处理方针",
       marketingWithdrawHeading: "撤回营销信息接收同意",
-      draftNotice: "运营草案——完成法律审查前不得公开或使用。",
-      launchGate: "法律审查完成前禁止使用",
     },
     serviceCatalog: {
       procurement: {
@@ -922,7 +915,7 @@ const localizedText = {
       insights: "查看企業行政、採購及出入境實務指南。",
       consultation: "提交審核諮詢所需的基本資料。",
       location: "查看文井站附近事務所的地址及聯絡方式。",
-      privacy: "查看個人資料處理方針營運草案。",
+      privacy: "查看諮詢表單目前使用的個人資訊同意文件。",
       marketingWithdraw: "瞭解撤回行銷資訊接收同意的方法。",
       notFound: "無法找到您要求的頁面。",
     },
@@ -1010,8 +1003,6 @@ const localizedText = {
     policies: {
       privacyHeading: "個人資料處理方針",
       marketingWithdrawHeading: "撤回行銷資訊接收同意",
-      draftNotice: "營運草案——完成法律審查前不得公開或使用。",
-      launchGate: "法律審查完成前禁止使用",
     },
     serviceCatalog: {
       procurement: {
@@ -1109,7 +1100,7 @@ const pageNarrative = {
       credentialsBody: "공개가 승인된 학력, 경력, 자격 정보만 안내합니다.",
       consultationTitle: "상담 요청을 남겨 주세요",
       consultationBody: "민감한 식별정보와 첨부파일 없이 검토에 필요한 기본 사실만 보내 주세요.",
-      portraitLabel: "승인된 대표 사진을 위한 자리",
+      portraitLabel: "브론즈, 샌드, 아이보리 색상의 기하학 브랜드 일러스트",
       sectionLabels: { navigator: "업무 찾기", principles: "업무 원칙", profile: "대표 행정사" },
       insightCategories: ["공공조달", "기업행정", "출입국·비자"],
     },
@@ -1142,16 +1133,13 @@ const pageNarrative = {
     consultationIntro: "상담 검토에 필요한 기본 정보를 입력해 주세요. 이 화면은 실제 API로 전송하며 성공 결과를 미리 표시하지 않습니다.",
     locationIntro: "문정역 인근 사무소의 주소와 연락처입니다. 방문 전 연락해 주세요.",
     privacy: {
-      intro: "상담 접수 운영을 준비하기 위한 개인정보 처리방침 초안입니다.",
-      sections: [
-        { title: "처리 목적", body: "상담 요청 확인과 연락을 위한 운영 항목을 정리하는 초안입니다." },
-        { title: "처리 항목과 보유기간", body: "수집 항목, 동의 버전, 보유기간은 법률 검토와 운영 설정 완료 후 확정합니다." },
-        { title: "권리 행사와 문의", body: "열람·정정·삭제 요청 절차와 담당 연락처는 출시 전 최종 문서에 반영합니다." },
-      ],
+      intro: "아래 문서는 관리자가 활성화했으며 현재 상담 접수에서 사용하는 개인정보 동의 문서입니다.",
+      support: "문서 내용에 관한 문의는 사무소로 연락해 주세요.",
     },
     marketingWithdraw: {
-      intro: "마케팅 수신 동의를 철회하기 위한 운영 절차 초안입니다.",
-      steps: ["사무소 전화 또는 이메일로 철회 의사를 전달합니다.", "본인 확인에 필요한 최소 정보만 안내합니다.", "처리 결과를 선택한 연락 방법으로 확인합니다."],
+      intro: "마케팅 동의 확인 이메일에 포함된 일회용 철회 링크로 수신 동의를 철회할 수 있습니다.",
+      steps: ["마케팅 정보 수신에 동의했을 때 발송된 확인 이메일을 엽니다.", "이메일의 일회용 철회 링크를 열고 내용을 확인합니다.", "철회를 제출한 뒤 한국어 확인 화면에서 처리 결과를 확인합니다."],
+      support: "링크를 찾거나 사용하는 데 도움이 필요하면 사무소로 문의해 주세요. 전화와 이메일은 지원 연락 수단이며 그 자체로 동의를 철회하지 않습니다.",
     },
     notFoundBody: "주소를 다시 확인하거나 아래 링크로 홈 화면으로 이동해 주세요.",
     formOptions: { phone: "전화", email: "이메일", other: "기타" },
@@ -1178,7 +1166,7 @@ const pageNarrative = {
       credentialsBody: "Only approved education, career, and qualification facts are shown.",
       consultationTitle: "Tell us what you need reviewed",
       consultationBody: "Send only the basic facts needed for review, without sensitive identifiers or attachments.",
-      portraitLabel: "Reserved slot for an approved representative portrait",
+      portraitLabel: "Bronze, sand, and ivory geometric brand illustration",
       sectionLabels: { navigator: "Service navigator", principles: "Working principles", profile: "Representative profile" },
       insightCategories: ["Public procurement", "Business administration", "Immigration and visas"],
     },
@@ -1215,16 +1203,13 @@ const pageNarrative = {
     consultationIntro: "Provide the basic information needed for review. The form posts to the real API and does not display a simulated receipt.",
     locationIntro: "Office address and contact details near Munjeong Station. Please contact the office before visiting.",
     privacy: {
-      intro: "This is a draft privacy notice for preparing consultation intake operations.",
-      sections: [
-        { title: "Purpose", body: "Draft operating terms for reviewing consultation requests and making contact." },
-        { title: "Data and retention", body: "Collected fields, consent versions, and retention periods will be finalized after legal and operational review." },
-        { title: "Rights and contact", body: "Access, correction, and deletion procedures will be included in the final pre-launch document." },
-      ],
+      intro: "This administrator-activated privacy consent document is the version currently used for consultation intake.",
+      support: "Contact the office if you need help understanding this document.",
     },
     marketingWithdraw: {
-      intro: "This is a draft operating process for withdrawing marketing consent.",
-      steps: ["Contact the office by phone or email.", "Provide only the minimum information needed to identify the consent.", "Receive confirmation through the selected contact method."],
+      intro: "Use the one-time withdrawal link sent in the marketing consent confirmation email.",
+      steps: ["Open the confirmation email sent when marketing consent was accepted.", "Open the one-time withdrawal link and review the confirmation.", "Submit the withdrawal and review the result on the localized confirmation page."],
+      support: "If you need help finding or using the link, contact the office. Phone and email are support channels; they do not withdraw consent by themselves.",
     },
     notFoundBody: "Check the address or use the link below to return home.",
     formOptions: { phone: "Phone", email: "Email", other: "Other" },
@@ -1251,7 +1236,7 @@ const pageNarrative = {
       credentialsBody: "仅公开已获批准的教育、经历与资格信息。",
       consultationTitle: "请留下咨询需求",
       consultationBody: "请勿提交敏感身份信息或附件，仅发送审查所需基本事实。",
-      portraitLabel: "预留的代表照片位置",
+      portraitLabel: "青铜色、沙色与象牙色的几何品牌插图",
       sectionLabels: { navigator: "业务导航", principles: "办理原则", profile: "代表行政士简介" },
       insightCategories: ["公共采购", "企业行政", "出入境签证"],
     },
@@ -1281,14 +1266,14 @@ const pageNarrative = {
     consultationIntro: "请填写审查所需基本信息。本表单提交至真实API，不模拟成功结果。",
     locationIntro: "文井站附近事务所的地址与联系方式，来访前请先联系。",
     privacy: {
-      intro: "这是为咨询受理运营准备的个人信息处理方针草案。",
-      sections: [
-        { title: "处理目的", body: "整理用于确认咨询请求与联系的运营草案。" },
-        { title: "项目与保存期限", body: "收集项目、同意版本与保存期限将在法律及运营审查后确定。" },
-        { title: "权利与咨询", body: "查阅、更正与删除程序将在上线前最终文件中说明。" },
-      ],
+      intro: "下方显示管理员已启用且咨询表单正在使用的当前个人信息同意文件。",
+      support: "如对文件内容有疑问，请联系事务所。",
     },
-    marketingWithdraw: { intro: "这是撤回营销接收同意的运营流程草案。", steps: ["通过电话或电子邮件联系事务所。", "仅提供确认同意所需的最少信息。", "通过所选联系方式确认处理结果。"] },
+    marketingWithdraw: {
+      intro: "请使用营销同意确认邮件中的一次性撤回链接。",
+      steps: ["打开接受营销信息时发送的确认邮件。", "打开邮件中的一次性撤回链接并确认内容。", "提交撤回后，在本地化确认页面查看处理结果。"],
+      support: "如需查找或使用链接方面的帮助，请联系事务所。电话和电子邮件仅用于支持，本身不会撤回同意。",
+    },
     notFoundBody: "请检查地址，或使用下方链接返回首页。",
     formOptions: { phone: "电话", email: "电子邮件", other: "其他" },
   },
@@ -1314,7 +1299,7 @@ const pageNarrative = {
       credentialsBody: "僅公開已獲批准的教育、經歷與資格資訊。",
       consultationTitle: "請留下諮詢需求",
       consultationBody: "請勿提交敏感身分資訊或附件，僅傳送審查所需基本事實。",
-      portraitLabel: "預留的代表照片位置",
+      portraitLabel: "青銅色、沙色與象牙色的幾何品牌插圖",
       sectionLabels: { navigator: "業務導覽", principles: "辦理原則", profile: "代表行政士簡介" },
       insightCategories: ["公共採購", "企業行政", "出入境簽證"],
     },
@@ -1344,14 +1329,14 @@ const pageNarrative = {
     consultationIntro: "請填寫審查所需基本資訊。本表單提交至真實API，不模擬成功結果。",
     locationIntro: "文井站附近事務所的地址與聯絡方式，來訪前請先聯絡。",
     privacy: {
-      intro: "這是為諮詢受理營運準備的個人資訊處理方針草案。",
-      sections: [
-        { title: "處理目的", body: "整理用於確認諮詢請求與聯絡的營運草案。" },
-        { title: "項目與保存期限", body: "收集項目、同意版本與保存期限將在法律及營運審查後確定。" },
-        { title: "權利與諮詢", body: "查閱、更正與刪除程序將在上線前最終文件中說明。" },
-      ],
+      intro: "下方顯示管理員已啟用且諮詢表單目前使用的個人資訊同意文件。",
+      support: "如對文件內容有疑問，請聯絡事務所。",
     },
-    marketingWithdraw: { intro: "這是撤回行銷接收同意的營運流程草案。", steps: ["透過電話或電子郵件聯絡事務所。", "僅提供確認同意所需的最少資訊。", "透過所選聯絡方式確認處理結果。"] },
+    marketingWithdraw: {
+      intro: "請使用行銷同意確認郵件中的一次性撤回連結。",
+      steps: ["開啟接受行銷資訊時寄送的確認郵件。", "開啟郵件中的一次性撤回連結並確認內容。", "提交撤回後，在本地化確認頁面查看處理結果。"],
+      support: "如需尋找或使用連結方面的協助，請聯絡事務所。電話與電子郵件僅供支援，本身不會撤回同意。",
+    },
     notFoundBody: "請檢查地址，或使用下方連結返回首頁。",
     formOptions: { phone: "電話", email: "電子郵件", other: "其他" },
   },

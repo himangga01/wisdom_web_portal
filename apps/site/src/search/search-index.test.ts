@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { loadPublishedContent, type PublishedContent } from "../content/published-articles.js";
+import { testPublishedConsentBundle, testPublishedManifest } from "../test/published-content.js";
 import { buildSearchIndex } from "./search-index.js";
 
 const origin = "https://www.jihye-office.kr";
@@ -12,7 +13,8 @@ const fixtureDirectory = fileURLToPath(
 
 function emptyPublishedContent(): PublishedContent {
   return {
-    manifest: { schemaVersion: 1, entries: [] } satisfies PublishedManifest,
+    manifest: testPublishedManifest() satisfies PublishedManifest,
+    consentBundle: testPublishedConsentBundle(),
     articles: [],
     byRoute: new Map(),
     byArticleId: new Map(),

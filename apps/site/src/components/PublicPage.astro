@@ -1,5 +1,10 @@
 ---
-import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
+import type {
+  Locale,
+  PublishedArticleDocument,
+  PublishedConsentBundle,
+  PublishedConsentDocument,
+} from "@wisdom/shared";
 
 import ConsultationForm from "./ConsultationForm.astro";
 import HomePage from "./HomePage.astro";
@@ -14,9 +19,10 @@ interface Props {
   route: PublicRoute;
   articles?: readonly PublishedArticleDocument[];
   searchDocument: SearchDocument;
+  consentBundle: PublishedConsentBundle;
 }
 
-const { locale, route, articles = [], searchDocument } = Astro.props;
+const { locale, route, articles = [], searchDocument, consentBundle } = Astro.props;
 const content = siteContent[locale];
 const serviceSlug = route.startsWith("/services/")
   ? (route.slice("/services/".length) as ServiceCategorySlug)
@@ -27,6 +33,16 @@ const selectedService = serviceSlug
 const heading = searchDocument.h1;
 const backToServices = toLocalizedPath(locale, "/services");
 const servicePublication = searchDocument.service;
+const consentDocument = (kind: "privacy" | "marketing"): PublishedConsentDocument => {
+  const document = consentBundle.documents.find((candidate) => (
+    candidate.locale === locale && candidate.kind === kind
+  ));
+  if (!document) throw new Error("PUBLIC_POLICY_CONSENT_DOCUMENT_MISSING");
+  return document;
+};
+const policyDocument = route === "/privacy"
+  ? consentDocument("privacy")
+  : route === "/marketing/withdraw" ? consentDocument("marketing") : undefined;
 ---
 
 <BaseLayout
@@ -150,17 +166,43 @@ const servicePublication = searchDocument.service;
           )}
 
           {route === "/privacy" && (
-            <article class="policy-document">
-              <div class="launch-gate" role="note"><strong>{content.policies.launchGate}</strong><span>{content.policies.draftNotice}</span></div>
-              {content.pages.privacy.sections.map((section) => <section><h2>{section.title}</h2><p>{section.body}</p></section>)}
-              <p class="operational-note">{OFFICE.email} · {OFFICE.phone}</p>
+            <article
+              class="policy-document"
+              data-consent-kind="privacy"
+              data-consent-version={policyDocument!.version}
+              data-consent-effective-at={policyDocument!.effectiveAt}
+              data-consent-sha256={policyDocument!.contentSha256}
+              data-consent-retention-months={policyDocument!.retentionMonths}
+            >
+              <h2>{policyDocument!.title}</h2>
+              <dl class="consent-document-meta policy-document-meta">
+                <div><dt>{content.forms.consultation.help.consentVersion}</dt><dd>{policyDocument!.version}</dd></div>
+                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{policyDocument!.effectiveAt}</time></dd></div>
+                <div><dt>{content.forms.consultation.help.consentRetention}</dt><dd>{policyDocument!.retentionMonths} {content.forms.consultation.help.consentMonths}</dd></div>
+              </dl>
+              <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>
+              <p class="operational-note">{content.pages.privacy.support} <a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={`tel:${OFFICE.phone}`}>{OFFICE.phone}</a></p>
             </article>
           )}
 
           {route === "/marketing/withdraw" && (
-            <article class="policy-document">
-              <div class="launch-gate" role="note"><strong>{content.policies.launchGate}</strong><span>{content.policies.draftNotice}</span></div>
+            <article
+              class="policy-document"
+              data-consent-kind="marketing"
+              data-consent-version={policyDocument!.version}
+              data-consent-effective-at={policyDocument!.effectiveAt}
+              data-consent-sha256={policyDocument!.contentSha256}
+              data-consent-retention-months={policyDocument!.retentionMonths}
+            >
+              <h2>{policyDocument!.title}</h2>
+              <dl class="consent-document-meta policy-document-meta">
+                <div><dt>{content.forms.consultation.help.consentVersion}</dt><dd>{policyDocument!.version}</dd></div>
+                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{policyDocument!.effectiveAt}</time></dd></div>
+                <div><dt>{content.forms.consultation.help.consentRetention}</dt><dd>{policyDocument!.retentionMonths} {content.forms.consultation.help.consentMonths}</dd></div>
+              </dl>
+              <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>
               <ol class="withdrawal-steps">{content.pages.marketingWithdraw.steps.map((step) => <li>{step}</li>)}</ol>
+              <p>{content.pages.marketingWithdraw.support}</p>
               <p><a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={`tel:${OFFICE.phone}`}>{OFFICE.phone}</a></p>
             </article>
           )}

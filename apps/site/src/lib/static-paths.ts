@@ -1,4 +1,4 @@
-import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
+import type { Locale, PublishedArticleDocument, PublishedConsentBundle } from "@wisdom/shared";
 
 import type { PublishedContent } from "../content/published-articles.js";
 import {
@@ -14,6 +14,7 @@ export interface BaseStaticPathProps {
   locale: Locale;
   route: PublicRoute;
   articles: readonly PublishedArticleDocument[];
+  consentBundle: PublishedConsentBundle;
   searchDocument: SearchDocument;
 }
 
@@ -55,6 +56,7 @@ export function createPublicStaticPaths(
         locale,
         route,
         articles: route === "/insights" ? articlesForLocale(content, locale) : [],
+        consentBundle: content.consentBundle,
         searchDocument: requiredSearchDocument(searchIndex, pathname),
       },
     }));

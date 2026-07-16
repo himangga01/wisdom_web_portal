@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import type { PublishedContent } from "../content/published-articles.js";
+import { testPublishedConsentBundle, testPublishedManifest } from "../test/published-content.js";
 import { createPublicStaticPaths } from "./static-paths.js";
 import { buildSearchIndex } from "../search/search-index.js";
 
@@ -49,7 +50,8 @@ function content(articles: readonly PublishedArticleDocument[]): PublishedConten
     byArticleId.set(item.articleId, related);
   }
   return {
-    manifest: { schemaVersion: 1, entries: [] } satisfies PublishedManifest,
+    manifest: testPublishedManifest() satisfies PublishedManifest,
+    consentBundle: testPublishedConsentBundle(),
     articles,
     byRoute: new Map(articles.map((item) => [item.route, item])),
     byArticleId,

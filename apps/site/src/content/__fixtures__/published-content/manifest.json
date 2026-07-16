@@ -41,5 +41,9 @@
       "contentFile": "articles/44444444-4444-4444-8444-444444444444.json",
       "contentFileSha256": "288e2d90ff2748e879e8d13f16e7e348fd91dbdac647958c5a68373b3b92a81c"
     }
-  ]
+  ],
+  "consentBundle": {
+    "contentFile": "consent-bundle.json",
+    "contentFileSha256": "4ce3090b4f40edcbc208a9e52dcf8f0c0572fe0b0eeb4d09615f65583679c5df"
+  }
 }

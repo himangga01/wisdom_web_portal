@@ -22,7 +22,10 @@ import {
   IndexNowPayloadValidationError,
   type CanonicalIndexNowPayload,
 } from "./indexnow-payload.js";
-import type { PublicationSnapshot } from "./publication-snapshot.js";
+import {
+  publicationSnapshotManifest,
+  type PublicationSnapshot,
+} from "./publication-snapshot.js";
 import { parsePublicationSitemapUrls } from "./publication-sitemap.js";
 
 const RELEASE_MANIFEST_NAME = ".wisdom-release-manifest.json";
@@ -343,10 +346,61 @@ function verifyInternalAssets(files: readonly InventoryFile[]): void {
 
 function linkAttributes(tag: string): Map<string, string> {
   const attributes = new Map<string, string>();
-  for (const match of tag.matchAll(/([a-zA-Z:-]+)\s*=\s*["']([^"']*)["']/gu)) {
+  for (const match of tag.matchAll(/([a-zA-Z0-9:-]+)\s*=\s*["']([^"']*)["']/gu)) {
     attributes.set(match[1]!.toLowerCase(), match[2]!);
   }
   return attributes;
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function consentPolicyRoute(locale: Locale, kind: "privacy" | "marketing"): string {
+  const prefix = locale === "ko" ? ""
+    : locale === "en" ? "/en"
+      : locale === "zh-Hans" ? "/zh-hans" : "/zh-hant";
+  return `${prefix}${kind === "privacy" ? "/privacy" : "/marketing/withdraw"}`;
+}
+
+function verifyConsentPolicies(
+  files: readonly InventoryFile[],
+  snapshot: PublicationSnapshot,
+): void {
+  const fileByPath = new Map(files.map((file) => [file.path, file]));
+  for (const document of snapshot.consentBundle.documents) {
+    const page = fileByPath.get(routeFile(consentPolicyRoute(document.locale, document.kind)));
+    if (!page) throw new Error("PUBLICATION_POLICY_ROUTE_MISSING");
+    const html = page.bytes.toString("utf8");
+    const matching = [...html.matchAll(/<article\b[^>]*>[\s\S]*?<\/article>/giu)].filter((match) => (
+      linkAttributes(match[0].slice(0, match[0].indexOf(">") + 1)).get("data-consent-kind")
+        === document.kind
+    ));
+    if (matching.length !== 1) throw new Error("PUBLICATION_POLICY_METADATA_MISMATCH");
+    const policyHtml = matching[0]![0];
+    const opening = policyHtml.slice(0, policyHtml.indexOf(">") + 1);
+    const attributes = linkAttributes(opening);
+    if (attributes.get("data-consent-version") !== document.version
+      || attributes.get("data-consent-effective-at") !== document.effectiveAt
+      || attributes.get("data-consent-sha256") !== document.contentSha256
+      || attributes.get("data-consent-retention-months") !== String(document.retentionMonths)) {
+      throw new Error("PUBLICATION_POLICY_METADATA_MISMATCH");
+    }
+    const titleMatches = [...policyHtml.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/giu)];
+    const bodyMatches = [...policyHtml.matchAll(/<pre\b[^>]*>([\s\S]*?)<\/pre>/giu)];
+    if (titleMatches.length !== 1
+      || titleMatches[0]![1] !== escapeHtmlText(document.title)
+      || bodyMatches.length !== 1
+      || bodyMatches[0]![1] !== escapeHtmlText(document.bodyMarkdown)
+      || /<script\b|\son[a-z]+\s*=/iu.test(policyHtml)) {
+      throw new Error("PUBLICATION_POLICY_BODY_MISMATCH");
+    }
+  }
 }
 
 function verifyArticles(
@@ -438,7 +492,7 @@ function verifyArticles(
 }
 
 export function computePublicationSnapshotManifestSha256(snapshot: PublicationSnapshot): string {
-  const manifest = publishedManifestSchema.parse({ schemaVersion: 1, entries: snapshot.entries });
+  const manifest = publicationSnapshotManifest(snapshot);
   return sha256Hex(canonicalJson(manifest));
 }
 
@@ -534,6 +588,7 @@ export function verifyAndSealPublicationBuild(input: {
     }
   }
   verifyArticles(files, input.snapshot, input.publicOrigin);
+  verifyConsentPolicies(files, input.snapshot);
   verifyInternalLinks(files);
   verifyInternalAssets(files);
   const manifest: PublicationReleaseManifest = {
