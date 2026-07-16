@@ -235,7 +235,7 @@ function captureInsideTransaction(
   keyProvider: KeyProvider,
   input: { promote: readonly PublicationPromotion[]; nowMs: number },
 ): PublicationSnapshot {
-  if (input.promote.length < 1 || input.promote.length > 64) {
+  if (input.promote.length > 64) {
     throw new Error("PUBLICATION_PROMOTION_COUNT_INVALID");
   }
   const promotions = new Map<string, PublicationPromotion>();

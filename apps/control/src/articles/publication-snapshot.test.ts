@@ -180,6 +180,32 @@ afterEach(() => {
 });
 
 describe("immutable publication snapshot", () => {
+  it("allows a policy-only snapshot while preserving promotion count and duplicate fences", () => {
+    const snapshot = capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: [],
+      nowMs: NOW,
+    });
+
+    expect(snapshot.promotions).toEqual([]);
+    expect(snapshot.documents.map(({ locale }) => locale)).toEqual(["ko"]);
+    expect(snapshot.consentBundle.documents).toHaveLength(8);
+
+    const promotion = {
+      articleId: ARTICLE_ID,
+      locale: "en" as const,
+      revisionId: EN_REVISION_ID,
+      expectedRowVersion: 3,
+    };
+    expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: Array.from({ length: 65 }, () => ({ ...promotion })),
+      nowMs: NOW,
+    })).toThrow(/^PUBLICATION_PROMOTION_COUNT_INVALID$/);
+    expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: [{ ...promotion }, { ...promotion }],
+      nowMs: NOW,
+    })).toThrow(/^PUBLICATION_PROMOTION_DUPLICATE$/);
+  });
+
   it("captures the exact active eight-document consent bundle used by consultation intake", () => {
     const snapshot = capturePublicationSnapshot(fixture.db, keyProvider, {
       promote: [{

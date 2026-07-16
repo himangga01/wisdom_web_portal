@@ -12,6 +12,10 @@ import {
   type KeyProvider,
 } from "../crypto/index.js";
 import type { ControlDatabase } from "../db/client.js";
+import type {
+  ConsentAuthority,
+  ConsentAuthorityResolver,
+} from "../consent/service.js";
 
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -33,6 +37,7 @@ export interface AcceptConsultationInput {
 }
 
 export interface AcceptConsultationOptions {
+  resolveConsentAuthority: ConsentAuthorityResolver;
   randomUUID?: () => string;
   faultInjector?: (point: IntakeFaultPoint) => void;
 }
@@ -43,6 +48,7 @@ export type IntakeResult =
   | { kind: "conflict" }
   | { kind: "invalid-submission" }
   | { kind: "stale-consent" }
+  | { kind: "consent-unavailable" }
   | { kind: "rate-limited"; retryAfterSeconds: number };
 
 interface IdempotencyRow {
@@ -56,9 +62,13 @@ interface ConsentRow {
   id: string;
   bundle_id: string;
   kind: "privacy" | "marketing";
+  locale: ConsultationRequest["locale"];
   version: string;
+  title: string;
+  body_markdown: string;
   content_sha256: Buffer;
   retention_months: 12 | 24;
+  effective_at_ms: number | null;
 }
 
 export function findConsultationIdsByContact(
@@ -115,25 +125,45 @@ export function addMonthsClamped(timestampMs: number, months: number): number {
   );
 }
 
-function activeConsentRows(db: ControlDatabase, request: ConsultationRequest): ConsentRow[] | undefined {
+function authoritativeConsentRows(
+  db: ControlDatabase,
+  request: ConsultationRequest,
+  authority: ConsentAuthority,
+): { kind: "ok"; rows: ConsentRow[] } | { kind: "stale" | "unavailable" } {
+  const published = authority.bundle.documents.filter((document) => document.locale === request.locale);
+  const publishedPrivacy = published.find((document) => document.kind === "privacy");
+  const publishedMarketing = published.find((document) => document.kind === "marketing");
+  if (!publishedPrivacy || !publishedMarketing) return { kind: "unavailable" };
+  if (publishedPrivacy.version !== request.privacyConsent.version
+    || publishedMarketing.version !== request.marketingConsent.version) {
+    return { kind: "stale" };
+  }
   const rows = db.sqlite.prepare(`
-    SELECT id, bundle_id, kind, version, content_sha256, retention_months
+    SELECT id, bundle_id, kind, locale, version, title, body_markdown,
+      content_sha256, retention_months, effective_at_ms
     FROM consent_documents
-    WHERE state = 'active' AND locale = ? AND kind IN ('privacy','marketing')
+    WHERE bundle_id = ? AND locale = ? AND kind IN ('privacy','marketing')
     ORDER BY kind
-  `).all(request.locale) as ConsentRow[];
-  if (rows.length !== 2 || rows[0]?.bundle_id !== rows[1]?.bundle_id) return undefined;
+  `).all(authority.bundle.bundleId, request.locale) as ConsentRow[];
+  if (rows.length !== 2 || rows[0]?.bundle_id !== rows[1]?.bundle_id) return { kind: "unavailable" };
   const privacy = rows.find((row) => row.kind === "privacy");
   const marketing = rows.find((row) => row.kind === "marketing");
-  if (
-    !privacy ||
-    !marketing ||
-    privacy.version !== request.privacyConsent.version ||
-    marketing.version !== request.marketingConsent.version
-  ) {
-    return undefined;
+  if (!privacy || !marketing) return { kind: "unavailable" };
+  for (const [row, document] of [
+    [privacy, publishedPrivacy],
+    [marketing, publishedMarketing],
+  ] as const) {
+    if (row.version !== document.version
+      || row.title !== document.title
+      || row.body_markdown !== document.bodyMarkdown
+      || row.content_sha256.toString("hex") !== document.contentSha256
+      || row.retention_months !== document.retentionMonths
+      || row.effective_at_ms === null
+      || new Date(row.effective_at_ms).toISOString() !== document.effectiveAt) {
+      return { kind: "unavailable" };
+    }
   }
-  return [privacy, marketing];
+  return { kind: "ok", rows: [privacy, marketing] };
 }
 
 function digestCandidates(provider: KeyProvider, purpose: "idempotency" | "request-fingerprint", value: string) {
@@ -151,7 +181,7 @@ export function acceptConsultation(
   db: ControlDatabase,
   provider: KeyProvider,
   input: AcceptConsultationInput,
-  options: AcceptConsultationOptions = {},
+  options: AcceptConsultationOptions,
 ): IntakeResult {
   const createId = options.randomUUID ?? nodeRandomUUID;
   const consultationId = createId();
@@ -199,6 +229,17 @@ export function acceptConsultation(
         : { kind: "conflict" };
     }
 
+    let authority: ConsentAuthority | undefined;
+    try {
+      authority = options.resolveConsentAuthority();
+    } catch {
+      authority = undefined;
+    }
+    if (!authority) {
+      db.sqlite.exec("ROLLBACK");
+      return { kind: "consent-unavailable" };
+    }
+
     try {
       verifyFormToken(provider, input.formToken, {
         locale: input.consultation.locale,
@@ -210,11 +251,14 @@ export function acceptConsultation(
       return { kind: "invalid-submission" };
     }
 
-    const consentRows = activeConsentRows(db, input.consultation);
-    if (!consentRows) {
+    const resolvedConsent = authoritativeConsentRows(db, input.consultation, authority);
+    if (resolvedConsent.kind !== "ok") {
       db.sqlite.exec("ROLLBACK");
-      return { kind: "stale-consent" };
+      return resolvedConsent.kind === "stale"
+        ? { kind: "stale-consent" }
+        : { kind: "consent-unavailable" };
     }
+    const consentRows = resolvedConsent.rows;
 
     const rate = applyRateLimitsInTransaction(db, provider, {
       clientIp: input.clientIp,

@@ -1,11 +1,21 @@
 import { readFileSync } from "node:fs";
 
-import { consultationRequestSchema } from "@wisdom/shared";
+import {
+  computePublishedConsentDocumentSha256,
+  consultationRequestSchema,
+  publishedConsentBundleSchema,
+} from "@wisdom/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../test/helpers.js";
 import { createControlApp, type RedactedLogEvent } from "./app.js";
-import { activateConsentBundle, seedConsentDocuments } from "./consent/service.js";
+import {
+  activateConsentBundle,
+  createDatabaseConsentAuthorityResolver,
+  seedConsentDocuments,
+  type ConsentAuthority,
+  type ConsentAuthorityResolver,
+} from "./consent/service.js";
 import type { IntakeFaultPoint } from "./consultations/service.js";
 import { createStaticKeyProvider } from "./crypto/index.js";
 import { closeDatabase, openDatabase } from "./db/client.js";
@@ -43,6 +53,7 @@ function fixture(options: {
   useDefaultLogger?: boolean;
   indexNowKey?: string;
   indexNowKeyProvider?: () => string | undefined;
+  consentAuthorityResolver?: ConsentAuthorityResolver;
 } = {}): Fixture {
   const database = createTestDatabase();
   cleanup.push(() => database.close());
@@ -63,13 +74,40 @@ function fixture(options: {
     ...(options.faultInjector ? { faultInjector: options.faultInjector } : {}),
     ...(options.indexNowKey ? { indexNowKey: options.indexNowKey } : {}),
     ...(options.indexNowKeyProvider ? { indexNowKeyProvider: options.indexNowKeyProvider } : {}),
-  });
+    consentAuthorityResolver: options.consentAuthorityResolver
+      ?? createDatabaseConsentAuthorityResolver(database.db),
+  } as Parameters<typeof createControlApp>[0]);
   return {
     app,
     database,
     logs,
     get now() { return now; },
     set now(value: number) { now = value; },
+  };
+}
+
+function publishedAuthority(bundleId: string, suffix: string): ConsentAuthority {
+  const documents = consentBundle(bundleId, suffix).map((document) => {
+    const semantic = {
+      kind: document.kind,
+      locale: document.locale,
+      version: document.version,
+      title: document.title,
+      bodyMarkdown: document.bodyMarkdown,
+      retentionMonths: document.retentionMonths,
+    };
+    return {
+      ...semantic,
+      contentSha256: computePublishedConsentDocumentSha256(semantic),
+      effectiveAt: "1970-01-01T00:00:02.000Z",
+      required: document.kind === "privacy",
+    };
+  });
+  return {
+    source: "release",
+    releaseId: "11111111-1111-4111-8111-111111111111",
+    releaseManifestSha256: "a".repeat(64),
+    bundle: publishedConsentBundleSchema.parse({ schemaVersion: 1, bundleId, documents }),
   };
 }
 
@@ -134,6 +172,32 @@ function expectNoRequestCanaries(output: string, body: string, idempotencyKey: s
 }
 
 describe("public control API", () => {
+  it("keeps GET and intake bound to one published release while a newer DB bundle awaits publication", async () => {
+    const published = publishedAuthority("bundle-2026-07-16", "2026-07-16");
+    const current = fixture({ consentAuthorityResolver: () => published });
+    seedConsentDocuments(current.database.db, consentBundle("bundle-new", "new"), current.now);
+    activateConsentBundle(current.database.db, "bundle-new", current.now);
+
+    const configuration = await consentConfiguration(current.app);
+    expect(configuration.documents.privacy.version).toBe("privacy-2026-07-16");
+    expect(configuration.documents.marketing.version).toBe("marketing-2026-07-16");
+
+    current.now += 2_000;
+    const response = await post(
+      current.app,
+      JSON.stringify(submission(configuration)),
+      "release-bound-consent-0001",
+    );
+    expect(response.status).toBe(201);
+  });
+
+  it("fails consent GET and intake closed when the configured release authority is unavailable", async () => {
+    const current = fixture({ consentAuthorityResolver: () => undefined });
+    expect((await current.app.request(
+      "http://localhost/api/v1/consent-documents?locale=en",
+    )).status).toBe(503);
+  });
+
   it("serves adapter-compatible consent metadata, round-trips it through shared parsing, and fails health closed", async () => {
     const ready = fixture();
     const consentResponse = await ready.app.request(
@@ -288,6 +352,7 @@ describe("public control API", () => {
     cleanup.push(() => closeDatabase(secondDb));
     const secondApp = createControlApp({
       db: secondDb,
+      consentAuthorityResolver: createDatabaseConsentAuthorityResolver(secondDb),
       keyProvider,
       allowedOrigins: [ALLOWED_ORIGIN],
       enforceOrigin: true,
@@ -426,6 +491,7 @@ describe("public control API", () => {
     cleanup.push(() => closeDatabase(reopened));
     const reopenedApp = createControlApp({
       db: reopened,
+      consentAuthorityResolver: createDatabaseConsentAuthorityResolver(reopened),
       keyProvider,
       allowedOrigins: [ALLOWED_ORIGIN],
       enforceOrigin: true,

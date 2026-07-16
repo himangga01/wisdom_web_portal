@@ -12,7 +12,10 @@ import { z } from "zod";
 import { issueFormToken } from "./abuse/form-token.js";
 import { resolveClientIp } from "./abuse/rate-limit.js";
 import { registerHermesArticleRoutes } from "./articles/hermes-http.js";
-import { getActiveConsentBundle, getPublicConsentDocuments } from "./consent/service.js";
+import {
+  publicConsentDocumentsFromBundle,
+  type ConsentAuthorityResolver,
+} from "./consent/service.js";
 import {
   acceptConsultation,
   type IntakeFaultPoint,
@@ -63,6 +66,7 @@ export interface ControlAppDependencies {
   articlePublication?: AdminArticlePublicationActions;
   indexNowKey?: string;
   indexNowKeyProvider?: () => string | undefined;
+  consentAuthorityResolver?: ConsentAuthorityResolver;
 }
 
 class PayloadTooLargeError extends Error {}
@@ -192,6 +196,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   const now = dependencies.now ?? Date.now;
   const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
   const logger = dependencies.logger ?? defaultLogger();
+  const resolveConsentAuthority = dependencies.consentAuthorityResolver ?? (() => undefined);
   if (dependencies.indexNowKey !== undefined
     && !/^[A-Za-z0-9-]{8,128}$/.test(dependencies.indexNowKey)) {
     throw new Error("IndexNow public key is invalid");
@@ -275,10 +280,15 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   app.get("/health/live", (context) => context.json({ status: "ok" }, 200));
 
   app.get("/health/ready", (context) => {
-    const ready =
-      isDatabaseReady(dependencies.db) &&
-      getActiveConsentBundle(dependencies.db) !== undefined &&
-      dependencies.keyProvider.active().secret.byteLength >= 32;
+    let consentReady = false;
+    try {
+      consentReady = resolveConsentAuthority() !== undefined;
+    } catch {
+      consentReady = false;
+    }
+    const ready = isDatabaseReady(dependencies.db)
+      && consentReady
+      && dependencies.keyProvider.active().secret.byteLength >= 32;
     return ready
       ? context.json({ status: "ready" }, 200)
       : apiError(context, 503, "NOT_READY", "The service is not ready.");
@@ -309,7 +319,15 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     if (!locale.success) {
       return apiError(context, 400, "INVALID_LOCALE", "A supported locale is required.");
     }
-    const documents = getPublicConsentDocuments(dependencies.db, locale.data);
+    let authority;
+    try {
+      authority = resolveConsentAuthority();
+    } catch {
+      authority = undefined;
+    }
+    const documents = authority
+      ? publicConsentDocumentsFromBundle(authority.bundle, locale.data)
+      : undefined;
     if (!documents) {
       return apiError(
         context,
@@ -396,6 +414,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       clientIp,
       nowMs,
     }, {
+      resolveConsentAuthority,
       randomUUID,
       ...(dependencies.faultInjector ? { faultInjector: dependencies.faultInjector } : {}),
     });
@@ -412,6 +431,8 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         return apiError(context, 400, "INVALID_SUBMISSION", "The consultation submission is invalid.");
       case "stale-consent":
         return apiError(context, 409, "CONSENT_VERSION_STALE", "Consent documents have changed. Reload the form and try again.");
+      case "consent-unavailable":
+        return apiError(context, 503, "CONSENT_DOCUMENTS_UNAVAILABLE", "Published consent documents are unavailable.");
       case "rate-limited":
         context.header("Retry-After", String(result.retryAfterSeconds));
         return apiError(context, 429, "RATE_LIMITED", "Too many consultation requests. Try again later.");

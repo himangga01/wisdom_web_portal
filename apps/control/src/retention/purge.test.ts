@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { issueFormToken } from "../abuse/form-token.js";
-import { activateConsentBundle, getPublicConsentDocuments, seedConsentDocuments } from "../consent/service.js";
+import {
+  activateConsentBundle,
+  createDatabaseConsentAuthorityResolver,
+  getPublicConsentDocuments,
+  seedConsentDocuments,
+} from "../consent/service.js";
 import { acceptConsultation } from "../consultations/service.js";
 import { createStaticKeyProvider } from "../crypto/index.js";
 import { purgeExpiredConsultations } from "./purge.js";
@@ -40,6 +45,8 @@ function createIntake(marketingAccepted: boolean, index: number, nowMs: number):
     requestId: `request-${index}`,
     clientIp: `198.51.100.${index}`,
     nowMs,
+  }, {
+    resolveConsentAuthority: createDatabaseConsentAuthorityResolver(database!.db),
   });
   expect(result.kind).toBe("created");
 }

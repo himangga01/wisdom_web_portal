@@ -645,6 +645,7 @@ describe("static release verification", () => {
 
     expect(sealed.manifest.files.map(({ path }) => path)).toEqual([
       "_astro/app.abc123.js",
+      "consent-bundle.json",
       "en/marketing/withdraw/index.html",
       "en/privacy/index.html",
       "index.html",
@@ -659,6 +660,13 @@ describe("static release verification", () => {
       "zh-hant/marketing/withdraw/index.html",
       "zh-hant/privacy/index.html",
     ]);
+    const consentBytes = readFileSync(join(root, "dist", "consent-bundle.json"));
+    expect(sealed.manifest.consentBundle).toEqual({
+      bundleId: snapshot.consentBundle.bundleId,
+      contentFileSha256: sha256(consentBytes),
+    });
+    expect(JSON.parse(consentBytes.toString("utf8")))
+      .toEqual(snapshot.consentBundle);
     const manifestBytes = readFileSync(join(root, "dist", ".wisdom-release-manifest.json"));
     expect(sha256(manifestBytes)).toBe(sealed.manifestSha256);
     expect(verifySealedPublicationRelease(join(root, "dist"))).toEqual(sealed);
