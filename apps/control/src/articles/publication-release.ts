@@ -13,6 +13,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  type Stats,
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -85,6 +86,18 @@ export interface PublicationReleaseDependencies {
   }): Promise<SealedPublicationRelease>;
   faultInjector?: (point: PublicationActivationFaultPoint) => void;
   switchCurrent?: (targetPath: string, currentLink: string, nonce: string) => void;
+}
+
+export interface ReleaseConsentAuthorityResolverOptions {
+  onFullVerification?: () => void;
+  scheduleRefresh?: (task: () => void) => void;
+  refreshIntervalMs?: number;
+  now?: () => number;
+}
+
+export interface CachedReleaseConsentAuthorityResolver extends ConsentAuthorityResolver {
+  refresh(): boolean;
+  stop(): void;
 }
 
 export interface PublicationActionInput {
@@ -200,6 +213,48 @@ function readCurrentTarget(config: PublicationReleaseConfig): string | null {
   const raw = readlinkSync(config.currentLink);
   const candidate = isAbsolute(raw) ? raw : resolve(dirname(config.currentLink), raw);
   return assertDirectReleasePath(config.releaseRoot, candidate);
+}
+
+interface CurrentPointerIdentity {
+  targetPath: string;
+  rawTarget: string;
+  pointerIdentity: string;
+  targetIdentity: string;
+}
+
+function filesystemIdentity(metadata: Stats): string {
+  return [
+    metadata.dev,
+    metadata.ino,
+    metadata.mode,
+    metadata.size,
+    metadata.ctimeMs,
+    metadata.mtimeMs,
+  ].join(":");
+}
+
+function readCurrentPointerIdentity(config: PublicationReleaseConfig): CurrentPointerIdentity | null {
+  let pointerMetadata: Stats;
+  try {
+    pointerMetadata = lstatSync(config.currentLink);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!pointerMetadata.isSymbolicLink()) {
+    throw new Error("PUBLICATION_CURRENT_LINK_NOT_SYMLINK");
+  }
+  const rawTarget = readlinkSync(config.currentLink);
+  const candidate = isAbsolute(rawTarget)
+    ? rawTarget
+    : resolve(dirname(config.currentLink), rawTarget);
+  const targetPath = assertDirectReleasePath(config.releaseRoot, candidate);
+  return {
+    targetPath,
+    rawTarget,
+    pointerIdentity: filesystemIdentity(pointerMetadata),
+    targetIdentity: filesystemIdentity(lstatSync(targetPath)),
+  };
 }
 
 function verifyBootstrapRelease(directory: string): void {
@@ -677,40 +732,197 @@ function verifyReleaseAuthority(
   return { verified, metadata };
 }
 
+interface ReleaseAuthorityCacheKey {
+  releaseId: string;
+  manifestSha256: string;
+  activationGeneration: number;
+  releasePath: string;
+  pointerTargetPath: string;
+  pointerRawTarget: string;
+  pointerIdentity: string;
+  targetIdentity: string;
+  sealedManifestIdentity: string;
+  consentBundleIdentity: string;
+}
+
+function sealedAuthorityFileIdentity(releasePath: string, filename: string): string {
+  const metadata = lstatSync(join(releasePath, filename));
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("PUBLICATION_RELEASE_AUTHORITY_FILE_INVALID");
+  }
+  return filesystemIdentity(metadata);
+}
+
+function releaseAuthorityCacheKey(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+): { key: ReleaseAuthorityCacheKey; row: ReleaseRow } | undefined {
+  return db.sqlite.transaction(() => {
+    const pending = db.sqlite.prepare(`
+      SELECT 1 present FROM release_activations
+      WHERE state IN ('prepared', 'switched') LIMIT 1
+    `).get();
+    if (pending) return undefined;
+    const activeRows = db.sqlite.prepare(`
+      SELECT id, version, path, manifest_sha256, state, created_at_ms,
+        created_by, activated_at_ms, activation_generation, metadata_json
+      FROM releases WHERE state = 'active'
+    `).all() as ReleaseRow[];
+    if (activeRows.length !== 1) return undefined;
+    const row = activeRows[0]!;
+    const releasePath = assertDirectReleasePath(config.releaseRoot, row.path);
+    const pointer = readCurrentPointerIdentity(config);
+    if (!pointer || pointer.targetPath !== releasePath) return undefined;
+    return {
+      row,
+      key: {
+        releaseId: row.id,
+        manifestSha256: row.manifest_sha256.toString("hex"),
+        activationGeneration: row.activation_generation,
+        releasePath,
+        pointerTargetPath: pointer.targetPath,
+        pointerRawTarget: pointer.rawTarget,
+        pointerIdentity: pointer.pointerIdentity,
+        targetIdentity: pointer.targetIdentity,
+        sealedManifestIdentity: sealedAuthorityFileIdentity(
+          releasePath,
+          ".wisdom-release-manifest.json",
+        ),
+        consentBundleIdentity: sealedAuthorityFileIdentity(releasePath, "consent-bundle.json"),
+      },
+    };
+  }).deferred();
+}
+
+function releaseAuthorityKeysEqual(
+  left: ReleaseAuthorityCacheKey,
+  right: ReleaseAuthorityCacheKey,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function freezeDeep<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) freezeDeep(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 export function createReleaseConsentAuthorityResolver(
   db: ControlDatabase,
   config: PublicationReleaseConfig,
-): ConsentAuthorityResolver {
-  return () => {
+  options: ReleaseConsentAuthorityResolverOptions = {},
+): CachedReleaseConsentAuthorityResolver {
+  validateConfig(config);
+  const now = options.now ?? Date.now;
+  const scheduleRefresh = options.scheduleRefresh ?? ((task: () => void) => {
+    const immediate = setImmediate(task);
+    immediate.unref();
+  });
+  let cache: {
+    key: ReleaseAuthorityCacheKey;
+    authority: NonNullable<ReturnType<ConsentAuthorityResolver>>;
+  } | undefined;
+  let refreshScheduled = false;
+  let refreshing = false;
+  let stopped = false;
+  let lastFailedKey: string | undefined;
+  let retryAfterMs = 0;
+
+  const refreshNow = (force: boolean): boolean => {
+    if (stopped || refreshing) return false;
+    refreshing = true;
+    let candidate: ReturnType<typeof releaseAuthorityCacheKey>;
     try {
-      validateConfig(config);
-      return db.sqlite.transaction(() => {
-        const pending = db.sqlite.prepare(`
-          SELECT 1 present FROM release_activations
-          WHERE state IN ('prepared', 'switched') LIMIT 1
-        `).get();
-        if (pending) return undefined;
-        const activeRows = db.sqlite.prepare(`
-          SELECT id, version, path, manifest_sha256, state, created_at_ms,
-            created_by, activated_at_ms, activation_generation, metadata_json
-          FROM releases WHERE state = 'active'
-        `).all() as ReleaseRow[];
-        if (activeRows.length !== 1) return undefined;
-        const active = activeRows[0]!;
-        const activePath = assertDirectReleasePath(config.releaseRoot, active.path);
-        if (readCurrentTarget(config) !== activePath) return undefined;
-        const { verified } = verifyReleaseAuthority(db, config, active);
-        return {
+      candidate = releaseAuthorityCacheKey(db, config);
+      if (!candidate) {
+        cache = undefined;
+        return false;
+      }
+      const fingerprint = JSON.stringify(candidate.key);
+      if (!force && fingerprint === lastFailedKey && now() < retryAfterMs) return false;
+      options.onFullVerification?.();
+      const { verified } = verifyReleaseAuthority(db, config, candidate.row);
+      const after = releaseAuthorityCacheKey(db, config);
+      if (!after || !releaseAuthorityKeysEqual(candidate.key, after.key)) {
+        throw new Error("PUBLICATION_RELEASE_CHANGED_DURING_AUTHORITY_REFRESH");
+      }
+      cache = {
+        key: after.key,
+        authority: freezeDeep({
           source: "release" as const,
-          releaseId: active.id,
+          releaseId: candidate.row.id,
           releaseManifestSha256: verified.manifestSha256,
-          bundle: verified.consentBundle,
-        };
-      }).deferred();
+          bundle: publishedConsentBundleSchema.parse(verified.consentBundle),
+        }),
+      };
+      lastFailedKey = undefined;
+      retryAfterMs = 0;
+      return true;
     } catch {
-      return undefined;
+      cache = undefined;
+      try {
+        const failed = candidate ?? releaseAuthorityCacheKey(db, config);
+        lastFailedKey = failed ? JSON.stringify(failed.key) : undefined;
+      } catch {
+        lastFailedKey = undefined;
+      }
+      retryAfterMs = now() + 30_000;
+      return false;
+    } finally {
+      refreshing = false;
     }
   };
+
+  const requestBackgroundRefresh = (key: ReleaseAuthorityCacheKey): void => {
+    if (stopped || refreshScheduled || refreshing) return;
+    const fingerprint = JSON.stringify(key);
+    if (fingerprint === lastFailedKey && now() < retryAfterMs) return;
+    refreshScheduled = true;
+    try {
+      scheduleRefresh(() => {
+        refreshScheduled = false;
+        refreshNow(false);
+      });
+    } catch {
+      refreshScheduled = false;
+    }
+  };
+
+  const resolver = (() => {
+    if (stopped) return undefined;
+    try {
+      const current = releaseAuthorityCacheKey(db, config);
+      if (!current) {
+        cache = undefined;
+        return undefined;
+      }
+      if (cache && releaseAuthorityKeysEqual(cache.key, current.key)) return cache.authority;
+      cache = undefined;
+      requestBackgroundRefresh(current.key);
+      return undefined;
+    } catch {
+      cache = undefined;
+      return undefined;
+    }
+  }) as CachedReleaseConsentAuthorityResolver;
+
+  resolver.refresh = () => refreshNow(true);
+  let interval: ReturnType<typeof setInterval> | undefined;
+  const refreshIntervalMs = options.refreshIntervalMs ?? 60_000;
+  if (refreshIntervalMs > 0) {
+    interval = setInterval(() => { refreshNow(true); }, refreshIntervalMs);
+    interval.unref();
+  }
+  resolver.stop = () => {
+    stopped = true;
+    cache = undefined;
+    if (interval) clearInterval(interval);
+    interval = undefined;
+  };
+  refreshNow(true);
+  return resolver;
 }
 
 function activationIndexNowPayload(

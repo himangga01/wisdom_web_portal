@@ -20,7 +20,7 @@ import {
   acceptConsultation,
   type IntakeFaultPoint,
 } from "./consultations/service.js";
-import type { KeyProvider } from "./crypto/index.js";
+import { keyedDigest, type KeyProvider } from "./crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "./db/client.js";
 import {
   registerTask4Routes,
@@ -29,6 +29,9 @@ import {
 
 const MAX_BODY_BYTES = 32_768;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{16,128}$/;
+const CONSENT_READ_WINDOW_MS = 60_000;
+const CONSENT_READ_LIMIT = 60;
+const CONSENT_READ_MAX_SUBJECTS = 4_096;
 
 interface ControlEnvironment {
   Variables: {
@@ -197,6 +200,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
   const logger = dependencies.logger ?? defaultLogger();
   const resolveConsentAuthority = dependencies.consentAuthorityResolver ?? (() => undefined);
+  const consentReadBuckets = new Map<string, { count: number; expiresAtMs: number }>();
   if (dependencies.indexNowKey !== undefined
     && !/^[A-Za-z0-9-]{8,128}$/.test(dependencies.indexNowKey)) {
     throw new Error("IndexNow public key is invalid");
@@ -315,6 +319,44 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   }
 
   app.get("/api/v1/consent-documents", (context) => {
+    const requestNowMs = now();
+    const peer = dependencies.peerAddress?.(context) ?? "unknown";
+    const clientIp = resolveClientIp(peer, context.req.header("x-forwarded-for"));
+    const subject = keyedDigest(
+      dependencies.keyProvider,
+      "abuse",
+      `wisdom:consent-read:v1\0${clientIp}`,
+    ).toString("hex");
+    const cleanupCandidates: Array<[string, { count: number; expiresAtMs: number }]> = [];
+    for (const entry of consentReadBuckets) {
+      cleanupCandidates.push(entry);
+      if (cleanupCandidates.length >= 64) break;
+    }
+    for (const [key, bucket] of cleanupCandidates) {
+      consentReadBuckets.delete(key);
+      if (bucket.expiresAtMs > requestNowMs) consentReadBuckets.set(key, bucket);
+    }
+    let bucket = consentReadBuckets.get(subject);
+    if (bucket?.expiresAtMs !== undefined && bucket.expiresAtMs <= requestNowMs) {
+      consentReadBuckets.delete(subject);
+      bucket = undefined;
+    }
+    if (!bucket && consentReadBuckets.size >= CONSENT_READ_MAX_SUBJECTS) {
+      context.header("Retry-After", String(Math.ceil(CONSENT_READ_WINDOW_MS / 1_000)));
+      return apiError(context, 429, "CONSENT_READ_RATE_LIMITED", "Too many consent document requests.");
+    }
+    if (!bucket) {
+      bucket = { count: 0, expiresAtMs: requestNowMs + CONSENT_READ_WINDOW_MS };
+      consentReadBuckets.set(subject, bucket);
+    }
+    if (bucket.count >= CONSENT_READ_LIMIT) {
+      context.header("Retry-After", String(Math.max(
+        1,
+        Math.ceil((bucket.expiresAtMs - requestNowMs) / 1_000),
+      )));
+      return apiError(context, 429, "CONSENT_READ_RATE_LIMITED", "Too many consent document requests.");
+    }
+    bucket.count += 1;
     const locale = localeSchema.safeParse(context.req.query("locale"));
     if (!locale.success) {
       return apiError(context, 400, "INVALID_LOCALE", "A supported locale is required.");
@@ -336,7 +378,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         "Active consent documents are unavailable.",
       );
     }
-    const issuedAtMs = now();
+    const issuedAtMs = requestNowMs;
     const formToken = issueFormToken(dependencies.keyProvider, {
       locale: locale.data,
       privacyVersion: documents.documents.privacy.version,

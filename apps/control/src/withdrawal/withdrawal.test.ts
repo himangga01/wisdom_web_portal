@@ -164,21 +164,28 @@ describe("accountless marketing withdrawal", () => {
     expect(opened).toMatchObject({ kind: "redirect", location: "https://www.example.test/marketing/withdraw/confirm" });
     if (opened.kind !== "redirect") throw new Error("expected redirect");
     expect(opened.cookie).toBe(
-      `__Host-wisdom-marketing-withdraw=${opened.landingToken}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=600`,
+      `__Host-wisdom-marketing-withdraw=${opened.landingToken}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=9`,
     );
     expect(opened.cookie).not.toContain(minted.token);
-    expect(open(testDatabase.db, withdrawalSecret, {
+    const recipientOpen = open(testDatabase.db, withdrawalSecret, {
       token: minted.token,
       publicOrigin: "https://www.example.test",
       nowMs: 2,
-    })).toEqual({ kind: "invalid" });
+    });
+    expect(recipientOpen).toMatchObject({
+      kind: "redirect",
+      location: "https://www.example.test/marketing/withdraw/confirm",
+      landingToken: opened.landingToken,
+    });
+    if (recipientOpen.kind !== "redirect") throw new Error("expected repeat redirect");
+    expect(recipientOpen.cookie).toContain(`=${opened.landingToken};`);
     const row = testDatabase.db.sqlite.prepare(`
       SELECT token_hash, landing_hash, landing_expires_at_ms, used_at_ms
       FROM marketing_withdrawal_capabilities
     `).get() as { token_hash: Buffer; landing_hash: Buffer; landing_expires_at_ms: number; used_at_ms: null };
     expect(row.token_hash).toHaveLength(32);
     expect(row.landing_hash).toHaveLength(32);
-    expect(row.landing_expires_at_ms).toBe(600_001);
+    expect(row.landing_expires_at_ms).toBe(10_000);
     expect(row.used_at_ms).toBeNull();
     expect(row.landing_hash.toString("base64url")).not.toBe(opened.landingToken);
     expect(testDatabase.db.sqlite.prepare(`
@@ -197,6 +204,74 @@ describe("accountless marketing withdrawal", () => {
       withdrawalSecret,
       { landingToken: opened.landingToken, nowMs: 600_001 },
     )).toEqual({ kind: "invalid" });
+  });
+
+  it("survives concurrent security-scanner prefetch and keeps the stable landing capability one-shot at POST", async () => {
+    const mint = requiredFunction<Mint>("mintMarketingWithdrawalCapability");
+    const open = requiredFunction<any>("openMarketingWithdrawalCapability") as any;
+    const confirmation = requiredFunction<any>("getMarketingWithdrawalConfirmation") as any;
+    const withdraw = requiredFunction<any>("withdrawMarketingConsent") as any;
+    testDatabase = createTestDatabase();
+    seedMarketingConsultation(testDatabase.db);
+    const minted = mint(testDatabase.db, withdrawalSecret, {
+      consultationId: "consultation-1",
+      publicOrigin: "https://www.example.test",
+      nowMs: 0,
+      expiresAtMs: 2_000_000,
+      randomBytes: () => Buffer.alloc(32, 31),
+    });
+
+    const scanner = open(testDatabase.db, withdrawalSecret, {
+      token: minted.token, publicOrigin: "https://www.example.test", nowMs: 1,
+    });
+    const recipient = open(testDatabase.db, withdrawalSecret, {
+      token: minted.token, publicOrigin: "https://www.example.test", nowMs: 2,
+    });
+    expect(scanner.kind).toBe("redirect");
+    if (scanner.kind !== "redirect" || recipient.kind !== "redirect") {
+      throw new Error("expected stable redirects");
+    }
+    expect(recipient.landingToken).toBe(scanner.landingToken);
+    expect(recipient.location).toBe(scanner.location);
+    expect(recipient.location).not.toContain(minted.token);
+
+    const competing = openDatabase(testDatabase.path);
+    runMigrations(competing);
+    try {
+      const repeated = await Promise.all(Array.from({ length: 8 }, async (_, index) => open(
+        index % 2 === 0 ? testDatabase!.db : competing,
+        withdrawalSecret,
+        { token: minted.token, publicOrigin: "https://www.example.test", nowMs: 2 + index },
+      )));
+      expect(repeated.every((result) => (
+        result.kind === "redirect" && result.landingToken === scanner.landingToken
+      ))).toBe(true);
+    } finally {
+      closeDatabase(competing);
+    }
+
+    const confirm = confirmation(testDatabase.db, withdrawalSecret, {
+      landingToken: recipient.landingToken, nowMs: 10,
+    });
+    if (confirm.kind !== "confirm") throw new Error("expected confirmation");
+    expect(withdraw(testDatabase.db, withdrawalSecret, {
+      landingToken: recipient.landingToken,
+      confirmationValue: confirm.confirmationValue,
+      nowMs: 11,
+      requestId: "scanner-safe-withdrawal",
+    })).toEqual({ kind: "withdrawn" });
+    expect(open(testDatabase.db, withdrawalSecret, {
+      token: minted.token, publicOrigin: "https://www.example.test", nowMs: 12,
+    })).toEqual({ kind: "invalid" });
+    expect(confirmation(testDatabase.db, withdrawalSecret, {
+      landingToken: recipient.landingToken, nowMs: 12,
+    })).toEqual({ kind: "invalid" });
+    expect(withdraw(testDatabase.db, withdrawalSecret, {
+      landingToken: recipient.landingToken,
+      confirmationValue: confirm.confirmationValue,
+      nowMs: 12,
+      requestId: "scanner-safe-repeat",
+    })).toEqual({ kind: "invalid" });
   });
 
   it("keeps confirmation GET read-only and withdraws once across repeated connections", () => {
@@ -267,7 +342,7 @@ describe("accountless marketing withdrawal", () => {
         confirmationValue: confirm.confirmationValue,
         nowMs: 5,
         requestId: "request-repeat",
-      })).toEqual({ kind: "already-withdrawn" });
+      })).toEqual({ kind: "invalid" });
     } finally {
       closeDatabase(competing);
     }

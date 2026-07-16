@@ -233,6 +233,83 @@ function dependencies(
 }
 
 describe("journaled publication activation", () => {
+  it("caches verified consent authority and refreshes changed releases once outside request paths", async () => {
+    const deps = dependencies();
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-cache-a",
+      nowMs: NOW,
+    }, config, deps);
+    let verificationCount = 0;
+    const scheduled: Array<() => void> = [];
+    const resolver = (createReleaseConsentAuthorityResolver as unknown as (
+      database: typeof fixture.db,
+      publicationConfig: PublicationReleaseConfig,
+      options: {
+        onFullVerification: () => void;
+        scheduleRefresh: (task: () => void) => void;
+        refreshIntervalMs: number;
+      },
+    ) => ReturnType<typeof createReleaseConsentAuthorityResolver> & {
+      refresh(): boolean;
+      stop(): void;
+    })(fixture.db, config, {
+      onFullVerification: () => { verificationCount += 1; },
+      scheduleRefresh: (task) => { scheduled.push(task); },
+      refreshIntervalMs: 0,
+    });
+    expect(verificationCount).toBe(1);
+    const app = createControlApp({
+      db: fixture.db,
+      keyProvider,
+      consentAuthorityResolver: resolver,
+      allowedOrigins: [config.publicOrigin],
+      enforceOrigin: true,
+      peerAddress: () => "203.0.113.71",
+    });
+    for (let request = 0; request < 120; request += 1) {
+      expect((await app.request(`${config.publicOrigin}/health/ready`)).status).toBe(200);
+    }
+    for (let request = 0; request < 20; request += 1) {
+      expect((await app.request(
+        `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
+      )).status).toBe(200);
+    }
+    expect(verificationCount).toBe(1);
+
+    seedCompleteConsentBundles(fixture.db, consentBundle("bundle-cache-b", "cache-b"), NOW + 1);
+    activateConsentBundle(fixture.db, "bundle-cache-b", NOW + 2);
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-cache-b",
+      nowMs: NOW + 3,
+    }, config, deps);
+    for (let request = 0; request < 32; request += 1) expect(resolver()).toBeUndefined();
+    expect(scheduled).toHaveLength(1);
+    expect(verificationCount).toBe(1);
+    scheduled.shift()!();
+    expect(verificationCount).toBe(2);
+    expect(resolver()?.source).toBe("release");
+    expect(resolver()?.bundle.bundleId).toBe("bundle-cache-b");
+
+    writeFileSync(
+      join(config.releaseRoot, second.version, "consent-bundle.json"),
+      "tampered",
+      "utf8",
+    );
+    expect(resolver()).toBeUndefined();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()!();
+    expect(verificationCount).toBe(3);
+    expect(resolver()).toBeUndefined();
+    const unavailable = await app.request(
+      `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
+    );
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers.get("cache-control")).toBe("no-store");
+    resolver.stop();
+  });
+
   it("publishes a policy-only release and moves the sealed API plus all eight policy DOMs together", async () => {
     const deps = dependencies();
     const first = await publishApprovedArticles(fixture.db, keyProvider, {
@@ -244,7 +321,10 @@ describe("journaled publication activation", () => {
       createReleaseConsentAuthorityResolver?: (
         db: typeof fixture.db,
         config: PublicationReleaseConfig,
-      ) => () => { bundle: PublicationSnapshot["consentBundle"] } | undefined;
+      ) => ((() => { bundle: PublicationSnapshot["consentBundle"] } | undefined) & {
+        refresh(): boolean;
+        stop(): void;
+      });
     }).createReleaseConsentAuthorityResolver;
     expect(typeof resolverFactory).toBe("function");
     const resolveAuthority = resolverFactory!(fixture.db, config);
@@ -273,6 +353,8 @@ describe("journaled publication activation", () => {
       nowMs: NOW + 4,
     }, config, deps);
     expect(second.releaseId).not.toBe(first.releaseId);
+    expect(resolveAuthority()).toBeUndefined();
+    expect(resolveAuthority.refresh()).toBe(true);
     const authority = resolveAuthority()!;
     expect(authority.bundle.bundleId).toBe("bundle-new");
 
@@ -293,6 +375,7 @@ describe("journaled publication activation", () => {
       expect(html).toContain(`data-consent-sha256="${document.contentSha256}"`);
       expect(html).toContain(`data-consent-retention-months="${document.retentionMonths}"`);
     }
+    resolveAuthority.stop();
   });
 
   it("rejects and cleans a build whose activated consent bundle changes before finalization", async () => {

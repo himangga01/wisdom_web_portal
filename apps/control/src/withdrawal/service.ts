@@ -11,7 +11,11 @@ import type { ControlDatabase } from "../db/client.js";
 const LANDING_TTL_MS = 10 * 60 * 1_000;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
-function digest(secret: Uint8Array, purpose: "capability" | "landing" | "confirmation", value: string): Buffer {
+function digest(
+  secret: Uint8Array,
+  purpose: "capability" | "landing-token" | "landing" | "confirmation",
+  value: string,
+): Buffer {
   if (secret.byteLength < 32) throw new Error("Withdrawal secret must contain at least 32 bytes");
   return createHmac("sha256", secret)
     .update(`wisdom:marketing-withdrawal-${purpose}:v1`, "utf8")
@@ -107,38 +111,52 @@ export function openMarketingWithdrawalCapability(
   if (!TOKEN_PATTERN.test(input.token)) return { kind: "invalid" };
   const origin = exactOrigin(input.publicOrigin);
   const tokenHash = digest(secret, "capability", input.token);
+  const landingToken = digest(secret, "landing-token", input.token).toString("base64url");
+  const landingHash = digest(secret, "landing", landingToken);
   db.sqlite.exec("BEGIN IMMEDIATE");
   try {
     const row = db.sqlite.prepare(`
-      SELECT w.locale
+      SELECT w.locale, w.landing_hash, w.expires_at_ms
       FROM marketing_withdrawal_capabilities w
       JOIN consultations c ON c.id = w.consultation_id
       WHERE w.token_hash = ? AND w.used_at_ms IS NULL AND w.expires_at_ms > ?
-        AND w.landing_hash IS NULL
         AND c.marketing_accepted = 1 AND c.marketing_withdrawn_at_ms IS NULL
-    `).get(tokenHash, input.nowMs) as { locale: AcceptedMarketingRow["locale"] } | undefined;
+    `).get(tokenHash, input.nowMs) as {
+      locale: AcceptedMarketingRow["locale"];
+      landing_hash: Buffer | null;
+      expires_at_ms: number;
+    } | undefined;
     if (!row) {
       db.sqlite.exec("COMMIT");
       return { kind: "invalid" };
     }
-    const landingToken = randomToken(input.randomBytes ?? nodeRandomBytes);
+    if (row.landing_hash !== null && (
+      row.landing_hash.byteLength !== landingHash.byteLength
+      || !timingSafeEqual(row.landing_hash, landingHash)
+    )) {
+      db.sqlite.exec("COMMIT");
+      return { kind: "invalid" };
+    }
+    const landingExpiresAtMs = Math.min(input.nowMs + LANDING_TTL_MS, row.expires_at_ms);
     const updated = db.sqlite.prepare(`
       UPDATE marketing_withdrawal_capabilities
-      SET landing_hash = ?, landing_expires_at_ms = ?
+      SET landing_hash = COALESCE(landing_hash, ?), landing_expires_at_ms = ?
       WHERE token_hash = ? AND used_at_ms IS NULL AND expires_at_ms > ?
-        AND landing_hash IS NULL
+        AND (landing_hash IS NULL OR landing_hash = ?)
     `).run(
-      digest(secret, "landing", landingToken),
-      input.nowMs + LANDING_TTL_MS,
+      landingHash,
+      landingExpiresAtMs,
       tokenHash,
       input.nowMs,
+      landingHash,
     );
-    if (updated.changes !== 1) throw new Error("Withdrawal landing exchange lost its CAS");
+    if (updated.changes !== 1) throw new Error("Withdrawal landing refresh lost its CAS");
     db.sqlite.exec("COMMIT");
+    const cookieMaxAge = Math.max(0, Math.floor((landingExpiresAtMs - input.nowMs) / 1_000));
     return {
       kind: "redirect",
       location: new URL(cleanWithdrawalPath(row.locale), origin).href,
-      cookie: `__Host-wisdom-marketing-withdraw=${landingToken}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=600`,
+      cookie: `__Host-wisdom-marketing-withdraw=${landingToken}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=${cookieMaxAge}`,
       landingToken,
     };
   } catch (error) {
@@ -239,15 +257,12 @@ export function withdrawMarketingConsent(
       JOIN consultations c ON c.id = w.consultation_id
       JOIN consent_events e ON e.id = w.consent_event_id
       WHERE w.landing_hash = ? AND w.landing_expires_at_ms > ?
-        AND w.expires_at_ms > ?
+        AND w.expires_at_ms > ? AND w.used_at_ms IS NULL
+        AND c.marketing_withdrawn_at_ms IS NULL
     `).get(landingHash, input.nowMs, input.nowMs) as WithdrawalRow | undefined;
     if (!row) {
       db.sqlite.exec("COMMIT");
       return { kind: "invalid" };
-    }
-    if (row.used_at_ms !== null || row.marketing_withdrawn_at_ms !== null) {
-      db.sqlite.exec("COMMIT");
-      return { kind: "already-withdrawn" };
     }
     if (
       !Number.isSafeInteger(row.received_at_ms) ||

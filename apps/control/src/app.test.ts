@@ -232,6 +232,29 @@ describe("public control API", () => {
     expect((await notReady.app.request("http://localhost/api/v1/consent-documents?locale=en")).status).toBe(503);
   });
 
+  it("rate-limits public consent reads per trusted client without logging or returning its address", async () => {
+    const current = fixture({ peerAddress: "203.0.113.42" });
+    for (let request = 0; request < 60; request += 1) {
+      expect((await current.app.request(
+        "http://localhost/api/v1/consent-documents?locale=en",
+      )).status).toBe(200);
+    }
+    const limited = await current.app.request(
+      "http://localhost/api/v1/consent-documents?locale=en",
+    );
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("cache-control")).toBe("no-store");
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    const body = await limited.text();
+    expect(body).not.toContain("203.0.113.42");
+    expect(current.logs).toEqual([]);
+
+    current.now += 61_000;
+    expect((await current.app.request(
+      "http://localhost/api/v1/consent-documents?locale=en",
+    )).status).toBe(200);
+  });
+
   it("serves the configured public IndexNow ownership key as exact noindex text", async () => {
     const key = "abcdef12-ABCDEF34";
     const configured = fixture({ indexNowKey: key });
