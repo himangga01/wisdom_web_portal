@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
-const publishedContentDirectory = process.env.WISDOM_PUBLISHED_CONTENT_DIR ?? fileURLToPath(
+const publishedContentDirectory = fileURLToPath(
   new URL("./src/content/__fixtures__/published-content", import.meta.url),
 );
 process.env.WISDOM_PUBLISHED_CONTENT_DIR = publishedContentDirectory;
@@ -28,7 +28,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run build && npm run preview -- --host 127.0.0.1 --port 4321",
+    command: "npm run build:fixture && npm run preview -- --host 127.0.0.1 --port 4321",
     env: {
       ...process.env,
       PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN ?? "https://www.jihye-office.kr",

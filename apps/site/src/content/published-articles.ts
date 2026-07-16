@@ -11,8 +11,7 @@ import {
 } from "@wisdom/shared";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, relative } from "node:path";
 
 export interface PublishedContent {
   manifest: PublishedManifest;
@@ -95,23 +94,6 @@ function readConsentBundle(
   const result = publishedConsentBundleSchema.safeParse(parsed);
   if (!result.success) throw publishedContentError("CONSENT_INVALID", safePath);
   return result.data;
-}
-
-export function resolveCheckedInPublishedContentDirectory(moduleUrl: string): string {
-  let candidate = dirname(fileURLToPath(moduleUrl));
-  while (true) {
-    try {
-      const packageJson = JSON.parse(readFileSync(join(candidate, "package.json"), "utf8")) as {
-        name?: unknown;
-      };
-      if (packageJson.name === "@wisdom/site") return join(candidate, "published-content");
-    } catch {
-      // Continue walking to the package boundary. Operational paths never enter an error message.
-    }
-    const parent = dirname(candidate);
-    if (parent === candidate) throw publishedContentError("SITE_ROOT_NOT_FOUND", ".");
-    candidate = parent;
-  }
 }
 
 function readManifest(directory: string): PublishedManifest {
@@ -340,7 +322,7 @@ export function resolvePublishedContentDirectory(
   environment: PublishedEnvironment = process.env,
 ): string {
   const override = environment.WISDOM_PUBLISHED_CONTENT_DIR;
-  if (!override) return resolveCheckedInPublishedContentDirectory(import.meta.url);
+  if (!override) throw new Error("PUBLISHED_CONTENT_DIRECTORY_REQUIRED");
   if (!isAbsolute(override)) throw new Error("PUBLISHED_CONTENT_DIRECTORY_NOT_ABSOLUTE");
   return override;
 }

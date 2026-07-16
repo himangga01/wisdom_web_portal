@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "node ./scripts/build.mjs",
+    "build:fixture": "node ./scripts/build.mjs --fixture",
     "preview": "astro preview",
     "test": "vitest run",
     "test:e2e": "playwright test",

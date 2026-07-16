@@ -16,8 +16,8 @@
   },
   "scripts": {
     "build:shared": "npm run build --workspace @wisdom/shared",
-    "build": "npm run build --workspaces --if-present",
-    "test": "npm run build:shared && node --test scripts/workspace-orchestration.test.mjs scripts/astro-typecheck-regression.test.mjs scripts/control-workspace.test.mjs && npm run test --workspaces --if-present && npm run test:ops",
+    "build": "npm run build:shared && npm run build --workspace @wisdom/control && npm run build:fixture --workspace @wisdom/site",
+    "test": "npm run build:shared && node --test scripts/workspace-orchestration.test.mjs scripts/astro-typecheck-regression.test.mjs scripts/control-workspace.test.mjs scripts/site-build-gate.test.mjs && npm run test --workspaces --if-present && npm run test:ops",
     "test:ops": "node --test ops/tests/*.test.mjs",
     "test:e2e": "npm run build:shared && npm run test:e2e --workspaces --if-present",
     "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",

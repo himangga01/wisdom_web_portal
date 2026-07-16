@@ -21,13 +21,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   loadBuildPublishedContent,
   loadPublishedContent,
-  resolveCheckedInPublishedContentDirectory,
   resolvePublishedContentDirectory,
 } from "./published-articles.js";
 
@@ -167,28 +166,12 @@ afterEach(() => {
 });
 
 describe("published article filesystem boundary", () => {
-  it("loads the checked-in empty manifest when no release override is present", () => {
-    const directory = resolvePublishedContentDirectory({});
-    const content = loadBuildPublishedContent({});
-
-    expect(directory.replaceAll("\\", "/")).toMatch(/apps\/site\/published-content$/);
-    expect(content.manifest).toMatchObject({ schemaVersion: 1, entries: [] });
-    expect(content.consentBundle.documents).toHaveLength(8);
-    expect(content.articles).toEqual([]);
-    expect([...content.byRoute]).toEqual([]);
-    expect([...content.byArticleId]).toEqual([]);
-  });
-
-  it("finds the checked-in manifest from both source and Astro prerender chunk locations", () => {
-    const siteDirectory = fileURLToPath(new URL("../..", import.meta.url));
-    const sourceUrl = pathToFileURL(join(siteDirectory, "src", "content", "published-articles.ts")).href;
-    const bundleUrl = pathToFileURL(join(siteDirectory, "dist", ".prerender", "chunks", "bundle.mjs")).href;
-
-    expect(resolveCheckedInPublishedContentDirectory(sourceUrl)).toBe(
-      join(siteDirectory, "published-content"),
+  it("fails closed unless the build receives an explicit absolute release snapshot", () => {
+    expect(() => resolvePublishedContentDirectory({})).toThrow(
+      /^PUBLISHED_CONTENT_DIRECTORY_REQUIRED$/,
     );
-    expect(resolveCheckedInPublishedContentDirectory(bundleUrl)).toBe(
-      join(siteDirectory, "published-content"),
+    expect(() => loadBuildPublishedContent({})).toThrow(
+      /^PUBLISHED_CONTENT_DIRECTORY_REQUIRED$/,
     );
   });
 
