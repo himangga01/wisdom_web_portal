@@ -22,7 +22,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createStaticKeyProvider } from "../crypto/index.js";
 import { createControlApp } from "../app.js";
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
-import { activateConsentBundle, seedCompleteConsentBundles } from "../consent/service.js";
+import {
+  activateConsentBundle,
+  getActivePublishedConsentBundle,
+  seedCompleteConsentBundles,
+} from "../consent/service.js";
 import {
   claimIndexNowDelivery,
   completeIndexNowDelivery,
@@ -754,10 +758,22 @@ describe("publication release retention", () => {
       );
       writeFileSync(join(directory, "index.html"), fileBytes);
       writeFileSync(join(directory, "sitemap.xml"), sitemapBytes);
+      const publishedConsentBundle = getActivePublishedConsentBundle(fixture.db)!;
+      const consentBytes = Buffer.from(canonical(publishedConsentBundle), "utf8");
+      writeFileSync(join(directory, "consent-bundle.json"), consentBytes);
       const releaseManifest = canonical({
         schemaVersion: 1,
         snapshotManifestSha256: "ab".repeat(32),
+        consentBundle: {
+          bundleId: publishedConsentBundle.bundleId,
+          contentFileSha256: createHash("sha256").update(consentBytes).digest("hex"),
+        },
         files: [
+          {
+            path: "consent-bundle.json",
+            sha256: createHash("sha256").update(consentBytes).digest("hex"),
+            size: consentBytes.byteLength,
+          },
           {
             path: "index.html",
             sha256: createHash("sha256").update(fileBytes).digest("hex"),

@@ -4,9 +4,11 @@ import { serve } from "@hono/node-server";
 import { createControlApp } from "./app.js";
 import {
   createArticlePublicationActions,
+  createReleaseConsentAuthorityResolver,
   reconcilePublicationActivation,
 } from "./articles/publication-release.js";
 import { createIndexNowKeyCache } from "./articles/indexnow-sender.js";
+import { createDatabaseConsentAuthorityResolver } from "./consent/service.js";
 import { closeDatabase } from "./db/client.js";
 import { createControlRuntime, loadLocalEnvironment } from "./runtime.js";
 
@@ -32,12 +34,16 @@ const articlePublication = runtime.config.publication
       );
     })()
   : undefined;
+const consentAuthorityResolver = runtime.config.publication
+  ? createReleaseConsentAuthorityResolver(runtime.db, runtime.config.publication)
+  : createDatabaseConsentAuthorityResolver(runtime.db);
 const app = createControlApp({
   db: runtime.db,
   keyProvider: runtime.config.keyProvider,
   allowedOrigins: runtime.config.allowedOrigins,
   enforceOrigin: runtime.config.enforceOrigin,
   hermesHmacSecret: runtime.config.hermesHmacSecret,
+  consentAuthorityResolver,
   ...(articlePublication ? { articlePublication } : {}),
   ...(indexNowKeyCache ? { indexNowKeyProvider: () => indexNowKeyCache.get() } : {}),
   ...(runtime.config.publicOrigin && runtime.config.adminOrigin

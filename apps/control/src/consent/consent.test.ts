@@ -129,6 +129,33 @@ describe("immutable consent bundles", () => {
     ).get()).toEqual({ count: 8 });
   });
 
+  it("blocks a consent authority change while a publication activation is pending", () => {
+    testDatabase = createTestDatabase();
+    seedCompleteConsentBundles(testDatabase.db, consentBundle("bundle-a", "a"), 1_000);
+    activateConsentBundle(testDatabase.db, "bundle-a", 2_000);
+    seedCompleteConsentBundles(testDatabase.db, consentBundle("bundle-b", "b"), 3_000);
+    const manifest = Buffer.alloc(32, 7);
+    testDatabase.db.sqlite.prepare(`
+      INSERT INTO releases (
+        id, version, path, manifest_sha256, state, created_at_ms, created_by,
+        verified_at_ms, verification_sha256
+      ) VALUES ('release-pending', 'release-pending-v1', '/pending', ?,
+        'building', 4_000, 'admin', 4_000, ?)
+    `).run(manifest, manifest);
+    testDatabase.db.sqlite.prepare(`
+      INSERT INTO release_activations (
+        id, release_id, operation, state, manifest_sha256,
+        target_path, created_at_ms
+      ) VALUES ('activation-pending', 'release-pending', 'publish',
+        'prepared', ?, '/pending', 4_000)
+    `).run(manifest);
+
+    expect(() => activateConsentBundle(testDatabase!.db, "bundle-b", 5_000)).toThrow(
+      "CONSENT_ACTIVATION_BLOCKED_BY_PUBLICATION",
+    );
+    expect(getActiveConsentBundle(testDatabase.db)?.bundleId).toBe("bundle-a");
+  });
+
   it("returns the nested locale response consumed by the public-site adapter", () => {
     testDatabase = createTestDatabase();
     seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);

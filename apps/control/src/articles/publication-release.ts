@@ -480,6 +480,7 @@ function insertPreparedRelease(
   input: PublicationActionInput,
   release: PublicationActionResult & {
     path: string;
+    sourcePath: string;
     activationId: string;
     snapshotManifestSha256: string;
     consentBundle: {
@@ -488,8 +489,17 @@ function insertPreparedRelease(
     };
   },
   config: PublicationReleaseConfig,
-): void {
-  db.sqlite.transaction(() => {
+): SealedPublicationRelease {
+  const sourcePath = assertDirectReleasePath(config.releaseRoot, release.sourcePath);
+  const root = realpathSync(config.releaseRoot);
+  if (dirname(resolve(release.path)) !== root
+    || basename(release.path) !== release.version
+    || existsSync(release.path)) {
+    throw new Error("PUBLICATION_FINAL_PATH_INVALID");
+  }
+  let renamed = false;
+  try {
+    return db.sqlite.transaction(() => {
     const active = db.sqlite.prepare(`
       SELECT id, activation_generation FROM releases WHERE state = 'active'
     `).get() as { id: string; activation_generation: number } | undefined;
@@ -497,6 +507,7 @@ function insertPreparedRelease(
       || (active?.activation_generation ?? 0) !== snapshot.baseReleaseGeneration) {
       throw new Error("PUBLICATION_BASE_RELEASE_CHANGED");
     }
+    assertConsentBundleConsistent(db, snapshot);
     for (const promotion of snapshot.promotions) {
       const head = db.sqlite.prepare(`
         SELECT state, head_revision_id, approved_revision_id, row_version
@@ -535,6 +546,16 @@ function insertPreparedRelease(
         ...sourceValues,
       ]);
       if (!pii.safe) throw new Error("PUBLICATION_PII_CHANGED_DURING_BUILD");
+    }
+    renameSync(sourcePath, release.path);
+    renamed = true;
+    const finalVerified = verifySealedPublicationRelease(release.path, config.publicOrigin);
+    if (finalVerified.manifestSha256 !== release.manifestSha256
+      || finalVerified.manifest.snapshotManifestSha256 !== release.snapshotManifestSha256
+      || finalVerified.manifest.consentBundle.bundleId !== release.consentBundle.bundleId
+      || finalVerified.manifest.consentBundle.contentFileSha256
+        !== release.consentBundle.contentFileSha256) {
+      throw new Error("PUBLICATION_FINAL_RELEASE_MISMATCH");
     }
     db.sqlite.prepare(`
       INSERT INTO releases (
@@ -589,7 +610,14 @@ function insertPreparedRelease(
         : readCurrentTarget(config),
       input.nowMs,
     );
-  }).immediate();
+    return finalVerified;
+    }).immediate();
+  } catch (error) {
+    if (renamed && existsSync(release.path) && !existsSync(sourcePath)) {
+      renameSync(release.path, sourcePath);
+    }
+    throw error;
+  }
 }
 
 function releaseRow(db: ControlDatabase, releaseId: string): ReleaseRow {
@@ -810,6 +838,12 @@ function commitActivation(
     `).get() as { id: string } | undefined;
     if ((active?.id ?? null) !== activation.previous_release_id) {
       throw new Error("PUBLICATION_ACTIVE_RELEASE_CONFLICT");
+    }
+    if (activation.operation === "publish") {
+      const liveConsentBundle = getActivePublishedConsentBundle(db);
+      if (!liveConsentBundle || !consentBundlesEqual(liveConsentBundle, verified.consentBundle)) {
+        throw new Error("PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD");
+      }
     }
     if (active && active.id !== target.id) {
       db.sqlite.prepare(`
@@ -1120,17 +1154,25 @@ export async function publishApprovedArticles(
     cleanSuccessfulTemporaryDirectory(config.releaseRoot, buildHome);
     throw error;
   }
-  renameSync(outputDirectory, finalPath);
-  const finalVerified = verifySealedPublicationRelease(finalPath, config.publicOrigin);
-  insertPreparedRelease(db, keyProvider, snapshot, input, {
-    releaseId,
-    activationId,
-    version,
-    path: finalPath,
-    manifestSha256: finalVerified.manifestSha256,
-    snapshotManifestSha256: finalVerified.manifest.snapshotManifestSha256,
-    consentBundle: finalVerified.manifest.consentBundle,
-  }, config);
+  try {
+    insertPreparedRelease(db, keyProvider, snapshot, input, {
+      releaseId,
+      activationId,
+      version,
+      path: finalPath,
+      sourcePath: outputDirectory,
+      manifestSha256: independent.manifestSha256,
+      snapshotManifestSha256: independent.manifest.snapshotManifestSha256,
+      consentBundle: independent.manifest.consentBundle,
+    }, config);
+  } catch (error) {
+    for (const temporary of [outputDirectory, snapshotDirectory, buildHome]) {
+      if (existsSync(temporary)) {
+        cleanSuccessfulTemporaryDirectory(config.releaseRoot, temporary);
+      }
+    }
+    throw error;
+  }
   dependencies.faultInjector?.("before-switch");
   (dependencies.switchCurrent ?? switchCurrentAtomic)(finalPath, config.currentLink, activationId);
   dependencies.faultInjector?.("after-switch");

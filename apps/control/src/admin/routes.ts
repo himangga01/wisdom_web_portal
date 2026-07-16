@@ -649,7 +649,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const blocked = rows.filter(({ state, source_binding_valid: sourceBindingValid }) => (
       (state !== "approved" && state !== "published") || sourceBindingValid !== 1
     ));
-    return context.html(page("Publication preview", `<h1>Publication preview</h1><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="publish-approved"><button type="submit"${eligible.length === 0 ? " disabled" : ""}>Build, verify, and publish approved content</button></form>`, "en", auth.csrfToken));
+    const publishLabel = eligible.length === 0
+      ? "Build, verify, and publish policy-only update"
+      : "Build, verify, and publish approved content plus policies";
+    return context.html(page("Publication preview", `<h1>Publication preview</h1><p>The active privacy and marketing policy bundle is sealed into every release. A policy-only release remains available when no article heads are eligible.</p><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="publish-approved"><button type="submit">${publishLabel}</button></form>`, "en", auth.csrfToken));
   });
 
   app.post("/admin/publish", async (context) => {

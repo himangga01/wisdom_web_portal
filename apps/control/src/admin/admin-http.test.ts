@@ -238,6 +238,8 @@ describe("administrator article review and explicit translation routes", () => {
       "Stale English translation",
     );
     expect(stalePreviewHtml).toContain("Stale English translation / approved");
+    expect(stalePreviewHtml).toContain("publish policy-only update");
+    expect(stalePreviewHtml).not.toContain('<button type="submit" disabled');
     const releases = await current.app.request(`${ADMIN_ORIGIN}/admin/releases`, {
       headers: { cookie: session.cookie },
     });
