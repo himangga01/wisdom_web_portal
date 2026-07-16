@@ -297,7 +297,13 @@ function successfulPreflightAdapter(overrides = {}) {
       : { stdout: `${name} fixture`, stderr: "" },
     loadNativeModule: async () => undefined,
     sqliteVersion: async () => "3.53.2",
-    verifyPublicCurrent: async () => ({ manifestVerified: true, indexVerified: true }),
+    verifyPublicCurrent: async () => ({
+      manifestVerified: true,
+      indexVerified: true,
+      format: "wisdom",
+      consentBundleVerified: true,
+      consentBundleId: "bundle-2026-07-16",
+    }),
     ...overrides,
   };
 }
@@ -327,7 +333,13 @@ test("preflight accepts Apple silicon, Node 24, native SQLite and required binar
   assert.equal(report.sqliteVersion, "3.53.2");
   assert.equal(report.ageVersion, "1.3.1");
   assert.deepEqual(report.checkedBinaries.sort(), ["age", "caddy", "cloudflared"]);
-  assert.deepEqual(report.publicSite, { manifestVerified: true, indexVerified: true });
+  assert.deepEqual(report.publicSite, {
+    manifestVerified: true,
+    indexVerified: true,
+    format: "wisdom",
+    consentBundleVerified: true,
+    consentBundleId: "bundle-2026-07-16",
+  });
 });
 
 test("preflight rejects an age binary that does not match the pinned version", async () => {
@@ -344,6 +356,53 @@ test("preflight blocks tunnel launch until public-current index and manifest are
       throw Object.assign(new Error("not seeded"), { code: "PUBLIC_CURRENT_NOT_READY" });
     },
   })), { code: "PUBLIC_CURRENT_NOT_READY" });
+});
+
+test("preflight refuses bootstrap and any Wisdom release without an approved policy snapshot", async (t) => {
+  const unsafe = [
+    ["bootstrap", {
+      manifestVerified: true,
+      indexVerified: true,
+      format: "ops-bootstrap",
+      releaseId: "20260716T010203Z-abcdef1",
+    }],
+    ["missing policy snapshot", {
+      manifestVerified: true,
+      indexVerified: true,
+      format: "wisdom",
+      consentBundleVerified: false,
+    }],
+  ];
+  for (const [name, publicSite] of unsafe) {
+    await t.test(name, async () => {
+      await assert.rejects(runPreflight(preflightConfig, successfulPreflightAdapter({
+        verifyPublicCurrent: async () => publicSite,
+      })), { code: "PUBLIC_CURRENT_NOT_READY" });
+    });
+  }
+});
+
+test("application deployment preflight permits verified bootstrap only as tunnel-disabled local staging", async () => {
+  let verificationOptions;
+  const report = await runPreflight({
+    ...preflightConfig,
+    allowBootstrapLocalStaging: true,
+  }, successfulPreflightAdapter({
+    verifyPublicCurrent: async (options) => {
+      verificationOptions = options;
+      return {
+        manifestVerified: true,
+        indexVerified: true,
+        format: "ops-bootstrap",
+        releaseId: "20260716T010203Z-abcdef1",
+      };
+    },
+  }));
+
+  assert.equal(verificationOptions.requireWisdom, false);
+  assert.equal(report.ok, true);
+  assert.equal(report.tunnelReady, false);
+  assert.equal(report.publicSite.format, "ops-bootstrap");
 });
 
 test("preflight fails closed for the wrong architecture, Node, or SQLite runtime", async (t) => {
@@ -430,6 +489,7 @@ test("mac release preflight forwards the application current pointer", async () 
   });
 
   assert.equal(args[args.indexOf("--current") + 1], currentLink);
+  assert.equal(args.includes("--allow-bootstrap-local-staging"), true);
 });
 
 test("mac release migration requires the rollback compatibility gate", () => {

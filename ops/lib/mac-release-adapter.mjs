@@ -57,6 +57,7 @@ export function buildMacPreflightArguments(options) {
     "--age", options.ageBinary,
     "--public-release-root", options.publicReleaseRoot,
     "--public-current", options.publicCurrentLink,
+    "--allow-bootstrap-local-staging",
   ];
 }
 
@@ -192,15 +193,21 @@ export function createMacReleaseAdapter(options) {
         await rm(tempDirectory, { recursive: true, force: true });
       }
     },
-    readCurrent: readCurrentRelease,
-    switchCurrent: atomicSwitchRelease,
+    readCurrent: (currentLink) => readCurrentRelease(options.releaseRoot, currentLink),
+    switchCurrent: async (destination, currentLink) => {
+      await verifyReleaseManifest(destination, path.basename(destination));
+      await atomicSwitchRelease(destination, currentLink);
+    },
     restartServices: serviceAdapter.start,
     checkActiveHealth: async () => {
       await serviceAdapter.checkReady();
       await checkUrl(options.publicLiveUrl, '"status":"ok"');
     },
     restoreCurrent: async (previous, currentLink) => {
-      if (previous) await atomicSwitchRelease(previous, currentLink);
+      if (previous) {
+        await verifyReleaseManifest(previous, path.basename(previous));
+        await atomicSwitchRelease(previous, currentLink);
+      }
       else await removeReleasePointer(currentLink);
     },
     prune: pruneRetainedReleases,

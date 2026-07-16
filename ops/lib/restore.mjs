@@ -119,44 +119,48 @@ export async function restoreBackup(input, adapters) {
 }
 
 async function restoreBackupLocked(input, plan, adapters) {
-  await adapters.services.assertStopped();
-  if (adapters.services.stop) {
-    await adapters.services.stop();
-    await adapters.services.assertStopped();
-  }
-
-  await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
-  await assertNoSymlinkPath(plan.backup, "RESTORE_INPUT_INVALID");
-  await assertNoSymlinkPath(plan.status, "RESTORE_INPUT_INVALID");
-  await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
-  if (await exists(plan.target)) await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
-  for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
-    if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
-  }
-
-  for (const candidate of [plan.backup, plan.status]) {
-    const metadata = await lstat(candidate);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) fail("RESTORE_INPUT_INVALID", "Backup inputs must be regular non-symlink files");
-  }
-  const status = JSON.parse(await readFile(plan.status, "utf8"));
-  const encryptedSha256 = createHash("sha256").update(await readFile(plan.backup)).digest("hex");
-  if (status.verified !== true || status.encryptedSha256 !== encryptedSha256) {
-    fail("BACKUP_HASH_MISMATCH", "Encrypted backup hash does not match its verified status");
-  }
-
-  const work = await mkdtemp(path.join(plan.tempRoot, ".restore-work-"));
-  await chmod(work, 0o700);
-  const decrypted = path.join(work, "decrypted.sqlite");
   const now = input.now ?? new Date();
-  const staged = path.join(path.dirname(plan.target), `.${path.basename(plan.target)}.restore-${randomUUID()}`);
   const quarantinePath = `${plan.target}.quarantine-${stamp(now)}`;
   const failedPath = `${plan.target}.failed-${stamp(now)}`;
-  if (await exists(quarantinePath) || await exists(failedPath)) {
-    fail("RESTORE_TARGET_UNSAFE", "Quarantine or failed target already exists");
-  }
+  let work;
+  let staged;
   let quarantined = false;
   let replaced = false;
+  let serviceStopAttempted = false;
   try {
+    await adapters.services.assertStopped();
+    if (adapters.services.stop) {
+      serviceStopAttempted = true;
+      await adapters.services.stop();
+      await adapters.services.assertStopped();
+    }
+
+    await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
+    await assertNoSymlinkPath(plan.backup, "RESTORE_INPUT_INVALID");
+    await assertNoSymlinkPath(plan.status, "RESTORE_INPUT_INVALID");
+    await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
+    if (await exists(plan.target)) await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
+    for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
+      if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
+    }
+
+    for (const candidate of [plan.backup, plan.status]) {
+      const metadata = await lstat(candidate);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) fail("RESTORE_INPUT_INVALID", "Backup inputs must be regular non-symlink files");
+    }
+    const status = JSON.parse(await readFile(plan.status, "utf8"));
+    const encryptedSha256 = createHash("sha256").update(await readFile(plan.backup)).digest("hex");
+    if (status.verified !== true || status.encryptedSha256 !== encryptedSha256) {
+      fail("BACKUP_HASH_MISMATCH", "Encrypted backup hash does not match its verified status");
+    }
+
+    work = await mkdtemp(path.join(plan.tempRoot, ".restore-work-"));
+    await chmod(work, 0o700);
+    const decrypted = path.join(work, "decrypted.sqlite");
+    staged = path.join(path.dirname(plan.target), `.${path.basename(plan.target)}.restore-${randomUUID()}`);
+    if (await exists(quarantinePath) || await exists(failedPath)) {
+      fail("RESTORE_TARGET_UNSAFE", "Quarantine or failed target already exists");
+    }
     await adapters.age.decrypt({ input: plan.backup, output: decrypted, identity: input.ageIdentity });
     await chmod(decrypted, 0o600);
     const inspection = await adapters.sqlite.inspect(decrypted);
@@ -206,6 +210,22 @@ async function restoreBackupLocked(input, plan, adapters) {
       } catch (recoveryError) {
         recoveryCause = recoveryError;
       }
+    } else if (serviceStopAttempted) {
+      try {
+        await adapters.services.start();
+        await adapters.services.checkReady();
+      } catch (recoveryError) {
+        recoveryCause = recoveryError;
+      }
+      if (recoveryCause !== undefined) {
+        const restartFailure = new Error(
+          "Restore validation failed and the unchanged service could not be recovered",
+          { cause: error },
+        );
+        restartFailure.code = "RESTORE_ORIGINAL_RESTART_FAILED";
+        restartFailure.recoveryCause = recoveryCause;
+        throw restartFailure;
+      }
     }
     if (recoveryCause !== undefined) {
       const rollbackFailure = new Error(
@@ -218,7 +238,7 @@ async function restoreBackupLocked(input, plan, adapters) {
     }
     throw error;
   } finally {
-    await rm(staged, { force: true });
-    await rm(work, { recursive: true, force: true });
+    if (staged !== undefined) await rm(staged, { force: true });
+    if (work !== undefined) await rm(work, { recursive: true, force: true });
   }
 }

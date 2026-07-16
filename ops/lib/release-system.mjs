@@ -31,6 +31,7 @@ const REQUIRED_ARTIFACTS = [
   "ops/scripts/deploy.mjs",
   "ops/scripts/keychain-exec.mjs",
   "ops/scripts/preflight.mjs",
+  "ops/scripts/recover-lock.mjs",
   "ops/scripts/restore.mjs",
   "ops/scripts/rollback.mjs",
   "ops/scripts/secret-import.mjs",
@@ -79,6 +80,19 @@ function assertDirectRelease(releaseRoot, destination) {
   }
 }
 
+async function verifyCurrentPointer(releaseRoot, currentLink) {
+  const metadata = await lstat(currentLink);
+  if (!metadata.isSymbolicLink()) fail("RELEASE_PATH_UNSAFE", "Current pointer must be a symlink");
+  const target = await realpath(currentLink);
+  assertDirectRelease(releaseRoot, target);
+  const targetReal = await realDirectory(target, "current release");
+  if (normalized(path.dirname(targetReal)) !== normalized(releaseRoot)) {
+    fail("RELEASE_PATH_UNSAFE", "Current release escapes releaseRoot");
+  }
+  await verifyReleaseManifest(targetReal, path.basename(targetReal));
+  return targetReal;
+}
+
 export async function validateReleaseFilesystem({ sourceRoot, releaseRoot, currentLink, destination, rollback = false }) {
   const releaseReal = await realDirectory(releaseRoot, "releaseRoot");
   let sourceReal;
@@ -96,8 +110,7 @@ export async function validateReleaseFilesystem({ sourceRoot, releaseRoot, curre
     fail("RELEASE_PATH_UNSAFE", "Current pointer parent must match the release root parent");
   }
   if (await exists(currentLink)) {
-    const currentMetadata = await lstat(currentLink);
-    if (!currentMetadata.isSymbolicLink()) fail("RELEASE_PATH_UNSAFE", "Current pointer must be a symlink");
+    await verifyCurrentPointer(releaseReal, currentLink);
   }
   assertDirectRelease(releaseReal, destination);
   if (rollback) {
@@ -109,11 +122,10 @@ export async function validateReleaseFilesystem({ sourceRoot, releaseRoot, curre
   return { ...(sourceReal ? { sourceReal } : {}), releaseReal };
 }
 
-export async function readCurrentRelease(currentLink) {
+export async function readCurrentRelease(releaseRoot, currentLink) {
   try {
-    const metadata = await lstat(currentLink);
-    if (!metadata.isSymbolicLink()) fail("RELEASE_PATH_UNSAFE", "Current pointer must be a symlink");
-    return realpath(currentLink);
+    const releaseReal = await realDirectory(releaseRoot, "releaseRoot");
+    return await verifyCurrentPointer(releaseReal, currentLink);
   } catch (error) {
     if (error.code === "ENOENT") return undefined;
     throw error;

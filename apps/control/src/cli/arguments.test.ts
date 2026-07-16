@@ -13,13 +13,8 @@ describe("control CLI arguments", () => {
     expect(parseMigrateArguments(["--require-rollback-compatible"])).toEqual({
       requireRollbackCompatible: true,
     });
-    expect(parseMigrateArguments(["--allow-incompatible-maintenance"])).toEqual({
-      requireRollbackCompatible: false,
-    });
-    expect(() => parseMigrateArguments([
-      "--require-rollback-compatible",
-      "--allow-incompatible-maintenance",
-    ])).toThrow(/mutually exclusive/i);
+    expect(() => parseMigrateArguments(["--allow-incompatible-maintenance"]))
+      .toThrow(/unknown db:migrate argument/i);
     expect(() => parseMigrateArguments(["--unknown"])).toThrow(/unknown/i);
   });
 

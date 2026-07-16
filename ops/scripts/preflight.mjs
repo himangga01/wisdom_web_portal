@@ -64,6 +64,7 @@ async function main() {
     ageVersion: "1.3.1",
     publicReleaseRoot: option("--public-release-root"),
     publicCurrentLink: option("--public-current"),
+    allowBootstrapLocalStaging: process.argv.includes("--allow-bootstrap-local-staging"),
   }, adapter);
   process.stdout.write(`${JSON.stringify({ ...report, host: os.hostname() })}\n`);
 }

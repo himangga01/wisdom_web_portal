@@ -1,7 +1,10 @@
 import path from "node:path";
 
 import { assertNoSymlinkPath } from "./safe-paths.mjs";
-import { acquireExclusiveDirectoryLock } from "./exclusive-lock.mjs";
+import {
+  acquireExclusiveDirectoryLock,
+  recoverExclusiveDirectoryLock,
+} from "./exclusive-lock.mjs";
 
 function fail(code, message, cause) {
   const error = new Error(message, cause === undefined ? undefined : { cause });
@@ -21,7 +24,7 @@ export function databaseMaintenanceLockPath(databasePath) {
   return path.join(path.dirname(resolved), `.${path.basename(resolved)}.maintenance-lock`);
 }
 
-export async function acquireDatabaseMaintenanceLock(databasePath, { processIsAlive } = {}) {
+export async function acquireDatabaseMaintenanceLock(databasePath) {
   const lockPath = databaseMaintenanceLockPath(databasePath);
   await assertNoSymlinkPath(path.dirname(lockPath), "DATABASE_MAINTENANCE_LOCK_INVALID");
   return acquireExclusiveDirectoryLock(lockPath, {
@@ -30,6 +33,18 @@ export async function acquireDatabaseMaintenanceLock(databasePath, { processIsAl
     staleCode: "DATABASE_MAINTENANCE_LOCK_STALE",
     ownershipCode: "DATABASE_MAINTENANCE_LOCK_OWNERSHIP_LOST",
     kind: "backup or restore",
-    ...(processIsAlive ? { processIsAlive } : {}),
   });
+}
+
+export async function recoverDatabaseMaintenanceLock(databasePath, options = {}) {
+  const lockPath = databaseMaintenanceLockPath(databasePath);
+  await assertNoSymlinkPath(path.dirname(lockPath), "DATABASE_MAINTENANCE_LOCK_INVALID");
+  return recoverExclusiveDirectoryLock(lockPath, {
+    lockedCode: "DATABASE_MAINTENANCE_LOCKED",
+    invalidCode: "DATABASE_MAINTENANCE_LOCK_INVALID",
+    staleCode: "DATABASE_MAINTENANCE_LOCK_STALE",
+    ownershipCode: "DATABASE_MAINTENANCE_LOCK_OWNERSHIP_LOST",
+    recoveryCode: "DATABASE_MAINTENANCE_LOCK_RECOVERY_REFUSED",
+    kind: "backup or restore",
+  }, options);
 }

@@ -9,6 +9,7 @@ import { applyBackupRetention, createOnlineBackup } from "../lib/backup.mjs";
 import {
   acquireDatabaseMaintenanceLock,
   databaseMaintenanceLockPath,
+  recoverDatabaseMaintenanceLock,
 } from "../lib/database-maintenance-lock.mjs";
 import { backupFreshness, loadNewestBackupStatus } from "../lib/monitoring.mjs";
 import { planRestore, restoreBackup } from "../lib/restore.mjs";
@@ -161,25 +162,40 @@ test("backup and restore serialize on one exclusive database maintenance lock", 
   assert.equal(result.verified, true);
 });
 
-test("database maintenance lock recovers a confirmed stale owner and verifies release ownership", async () => {
+test("database maintenance lock requires confirmed quarantine before reuse and verifies release ownership", async () => {
   const root = await fixtureDirectory("database-maintenance-lock-owner");
   const database = path.join(root, "portal.sqlite");
   const lockPath = databaseMaintenanceLockPath(database);
   await writeFile(database, "fixture");
   await mkdir(lockPath);
   await writeFile(path.join(lockPath, "owner.json"), JSON.stringify({
-    formatVersion: 1,
+    formatVersion: 2,
     kind: "backup or restore",
     pid: 999_999_999,
     hostname: os.hostname(),
+    bootId: "previous-boot",
+    processStartId: "dead-process",
     token: "00000000-0000-4000-8000-000000000000",
     createdAt: "2026-07-16T00:00:00.000Z",
   }));
 
-  const releaseRecovered = await acquireDatabaseMaintenanceLock(database, {
-    processIsAlive: async () => false,
+  await assert.rejects(acquireDatabaseMaintenanceLock(database), {
+    code: "DATABASE_MAINTENANCE_LOCK_STALE",
   });
-  await releaseRecovered();
+  const recovery = await recoverDatabaseMaintenanceLock(database, {
+    dryRun: false,
+    confirmLockPath: path.resolve(lockPath),
+    confirmedAction: "QUARANTINE_STALE_LOCK",
+    identityProvider: async () => ({
+      hostname: os.hostname(),
+      bootId: "current-boot",
+      processStartId: "recovery-process",
+    }),
+    lookupProcessStartId: async () => undefined,
+    now: new Date("2026-07-16T04:00:00.000Z"),
+    quarantineToken: "22222222-2222-4222-8222-222222222222",
+  });
+  assert.match(path.basename(recovery.quarantinePath), /^\.portal\.sqlite\.maintenance-lock\.quarantine-/u);
 
   const releaseOwned = await acquireDatabaseMaintenanceLock(database);
   const ownerPath = path.join(lockPath, "owner.json");
@@ -553,6 +569,92 @@ test("restore independently rejects wrong age identity, corrupt plaintext, and s
   }
 });
 
+test("pre-replacement restore failure restarts and checks the unchanged service", async () => {
+  const root = await fixtureDirectory("restore-pre-replacement-restart");
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "unchanged-production-db");
+  const calls = [];
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-WRONG",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters({ decryptError: "AGE_AUTH_FAILED" }),
+    services: {
+      assertStopped: async () => calls.push("stopped"),
+      stop: async () => calls.push("stop"),
+      start: async () => calls.push("start"),
+      checkReady: async () => calls.push("ready"),
+    },
+  }), { code: "AGE_AUTH_FAILED" });
+
+  assert.equal(await readFile(target, "utf8"), "unchanged-production-db");
+  assert.deepEqual(calls, ["stopped", "stop", "stopped", "start", "ready"]);
+});
+
+test("pre-replacement restart failure preserves both sanitized causes", async () => {
+  const root = await fixtureDirectory("restore-pre-replacement-restart-failure");
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "unchanged-production-db");
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-WRONG",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters({ decryptError: "AGE_AUTH_FAILED" }),
+    services: {
+      assertStopped: async () => undefined,
+      stop: async () => undefined,
+      start: async () => {
+        throw Object.assign(new Error("private launch detail"), { code: "SERVICE_START_FAILED" });
+      },
+      checkReady: async () => undefined,
+    },
+  }), (error) => {
+    assert.equal(error.code, "RESTORE_ORIGINAL_RESTART_FAILED");
+    assert.equal(error.message, "Restore validation failed and the unchanged service could not be recovered");
+    assert.equal(error.cause?.code, "AGE_AUTH_FAILED");
+    assert.equal(error.recoveryCause?.code, "SERVICE_START_FAILED");
+    assert.doesNotMatch(error.message, /private launch detail/u);
+    return true;
+  });
+  assert.equal(await readFile(target, "utf8"), "unchanged-production-db");
+});
+
 test("a database created by runMigrations survives WAL backup and guarded restore", async () => {
   const { default: Database } = await import("better-sqlite3");
   const { tsImport } = await import("tsx/esm/api");
@@ -570,7 +672,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
   insert.run("receipt-before", "opaque-ciphertext-before");
   insert.run("receipt-in-wal", "opaque-ciphertext-in-wal");
 
-  const sqlite = createSqliteAdapter({ expectedSchemaVersion: 3 });
+  const sqlite = createSqliteAdapter();
   const age = fakeAdapters().age;
   const backup = await createOnlineBackup({
     sourceDb,
@@ -611,7 +713,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
     assert.equal(restored.pragma("integrity_check", { simple: true }), "ok");
-    assert.equal(restored.pragma("user_version", { simple: true }), 3);
+    assert.equal(restored.pragma("user_version", { simple: true }), 4);
   } finally {
     restored.close();
   }

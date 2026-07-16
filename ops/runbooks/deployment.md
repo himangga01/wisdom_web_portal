@@ -11,16 +11,56 @@
 
 1. `ops/config/runtime.env.template`, Caddy, cloudflared, launchd 템플릿을 운영값으로 렌더링한다. 렌더 결과는 immutable application release 밖의 `shared` 경로에 두고 소유자만 쓸 수 있게 한다.
 2. 최초 정적 빌드를 만든 뒤 `seed-public.mjs`를 먼저 dry-run하고 `--apply`한다. 이 명령은 별도 `public-releases/<release-id>`에 bootstrap 전용 전체 파일 hash manifest를 만들고 검증한 후 `public-current`를 원자적으로 전환한다. application `current`와 혼용하지 않는다. 정상 발행이 한 번이라도 존재하면 bootstrap release로 되돌아갈 수 없다.
-3. 이제 `ops/scripts/preflight.mjs`로 verified `public-current`, `arm64`, Node 24, Caddy, cloudflared, 정확히 age 1.3.1, `better-sqlite3`, SQLite 버전과 쓰기 가능한 경로를 확인한다. `age --version` 결과가 고정 버전과 다르거나 해석할 수 없으면 배포를 중지한다. 이 gate를 통과하기 전에는 tunnel을 시작하지 않는다.
+3. bootstrap 단계에서는 `ops/scripts/preflight.mjs --allow-bootstrap-local-staging`으로 verified bootstrap `public-current`, `arm64`, Node 24, Caddy, cloudflared, 정확히 age 1.3.1, `better-sqlite3`, SQLite 버전과 쓰기 가능한 경로를 확인한다. 결과는 `tunnelReady: false`여야 하며 tunnel을 시작하지 않는다. `age --version` 결과가 고정 버전과 다르거나 해석할 수 없으면 배포를 중지한다.
 4. `secret-bootstrap.mjs`를 먼저 dry-run하고 `--apply`로 독립된 애플리케이션 비밀을 Keychain에 설치한다. 회전은 한 번에 하나만 `--mode rotate --only <ENVIRONMENT>`로 요청하며 PII/control/철회 키는 전용 migration 절차 없이 회전할 수 없다.
 5. `age-keygen`으로 운영자가 보관할 age 키를 별도로 만든다. 공개 recipient만 백업 설정에 기록한다. private identity 파일에서 한 줄을 표준입력으로 `secret-import.mjs --account <user> --apply`에 전달하여 `com.jihye.portal.age-identity`에 신규 설치하고, 명령 인자·로그·셸 변수에는 넣지 않는다.
 6. content worker용 Codex credential도 표준입력으로 `secret-import.mjs --account <user> --kind codex-api --service <CODEX_KEYCHAIN_SERVICE> --apply`에 신규 설치한다. `runtime.env`에는 API key가 아니라 service reference만 둔다. `CODEX_BINARY`, `GIT_BINARY`, 고정 `CODEX_MODEL`, 서로 다른 non-symlink `CODEX_HOME`/`CODEX_TEMP_ROOT`, bounded `CODEX_TIMEOUT_MS`를 실제 Mac 절대경로로 설정한다. 시작 점검에서 현재 Codex CLI가 `--disable shell_tool`을 지원하지 않으면 worker는 fail-closed로 종료되어야 한다. 번역 원문과 검수 후보는 작업 파일이나 명령행 인자가 아니라 표준입력으로만 전달하며, 실행 인자는 `read-only`, no approval, no web search, no shell inheritance를 고정한다.
 7. IndexNow 소유권 키는 8~128자의 영문·숫자·하이픈으로 생성한다. 한 줄을 표준입력으로 `secret-import.mjs --account <user> --kind indexnow-key --service <INDEXNOW_KEYCHAIN_SERVICE> --apply`에 신규 설치한다. `/indexnow-key.txt` 응답과 제출 JSON에는 공개되지만 저장소·프로세스 인자에는 넣지 않는다. Keychain 항목이 없거나 잘못되면 상담 API와 번역 worker는 계속 동작하고 IndexNow 공개·전송만 중지된다. 키를 복구한 뒤 control과 content worker를 재시작하면 보류 outbox가 재개된다.
 8. 이메일 알림을 사용할 때 SMTP `{ "user": "...", "password": "..." }` 한 줄 JSON을 표준입력으로 `secret-import.mjs --account <user> --kind smtp-json --service <새-service-name> --apply`에 신규 설치한다. 관리자 설정에는 값이 아니라 `keychain:<service-name>` reference만 저장하며 notification worker plist에는 SMTP password를 넣지 않는다.
 9. cloudflared credential 파일은 소유자 읽기 전용으로 설치한다. 템플릿이나 저장소에 토큰/credential 본문을 넣지 않는다.
-10. launchd plist를 `plutil -lint`로 확인하고 사용자 LaunchAgents로 설치한다. `launchctl bootstrap` 후 Caddy, tunnel, control, worker의 상태와 공개 live 응답을 확인한다.
+10. launchd plist를 `plutil -lint`로 확인하고 사용자 LaunchAgents로 설치한다. bootstrap public release 동안에는 tunnel agent를 시작하지 않는다. application과 정상 Wisdom public release를 게시한 뒤 플래그 없는 외부 preflight가 `tunnelReady: true`를 반환해야만 tunnel을 `launchctl bootstrap`한다. 그 후 Caddy, tunnel, control, worker의 상태와 공개 live 응답을 확인한다.
 
 이후 application 배포는 `deploy.mjs`의 dry-run을 확인한 다음 `--apply`한다. 새 release에서 Mac native dependency 설치, build, migration, canary live/ready, manifest 검증을 모두 통과해야 pointer를 전환한다. 전환 후 launchd와 active health가 실패하면 이전 pointer와 서비스를 복구한다. public 정적 산출물은 동일 release ID를 사용해도 별도 public release/pointer 계약으로 게시한다.
+
+앱 배포 내부 preflight만 `--allow-bootstrap-local-staging`을 사용한다. 이 경우 검증된 bootstrap public release를 허용하지만 결과는 반드시 `tunnelReady: false`이며 Cloudflare Tunnel은 꺼진 상태여야 한다. 정상 Wisdom 발행과 승인된 동의 snapshot을 게시한 뒤, tunnel을 시작하기 직전에 `preflight.mjs`를 이 플래그 없이 다시 실행하여 `tunnelReady: true`를 확인한다. 플래그 없는 외부 공개 preflight는 bootstrap을 거부한다.
+
+## application pointer와 릴리스 복구 경계
+
+- 기존 `current`는 `releases`의 직접 자식인 `<UTC timestamp>-<git hash>` 형식 디렉터리를 가리키는 symlink여야 한다. 대상의 `.ops-release.json` exact inventory와 모든 hash가 다시 검증되어야만 배포·rollback·실패 복구에서 실행한다.
+- `current`가 release root 밖, 중첩 디렉터리, 잘못된 release ID, symlink 대상 또는 변조된 manifest를 가리키면 운영자가 임의로 pointer를 보존하거나 실행하지 않는다. 원인을 조사하고 검증된 보존 release로 명시적 복구한다.
+- pointer 전환 직전과 실패 복구 직전에도 destination/previous manifest를 다시 검사한다. 검증 실패 시 서비스 재시작이나 pointer 복구를 추측해서 계속하지 않는다.
+
+## 배포·DB 잠금의 guarded 복구
+
+정전이나 강제 종료 뒤 lock이 남아도 배포·rollback·backup·restore는 자동 탈취하지 않는다. `owner.json` v2의 host, boot ID, PID, process start identity를 확인한다. 같은 boot의 살아 있는 동일 process instance와 다른 host 소유자는 복구할 수 없다. PID가 재사용되었거나 프로세스가 종료되었거나 이전 boot 소유자임이 증명된 경우만 후보가 된다. owner가 없거나 부분 기록이면 lock 디렉터리가 최소 15분 이상 지난 뒤에만 후보가 된다.
+
+먼저 dry-run한다. 아래 경로는 실제 Mac의 정규화된 절대 경로로 바꾸며 `..`, trailing separator, case alias를 쓰지 않는다.
+
+```sh
+node ops/scripts/recover-lock.mjs \
+  --kind release \
+  --release-root /Users/wisdom/portal/releases \
+  --lock /Users/wisdom/portal/releases/.release-operation-lock
+
+node ops/scripts/recover-lock.mjs \
+  --kind database \
+  --database /Users/wisdom/portal-data/portal.sqlite \
+  --lock /Users/wisdom/portal-data/.portal.sqlite.maintenance-lock
+```
+
+출력의 `lockPath`, `ownerStatus`, `staleReason`, `observedAgeMs`를 운영 기록에 남긴다. 현재 실행 중 작업이 없음을 별도로 확인한 다음 같은 명령에 아래 세 인자를 추가한다.
+
+```text
+--apply --confirm-lock <출력과 정확히 같은 절대 lockPath> --confirm-action QUARANTINE_STALE_LOCK
+```
+
+도구는 lock을 삭제하지 않고 timestamp/UUID가 붙은 sibling quarantine으로 원자 이동한다. quarantine의 `owner.json`은 사고 조사와 작업 대조가 끝날 때까지 보존한다. 경로 또는 owner fingerprint가 검사 중 바뀌면 중지하고 처음부터 다시 dry-run한다.
+
+## rollback 비호환 migration
+
+일반 `db:migrate`와 `deploy.mjs`는 항상 rollback compatibility gate를 적용한다. 과거의 `--allow-incompatible-maintenance` 우회는 없으며 다시 추가하거나 직접 호출하지 않는다.
+
+향후 비호환 schema 변경은 별도 maintenance release와 별도 검토를 거친 구현으로만 수행한다. 최소 ceremony는 다음과 같다: (1) control/worker와 tunnel 중지, (2) 방금 생성해 hash·복호화·integrity·schema를 검증한 fresh backup 확보, (3) DB maintenance lock 획득, (4) 새 schema와 호환되지 않는 rollback release를 명시적으로 식별하고 retirement 승인 기록, (5) 전용 migration 실행, (6) 새 release canary/readiness와 데이터 검증, (7) 서비스 재시작 및 외부 preflight. 이 절차의 일부만 자동화하는 임시 flag나 일반 배포 우회는 금지한다.
 
 ## 공개 콘텐츠와 동의 문서 사전 확인
 

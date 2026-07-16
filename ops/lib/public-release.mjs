@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { cp, lstat, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { publishedConsentBundleSchema } from "@wisdom/shared";
+
 import { assertNoSymlinkPath } from "./safe-paths.mjs";
 
 const OPS_MANIFEST = ".ops-public-release.json";
@@ -116,9 +118,13 @@ async function verifyWisdomReleaseDirectory(releaseDirectory) {
     fail("PUBLIC_CURRENT_NOT_READY", "Wisdom release manifest is not canonical JSON");
   }
   if (
-    !exactKeys(manifest, ["schemaVersion", "snapshotManifestSha256", "files"]) ||
+    !exactKeys(manifest, ["schemaVersion", "snapshotManifestSha256", "consentBundle", "files"]) ||
     manifest.schemaVersion !== 1 ||
     !SHA256.test(manifest.snapshotManifestSha256 ?? "") ||
+    !exactKeys(manifest.consentBundle, ["bundleId", "contentFileSha256"]) ||
+    typeof manifest.consentBundle.bundleId !== "string" ||
+    !manifest.consentBundle.bundleId.trim() || manifest.consentBundle.bundleId.length > 200 ||
+    !SHA256.test(manifest.consentBundle.contentFileSha256 ?? "") ||
     !Array.isArray(manifest.files)
   ) fail("PUBLIC_CURRENT_NOT_READY", "Wisdom release manifest schema is invalid");
 
@@ -158,11 +164,30 @@ async function verifyWisdomReleaseDirectory(releaseDirectory) {
   if (!actualFiles.some(({ path: relative }) => relative === "index.html")) {
     fail("PUBLIC_CURRENT_NOT_READY", "Wisdom release requires index.html");
   }
+  const consentFile = actualFiles.find(({ path: relative }) => relative === "consent-bundle.json");
+  if (!consentFile) fail("PUBLIC_CURRENT_NOT_READY", "Wisdom release requires an approved policy snapshot");
+  const consentBytes = await readFile(path.join(releaseDirectory, "consent-bundle.json"));
+  if (createHash("sha256").update(consentBytes).digest("hex") !== manifest.consentBundle.contentFileSha256) {
+    fail("PUBLIC_CURRENT_NOT_READY", "Wisdom policy snapshot hash mismatch");
+  }
+  let consentBundle;
+  try {
+    const parsed = JSON.parse(consentBytes.toString("utf8"));
+    if (consentBytes.toString("utf8") !== `${JSON.stringify(parsed, null, 2)}\n`) throw new Error("not canonical");
+    consentBundle = publishedConsentBundleSchema.parse(parsed);
+  } catch {
+    fail("PUBLIC_CURRENT_NOT_READY", "Wisdom policy snapshot is incomplete or invalid");
+  }
+  if (consentBundle.bundleId !== manifest.consentBundle.bundleId) {
+    fail("PUBLIC_CURRENT_NOT_READY", "Wisdom policy snapshot identity mismatch");
+  }
   return {
     manifestVerified: true,
     indexVerified: true,
     format: "wisdom",
     manifestSha256: createHash("sha256").update(bytes).digest("hex"),
+    consentBundleVerified: true,
+    consentBundleId: consentBundle.bundleId,
   };
 }
 
@@ -182,7 +207,7 @@ async function rootContainsWisdomRelease(publicReleaseRoot) {
   return false;
 }
 
-export async function verifyPublicCurrent({ publicReleaseRoot, publicCurrentLink }) {
+export async function verifyPublicCurrent({ publicReleaseRoot, publicCurrentLink, requireWisdom = false }) {
   await assertNoSymlinkPath(publicReleaseRoot, "PUBLIC_CURRENT_NOT_READY");
   await assertNoSymlinkPath(path.dirname(publicCurrentLink), "PUBLIC_CURRENT_NOT_READY");
   const rootMetadata = await lstat(publicReleaseRoot);
@@ -204,6 +229,7 @@ export async function verifyPublicCurrent({ publicReleaseRoot, publicCurrentLink
     fail("PUBLIC_CURRENT_NOT_READY", "Public current pointer escapes its release root");
   }
   if (await exists(path.join(target, WISDOM_MANIFEST))) return verifyWisdomReleaseDirectory(target);
+  if (requireWisdom) fail("PUBLIC_CURRENT_NOT_READY", "Tunnel launch requires a sealed Wisdom release");
   if (await rootContainsWisdomRelease(root)) {
     fail("PUBLIC_CURRENT_NOT_READY", "Bootstrap public release is forbidden after the first Wisdom publication");
   }

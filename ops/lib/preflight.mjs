@@ -103,6 +103,13 @@ function validatePaths(config, platform) {
 
 export async function runPreflight(config, adapter) {
   validatePaths(config, adapter.platform);
+  if (
+    config.allowBootstrapLocalStaging !== undefined &&
+    typeof config.allowBootstrapLocalStaging !== "boolean"
+  ) {
+    fail("PREFLIGHT_MODE_INVALID", "Bootstrap staging mode must be an explicit boolean");
+  }
+  const allowBootstrapLocalStaging = config.allowBootstrapLocalStaging === true;
   const requiredAgeVersion = expectedAgeVersion(config.ageVersion);
   if (adapter.platform !== "darwin" || adapter.arch !== "arm64") {
     fail("UNSUPPORTED_ARCHITECTURE", "Deployment requires an Apple-silicon macOS host");
@@ -150,7 +157,23 @@ export async function runPreflight(config, adapter) {
   const publicSite = await adapter.verifyPublicCurrent({
     publicReleaseRoot: config.publicReleaseRoot,
     publicCurrentLink: config.publicCurrentLink,
+    requireWisdom: !allowBootstrapLocalStaging,
   });
+  const wisdomReady = (
+    publicSite?.format !== "wisdom" ||
+    publicSite.manifestVerified !== true ||
+    publicSite.indexVerified !== true ||
+    publicSite.consentBundleVerified !== true ||
+    typeof publicSite.consentBundleId !== "string" ||
+    publicSite.consentBundleId.trim().length === 0
+  ) === false;
+  const bootstrapStagingReady = allowBootstrapLocalStaging &&
+    publicSite?.format === "ops-bootstrap" &&
+    publicSite.manifestVerified === true &&
+    publicSite.indexVerified === true;
+  if (!wisdomReady && !bootstrapStagingReady) {
+    fail("PUBLIC_CURRENT_NOT_READY", "Tunnel launch requires a verified Wisdom release with an approved policy snapshot");
+  }
 
   return {
     ok: true,
@@ -159,6 +182,7 @@ export async function runPreflight(config, adapter) {
     sqliteVersion,
     ageVersion,
     checkedBinaries,
+    tunnelReady: wisdomReady,
     publicSite,
   };
 }

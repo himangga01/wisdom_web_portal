@@ -11,8 +11,32 @@ function hash(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function consentBundle() {
+  const documents = ["ko", "en", "zh-Hans", "zh-Hant"].flatMap((locale) => (
+    ["privacy", "marketing"].map((kind) => {
+      const document = {
+        kind,
+        locale,
+        version: `${kind}-2026-07-16`,
+        title: `${kind} ${locale}`,
+        bodyMarkdown: `Approved ${kind} terms for ${locale}.`,
+        retentionMonths: kind === "privacy" ? 12 : 24,
+      };
+      return {
+        ...document,
+        contentSha256: hash(JSON.stringify(document)),
+        effectiveAt: "2026-07-16T00:00:00.000Z",
+        required: kind === "privacy",
+      };
+    })
+  ));
+  return { schemaVersion: 1, bundleId: "bundle-2026-07-16", documents };
+}
+
 async function writeWisdomRelease(release, files) {
-  for (const [relative, value] of Object.entries(files)) {
+  const consent = `${JSON.stringify(consentBundle(), null, 2)}\n`;
+  const sealedFiles = { ...files, "consent-bundle.json": consent };
+  for (const [relative, value] of Object.entries(sealedFiles)) {
     const absolute = path.join(release, ...relative.split("/"));
     await mkdir(path.dirname(absolute), { recursive: true });
     await writeFile(absolute, value);
@@ -20,7 +44,11 @@ async function writeWisdomRelease(release, files) {
   const manifest = {
     schemaVersion: 1,
     snapshotManifestSha256: "a".repeat(64),
-    files: Object.entries(files)
+    consentBundle: {
+      bundleId: "bundle-2026-07-16",
+      contentFileSha256: hash(consent),
+    },
+    files: Object.entries(sealedFiles)
       .map(([relative, value]) => ({ path: relative, sha256: hash(value), size: Buffer.byteLength(value) }))
       .sort((left, right) => left.path.localeCompare(right.path)),
   };
@@ -57,8 +85,28 @@ test("authoritative Wisdom manifest requires canonical exact inventory, size, an
   const verified = await verifyPublicReleaseDirectory(release);
   assert.equal(verified.format, "wisdom");
   assert.equal(verified.manifestVerified, true);
+  assert.equal(verified.consentBundleVerified, true);
+  assert.equal(verified.consentBundleId, "bundle-2026-07-16");
   assert.match(verified.manifestSha256, /^[a-f0-9]{64}$/u);
   await writeFile(path.join(release, "rss.xml"), "<rss>tampered</rss>");
+  await assert.rejects(verifyPublicReleaseDirectory(release), { code: "PUBLIC_CURRENT_NOT_READY" });
+});
+
+test("authoritative Wisdom manifest rejects an incomplete approved policy snapshot", async () => {
+  const release = await mkdtemp(path.join(os.tmpdir(), "wisdom-policy-release-"));
+  await writeWisdomRelease(release, { "index.html": "published" });
+  const invalid = consentBundle();
+  invalid.documents.pop();
+  const invalidBytes = `${JSON.stringify(invalid, null, 2)}\n`;
+  await writeFile(path.join(release, "consent-bundle.json"), invalidBytes);
+  const manifestPath = path.join(release, ".wisdom-release-manifest.json");
+  const manifest = JSON.parse(await (await import("node:fs/promises")).readFile(manifestPath, "utf8"));
+  manifest.consentBundle.contentFileSha256 = hash(invalidBytes);
+  const entry = manifest.files.find(({ path: relative }) => relative === "consent-bundle.json");
+  entry.sha256 = hash(invalidBytes);
+  entry.size = Buffer.byteLength(invalidBytes);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
   await assert.rejects(verifyPublicReleaseDirectory(release), { code: "PUBLIC_CURRENT_NOT_READY" });
 });
 

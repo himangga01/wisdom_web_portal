@@ -95,7 +95,7 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
 
 export function createSqliteAdapter({
   loadDatabase = async () => (await import("better-sqlite3")).default,
-  expectedSchemaVersion = 3,
+  expectedSchemaVersion = 4,
 } = {}) {
   return {
     checkpoint: async (source) => {

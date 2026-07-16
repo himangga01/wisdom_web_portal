@@ -10,6 +10,7 @@ import {
   copyReleaseSource,
   createReleaseManifest,
   pruneRetainedReleases,
+  readCurrentRelease,
   removeIncompleteRelease,
   validateReleaseFilesystem,
   verifyReleaseManifest,
@@ -55,6 +56,7 @@ const minimalRuntimeFiles = [
   "ops/scripts/deploy.mjs",
   "ops/scripts/keychain-exec.mjs",
   "ops/scripts/preflight.mjs",
+  "ops/scripts/recover-lock.mjs",
   "ops/scripts/restore.mjs",
   "ops/scripts/rollback.mjs",
   "ops/scripts/secret-import.mjs",
@@ -88,6 +90,47 @@ test("release filesystem validation rejects symlink roots and realpath overlap",
     throw error;
   }
   await assert.rejects(validateReleaseFilesystem({ ...fixture, sourceRoot: sourceLink }), { code: "RELEASE_PATH_UNSAFE" });
+});
+
+test("application current rejects a release outside releaseRoot", async (t) => {
+  const fixture = await releaseFixture();
+  const external = path.join(fixture.appRoot, "external", "20260714T010203Z-1234567");
+  await populateRelease(external, path.basename(external));
+  try {
+    await symlink(external, fixture.currentLink, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if (process.platform === "win32" && error.code === "EPERM") {
+      t.diagnostic("symlink creation is unavailable on this Windows host");
+      return;
+    }
+    throw error;
+  }
+
+  await assert.rejects(validateReleaseFilesystem(fixture), { code: "RELEASE_PATH_UNSAFE" });
+  await assert.rejects(readCurrentRelease(fixture.releaseRoot, fixture.currentLink), {
+    code: "RELEASE_PATH_UNSAFE",
+  });
+});
+
+test("application current rejects a direct child with a tampered manifest", async (t) => {
+  const fixture = await releaseFixture();
+  const currentRelease = path.join(fixture.releaseRoot, "20260714T010203Z-1234567");
+  await populateRelease(currentRelease, path.basename(currentRelease));
+  await writeFile(path.join(currentRelease, "apps", "control", "dist", "server.js"), "tampered");
+  try {
+    await symlink(currentRelease, fixture.currentLink, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if (process.platform === "win32" && error.code === "EPERM") {
+      t.diagnostic("symlink creation is unavailable on this Windows host");
+      return;
+    }
+    throw error;
+  }
+
+  await assert.rejects(validateReleaseFilesystem(fixture), { code: "RELEASE_MANIFEST_INVALID" });
+  await assert.rejects(readCurrentRelease(fixture.releaseRoot, fixture.currentLink), {
+    code: "RELEASE_MANIFEST_INVALID",
+  });
 });
 
 test("source copy excludes native installs, VCS, local data, secrets, and worktrees", async () => {
