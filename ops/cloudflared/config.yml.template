@@ -1,0 +1,16 @@
+tunnel: {{TUNNEL_ID}}
+credentials-file: {{CLOUDFLARED_CREDENTIALS_FILE}}
+
+ingress:
+  - hostname: {{APEX_HOST}}
+    service: http://{{CADDY_BIND}}:{{CADDY_PORT}}
+  - hostname: {{PUBLIC_HOST}}
+    service: http://{{CADDY_BIND}}:{{CADDY_PORT}}
+  - hostname: {{ADMIN_HOST}}
+    service: http://{{CADDY_BIND}}:{{CADDY_PORT}}
+  - service: http_status:404
+
+originRequest:
+  connectTimeout: 10s
+  tcpKeepAlive: 30s
+  keepAliveConnections: 20

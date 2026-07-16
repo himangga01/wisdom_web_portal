@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jihye.portal.backup</string>
+  <key>ProgramArguments</key><array>
+    <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/keychain-exec.mjs</string>
+    <string>--account</string><string>{{USER_NAME}}</string>
+    <string>--config</string><string>{{APP_ROOT}}/shared/runtime.env</string>
+    <string>--secret</string><string>AGE_IDENTITY=com.jihye.portal.age-identity</string>
+    <string>--</string><string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/backup.mjs</string>
+    <string>--source</string><string>{{DATA_ROOT}}/portal.sqlite</string><string>--root</string><string>{{BACKUP_ROOT}}</string>
+    <string>--temp-root</string><string>{{BACKUP_TEMP_ROOT}}</string><string>--age</string><string>{{AGE_BINARY}}</string>
+    <string>--recipient</string><string>{{AGE_RECIPIENT}}</string><string>--apply</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>{{LOG_ROOT}}/backup.stdout.log</string>
+  <key>StandardErrorPath</key><string>{{LOG_ROOT}}/backup.stderr.log</string>
+</dict></plist>

@@ -1,0 +1,2 @@
+# logfilename                                               owner:group          mode count size(KB) when flags
+{{LOG_ROOT}}/*.log                                          {{USER_NAME}}:staff  640  10    10240    *    GJN

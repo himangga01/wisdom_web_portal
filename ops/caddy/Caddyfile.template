@@ -1,0 +1,110 @@
+{
+	admin 127.0.0.1:{{CADDY_ADMIN_PORT}}
+	default_bind {{CADDY_BIND}}
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP
+		trusted_proxies_strict
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+	}
+}
+
+http://{{APEX_HOST}}:{{CADDY_PORT}} {
+	import security_headers
+	redir https://{{PUBLIC_HOST}}{uri} 308
+}
+
+http://{{PUBLIC_HOST}}:{{CADDY_PORT}} {
+	import security_headers
+	# Access logs intentionally disabled so capability URLs and URL parameters are never recorded.
+
+	@public_private path /admin* /health/ready /internal/*
+	@withdraw path /marketing/withdraw* /en/marketing/withdraw* /zh-hans/marketing/withdraw* /zh-hant/marketing/withdraw*
+	@public_api path /api/v1/*
+	@public_live path /health/live
+	@indexnow_key path /indexnow-key.txt
+	@immutable path /_astro/*
+	@sitemap_xml path /sitemap.xml
+	@rss_xml path /rss.xml
+	@naver_verify path_regexp naver_verify ^/naver[A-Za-z0-9_-]{24,128}\.html$
+	@html file {path} {path}/index.html
+
+	route {
+		handle @public_private {
+			respond @public_private 404
+		}
+		handle @withdraw {
+			header {
+				Cache-Control "no-store"
+				X-Robots-Tag "noindex, nofollow, noarchive"
+				Referrer-Policy "no-referrer"
+			}
+			reverse_proxy {{CONTROL_HOST}}:{{CONTROL_PORT}}
+		}
+		handle @public_api {
+			header Cache-Control "no-store"
+			reverse_proxy {{CONTROL_HOST}}:{{CONTROL_PORT}}
+		}
+		handle @public_live {
+			header Cache-Control "no-store"
+			reverse_proxy {{CONTROL_HOST}}:{{CONTROL_PORT}}
+		}
+		handle @indexnow_key {
+			header {
+				Cache-Control "no-store"
+				X-Robots-Tag "noindex, nofollow, noarchive"
+				Content-Type "text/plain; charset=utf-8"
+				Referrer-Policy "no-referrer"
+			}
+			reverse_proxy {{CONTROL_HOST}}:{{CONTROL_PORT}}
+		}
+		handle {
+			root * {{PUBLIC_CURRENT_RELEASE}}
+			header @immutable Cache-Control "public, max-age=31536000, immutable"
+			header @html Cache-Control "public, max-age=0, must-revalidate"
+			header @sitemap_xml Content-Type "application/xml; charset=utf-8"
+			header @rss_xml Content-Type "application/rss+xml; charset=utf-8"
+			header @naver_verify X-Robots-Tag "noindex, nofollow"
+			try_files {path} {path}/index.html =404
+			file_server
+		}
+	}
+	handle_errors {
+		root * {{PUBLIC_CURRENT_RELEASE}}
+		rewrite * /404.html
+		file_server
+	}
+}
+
+http://{{ADMIN_HOST}}:{{CADDY_PORT}} {
+	import security_headers
+	# Access logs intentionally disabled on the private host.
+	header {
+		Cache-Control "no-store"
+		X-Robots-Tag "noindex, nofollow, noarchive"
+	}
+	@admin_forbidden path /internal /internal/* /api /api/* /indexnow-key.txt /marketing/withdraw* /en/marketing/withdraw* /zh-hans/marketing/withdraw* /zh-hant/marketing/withdraw* /health /health/*
+	route {
+		handle @admin_forbidden {
+			respond @admin_forbidden 404
+		}
+		handle {
+			reverse_proxy {{CONTROL_HOST}}:{{CONTROL_PORT}}
+		}
+	}
+}
+
+http://:{{CADDY_PORT}} {
+	respond "unknown host" 404
+}

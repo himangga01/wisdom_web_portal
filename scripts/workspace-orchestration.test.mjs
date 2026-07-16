@@ -40,4 +40,6 @@ test("keeps the orchestration contract in the root test and verify flows", () =>
     packageJson.scripts.verify,
     "npm run typecheck && npm run test && npm run build && npm run test:e2e",
   );
+  assert.equal(packageJson.scripts["test:ops"], "node --test ops/tests/*.test.mjs");
+  assert.match(packageJson.scripts.test, /npm run test:ops/);
 });

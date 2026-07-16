@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jihye.portal.content-worker</string>
+  <key>ProgramArguments</key><array>
+    <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/keychain-exec.mjs</string>
+    <string>--account</string><string>{{USER_NAME}}</string>
+    <string>--config</string><string>{{APP_ROOT}}/shared/runtime.env</string>
+    <string>--secret</string><string>ADMIN_SESSION_SECRET=com.jihye.portal.admin-session</string>
+    <string>--secret</string><string>CONTROL_HMAC_SECRET=com.jihye.portal.control-hmac</string>
+    <string>--secret</string><string>HERMES_HMAC_SECRET=com.jihye.portal.hermes-hmac</string>
+    <string>--secret</string><string>PII_ENCRYPTION_KEY=com.jihye.portal.pii-key</string>
+    <string>--secret</string><string>WITHDRAWAL_TOKEN_SECRET=com.jihye.portal.withdrawal-token</string>
+    <string>--</string><string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/apps/control/dist/content-worker.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>20</integer>
+  <key>StandardOutPath</key><string>{{LOG_ROOT}}/content-worker.stdout.log</string>
+  <key>StandardErrorPath</key><string>{{LOG_ROOT}}/content-worker.stderr.log</string>
+</dict></plist>

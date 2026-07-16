@@ -1,0 +1,14 @@
+{
+  "externalPublic": {
+    "url": "https://{{PUBLIC_HOST}}/health/live",
+    "expectedStatus": 200,
+    "expectedText": "ok",
+    "source": "outside-mac-and-lan"
+  },
+  "private": {
+    "backupFreshnessMinutes": 90,
+    "diskFreePercentMinimum": 15,
+    "notificationFailureBacklogMaximum": 0,
+    "tunnelAndServiceAlertsSeparate": true
+  }
+}
