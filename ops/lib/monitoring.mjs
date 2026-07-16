@@ -1,10 +1,21 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readFile, readdir, realpath, statfs } from "node:fs/promises";
+import { readdir, statfs } from "node:fs/promises";
 import { isIP } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import {
+  assertSecureRealDirectory,
+  assertSecureRegularFile,
+  clearProtectedIncidentState,
+  hashSecureRegularFile,
+  loadProtectedIncidentState,
+  readProtectedConfigFile,
+  readSecureRegularFile,
+  writeProtectedIncidentState,
+} from "./monitor-files.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -14,6 +25,7 @@ const MAX_MACHINE_REPORT_BYTES = 16 * 1024;
 const LABEL = /^[A-Za-z0-9.-]{1,255}$/u;
 const MONITOR_KEYCHAIN_SERVICE = "com.jihye.portal.monitor-hermes-hmac";
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const DEFAULT_DATABASE_HELPER = fileURLToPath(new URL("../scripts/monitor-db-check.mjs", import.meta.url));
 
 function fail(code, message) {
   const error = new Error(message);
@@ -58,7 +70,7 @@ function validateConfig(value) {
   if (!exactKeys(external, ["url", "expectedStatus", "expectedText", "source"]) ||
     !exactKeys(local, [
       "backupRoot", "controlReadyUrl", "databasePath", "diskPath", "hermes",
-      "requiredRunningLaunchdLabels", "thresholds", "timeouts",
+      "incidentState", "requiredRunningLaunchdLabels", "thresholds", "timeouts",
     ])) fail("MONITOR_CONFIG_INVALID", "Monitoring config shape is invalid");
 
   const externalUrl = parsedUrl(external.url, "MONITOR_CONFIG_INVALID");
@@ -72,6 +84,14 @@ function validateConfig(value) {
   if (![local.backupRoot, local.databasePath, local.diskPath].every(absolutePath)) {
     fail("MONITOR_CONFIG_INVALID", "Local monitoring paths must be normalized absolute paths");
   }
+  const incidentState = local.incidentState;
+  if (
+    !exactKeys(incidentState, ["cooldownMinutes", "path"]) || !absolutePath(incidentState.path) ||
+    !integer(incidentState.cooldownMinutes, 1, 1_440) ||
+    path.dirname(local.databasePath) !== local.diskPath ||
+    path.dirname(incidentState.path) !== local.diskPath ||
+    incidentState.path === local.databasePath
+  ) fail("MONITOR_CONFIG_INVALID", "Monitor database and incident state must be bounded direct children of the data root");
   const readyUrl = parsedUrl(local.controlReadyUrl, "MONITOR_CONFIG_INVALID");
   if (
     readyUrl.protocol !== "http:" || !literalLoopback(readyUrl) || readyUrl.username || readyUrl.password ||
@@ -133,52 +153,54 @@ export function parseMonitoringConfig(source) {
 
 export async function loadMonitoringConfigFile(configPath) {
   if (!absolutePath(configPath)) fail("MONITOR_CONFIG_PATH_INVALID", "Monitoring config path must be absolute");
-  let metadata;
+  let source;
   try {
-    metadata = await lstat(configPath);
+    source = await readProtectedConfigFile(configPath, {
+      maxBytes: MAX_CONFIG_BYTES,
+      signal: AbortSignal.timeout(3_000),
+    });
   } catch {
     fail("MONITOR_CONFIG_PATH_INVALID", "Monitoring config is unavailable");
   }
-  if (!metadata.isFile() || metadata.isSymbolicLink() || (process.platform !== "win32" && (metadata.mode & 0o022) !== 0)) {
-    fail("MONITOR_CONFIG_PATH_INVALID", "Monitoring config must be a protected regular file");
-  }
-  return parseMonitoringConfig(await readFile(configPath, { encoding: "utf8", signal: AbortSignal.timeout(3_000) }));
-}
-
-async function hashFile(filePath, signal) {
-  const hash = createHash("sha256");
-  const stream = createReadStream(filePath, { signal });
-  for await (const chunk of stream) hash.update(chunk);
-  return hash.digest("hex");
+  return parseMonitoringConfig(source);
 }
 
 export async function loadNewestBackupStatus(backupRoot, { signal, maxArtifactBytes = MAX_BACKUP_BYTES } = {}) {
   if (!absolutePath(backupRoot)) fail("MONITOR_INPUT_INVALID", "Backup root must be absolute");
-  const root = await lstat(backupRoot);
-  if (!root.isDirectory() || root.isSymbolicLink()) fail("MONITOR_INPUT_INVALID", "Backup root must be a real directory");
-  const names = (await readdir(backupRoot))
+  const canonicalRoot = await assertSecureRealDirectory(backupRoot, {
+    code: "MONITOR_INPUT_INVALID",
+    requireProtected: true,
+  });
+  const names = (await readdir(canonicalRoot))
     .filter((name) => /^hourly-\d{8}T\d{6}Z\.json$/u.test(name))
     .toSorted((left, right) => right.localeCompare(left))
     .slice(0, 48);
   for (const name of names) {
     try {
       const statusPath = path.join(backupRoot, name);
-      const statusMetadata = await lstat(statusPath);
-      if (!statusMetadata.isFile() || statusMetadata.isSymbolicLink() || statusMetadata.size > MAX_STATUS_BYTES) continue;
-      const value = JSON.parse(await readFile(statusPath, { encoding: "utf8", signal }));
+      const statusSource = await readSecureRegularFile(statusPath, {
+        code: "MONITOR_BACKUP_INVALID",
+        maxBytes: MAX_STATUS_BYTES,
+        signal,
+        requireProtected: true,
+      });
+      const value = JSON.parse(statusSource.toString("utf8"));
       const createdAtMs = Date.parse(value.createdAt);
       const timestamp = Number.isFinite(createdAtMs)
         ? new Date(createdAtMs).toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z")
         : "";
       const artifactPath = path.join(backupRoot, name.replace(/\.json$/u, ".age"));
-      const artifact = await lstat(artifactPath);
-      if (!artifact.isFile() || artifact.isSymbolicLink() || artifact.size > maxArtifactBytes) continue;
-      const hash = await hashFile(artifactPath, signal);
+      const artifact = await hashSecureRegularFile(artifactPath, {
+        code: "MONITOR_BACKUP_INVALID",
+        maxBytes: maxArtifactBytes,
+        signal,
+        requireProtected: true,
+      });
       if (
         value.verified === true && value.integrity === "ok" && value.kind === "hourly" &&
         name === `hourly-${timestamp}.json` &&
         /^[a-f0-9]{64}$/u.test(value.encryptedSha256 ?? "") &&
-        value.encryptedBytes === artifact.size && value.encryptedSha256 === hash
+        value.encryptedBytes === artifact.size && value.encryptedSha256 === artifact.sha256
       ) return value;
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -219,11 +241,11 @@ function failed(id, code, value) {
   return { id, state: "failed", code, ...(value === undefined ? {} : { value }) };
 }
 
-async function safeCheck(id, code, timeoutMs, operation) {
+async function safeCheck(id, code, timeoutMs, operation, mappedCodes = {}) {
   try {
     return await within(timeoutMs, operation);
-  } catch {
-    return failed(id, code);
+  } catch (error) {
+    return failed(id, mappedCodes[error?.code] ?? code);
   }
 }
 
@@ -250,6 +272,42 @@ function handoffPayload(report) {
   };
 }
 
+function incidentFingerprint(checks) {
+  const canonical = checks
+    .filter(({ state }) => state === "failed")
+    .map(({ id, code }) => `${id}\0${code}`)
+    .toSorted()
+    .join("\n");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function validIncidentState(value) {
+  if (value === undefined) return true;
+  if (!exactKeys(value, ["fingerprint", "formatVersion", "lastSentAt"]) || value.formatVersion !== 1 ||
+    typeof value.fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(value.fingerprint) ||
+    typeof value.lastSentAt !== "string") return false;
+  const timestamp = Date.parse(value.lastSentAt);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value.lastSentAt;
+}
+
+function boundedReport(report) {
+  if (Buffer.byteLength(JSON.stringify(report), "utf8") > MAX_MACHINE_REPORT_BYTES) {
+    fail("MONITOR_REPORT_TOO_LARGE", "Monitoring report exceeded its fixed bound");
+  }
+  return report;
+}
+
+function operationalFailure(base, code) {
+  return boundedReport({
+    ...base,
+    ok: false,
+    checks: [...base.checks, failed("monitor-operations", code)],
+    handoff: "failed",
+    handoffCode: code,
+    exitCode: 3,
+  });
+}
+
 export async function runLocalMonitor({
   config,
   now = new Date(),
@@ -264,6 +322,19 @@ export async function runLocalMonitor({
   if (!adapters || typeof adapters !== "object") fail("MONITOR_ADAPTER_INVALID", "Monitoring adapters are required");
   const local = config.local;
   const checkMs = local.timeouts.checkMs;
+  const observedAt = now.toISOString();
+  if (!dryRun && (!(secret instanceof Uint8Array) || secret.byteLength < 32 || secret.byteLength > 512)) {
+    return boundedReport({
+      schemaVersion: 1,
+      runId,
+      observedAt,
+      ok: false,
+      checks: [failed("monitor-hmac", "MONITOR_HMAC_INVALID")],
+      handoff: "failed",
+      handoffCode: "MONITOR_HMAC_INVALID",
+      exitCode: 3,
+    });
+  }
 
   const checks = [
     safeCheck("backup", "BACKUP_CHECK_FAILED", checkMs, async (signal) => {
@@ -314,45 +385,70 @@ export async function runLocalMonitor({
           ? failed("indexnow-backlog", "INDEXNOW_FAILURE_BACKLOG", indexNow)
           : healthy("indexnow-backlog", indexNow),
       ];
+    }, {
+      MONITOR_CHECK_TIMEOUT: "DB_TIMEOUT",
+      MONITOR_DATABASE_TIMEOUT: "DB_TIMEOUT",
     }),
   ];
 
   const nested = await within(local.timeouts.overallMs, async () => Promise.all(checks));
   const results = nested.flat();
-  const observedAt = now.toISOString();
   const ok = results.every(({ state }) => state === "healthy");
   let handoff = ok ? "not-required" : dryRun ? "dry-run-suppressed" : "failed";
   let exitCode = ok ? 0 : 2;
   const base = { schemaVersion: 1, runId, observedAt, ok, checks: results };
-  if (!ok && !dryRun) {
-    if (!(secret instanceof Uint8Array) || secret.byteLength < 32) {
-      handoff = "failed";
-      exitCode = 3;
-    } else {
-      try {
-        await adapters.deliverHermes({
-          endpoint: local.hermes.endpoint,
-          secret,
-          payload: handoffPayload(base),
-          deliveryId: runId,
-          timestampMs: now.valueOf(),
-          nonce,
-          timeoutMs: local.timeouts.hermesRequestMs,
-          maximumAttempts: local.hermes.maximumAttempts,
-          retryDelayMs: local.hermes.retryDelayMs,
-        });
-        handoff = "delivered";
-      } catch {
-        handoff = "failed";
-        exitCode = 3;
-      }
+  if (dryRun) return boundedReport({ ...base, handoff, exitCode });
+
+  if (ok) {
+    try {
+      await adapters.clearIncidentState(local.incidentState.path);
+    } catch {
+      return operationalFailure(base, "INCIDENT_STATE_CLEAR_FAILED");
     }
+    return boundedReport({ ...base, handoff, exitCode });
   }
-  const report = { ...base, handoff, ...(handoff === "failed" ? { handoffCode: "HERMES_HANDOFF_FAILED" } : {}), exitCode };
-  if (Buffer.byteLength(JSON.stringify(report), "utf8") > MAX_MACHINE_REPORT_BYTES) {
-    fail("MONITOR_REPORT_TOO_LARGE", "Monitoring report exceeded its fixed bound");
+
+  const fingerprint = incidentFingerprint(results);
+  let prior;
+  try {
+    prior = await adapters.loadIncidentState(local.incidentState.path);
+    if (!validIncidentState(prior)) throw new Error("Invalid incident state");
+  } catch {
+    return operationalFailure(base, "INCIDENT_STATE_READ_FAILED");
   }
-  return report;
+  const lastSentAt = prior === undefined ? undefined : Date.parse(prior.lastSentAt);
+  const withinCooldown = prior?.fingerprint === fingerprint && lastSentAt <= now.valueOf() &&
+    now.valueOf() - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
+  if (withinCooldown) {
+    return boundedReport({ ...base, handoff: "cooldown-suppressed", exitCode: 2 });
+  }
+
+  try {
+    await adapters.deliverHermes({
+      endpoint: local.hermes.endpoint,
+      secret,
+      payload: handoffPayload(base),
+      deliveryId: runId,
+      timestampMs: now.valueOf(),
+      nonce,
+      timeoutMs: local.timeouts.hermesRequestMs,
+      maximumAttempts: local.hermes.maximumAttempts,
+      retryDelayMs: local.hermes.retryDelayMs,
+    });
+    handoff = "delivered";
+  } catch {
+    return boundedReport({ ...base, handoff: "failed", handoffCode: "HERMES_HANDOFF_FAILED", exitCode: 3 });
+  }
+  try {
+    await adapters.writeIncidentState(local.incidentState.path, {
+      formatVersion: 1,
+      fingerprint,
+      lastSentAt: observedAt,
+    });
+  } catch {
+    return operationalFailure(base, "INCIDENT_STATE_WRITE_FAILED");
+  }
+  return boundedReport({ ...base, handoff, exitCode });
 }
 
 function numericStat(value) {
@@ -360,10 +456,7 @@ function numericStat(value) {
 }
 
 async function realDirectory(directory) {
-  if (!absolutePath(directory)) fail("MONITOR_INPUT_INVALID", "Monitoring directory path is invalid");
-  const metadata = await lstat(directory);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) fail("MONITOR_INPUT_INVALID", "Monitoring directory must be real");
-  return realpath(directory);
+  return assertSecureRealDirectory(directory, { code: "MONITOR_INPUT_INVALID", requireProtected: true });
 }
 
 function delay(durationMs) {
@@ -375,7 +468,8 @@ function delay(durationMs) {
 export function createSystemMonitoringAdapters({
   execute = execFile,
   fetchImpl = globalThis.fetch,
-  loadDatabase = async () => (await import("better-sqlite3")).default,
+  databaseHelper = DEFAULT_DATABASE_HELPER,
+  nodeBinary = process.execPath,
   userId = process.getuid?.(),
 } = {}) {
   return {
@@ -416,31 +510,64 @@ export function createSystemMonitoringAdapters({
       response.body?.cancel();
       return response.status === 200;
     },
-    readBacklogs: async (databasePath) => {
-      if (!absolutePath(databasePath)) fail("MONITOR_DATABASE_INVALID", "Database path is invalid");
-      const metadata = await lstat(databasePath);
-      if (!metadata.isFile() || metadata.isSymbolicLink()) fail("MONITOR_DATABASE_INVALID", "Database must be a real file");
-      const Database = await loadDatabase();
-      const database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 1_000 });
-      try {
-        database.pragma("query_only = ON");
-        const count = (sql) => Number(database.prepare(sql).get().count);
-        const notificationFailures = count("SELECT count(*) count FROM notification_outbox WHERE state = 'failed'");
-        const indexNowFailures = count("SELECT count(*) count FROM publication_outbox WHERE state = 'failed'");
-        const publicationFailures = count(`
-          SELECT
-            (SELECT count(*) FROM release_activations WHERE state IN ('prepared','switched')) +
-            (SELECT count(*) FROM releases
-              WHERE state = 'failed'
-                AND created_at_ms >= COALESCE(
-                  (SELECT max(created_at_ms) FROM releases WHERE state = 'active'), 0
-                )) AS count
-        `);
-        return { notificationFailures, publicationFailures, indexNowFailures };
-      } finally {
-        database.close();
+    readBacklogs: async (databasePath, { signal, timeoutMs }) => {
+      await assertSecureRealDirectory(path.dirname(databasePath), {
+        code: "MONITOR_DATABASE_INVALID",
+        requireProtected: true,
+      });
+      const { canonicalPath: canonical } = await assertSecureRegularFile(databasePath, {
+        code: "MONITOR_DATABASE_INVALID",
+        requireProtected: true,
+      });
+      if (!absolutePath(databaseHelper) || !absolutePath(nodeBinary)) {
+        fail("MONITOR_DATABASE_INVALID", "Database aggregate helper inputs are invalid");
       }
+      let output;
+      try {
+        output = await execute(nodeBinary, [databaseHelper, "--database", canonical], {
+          encoding: "utf8",
+          env: {
+            LANG: "C",
+            LC_ALL: "C",
+            ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+            ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+            ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+            ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
+          },
+          killSignal: "SIGKILL",
+          maxBuffer: 8 * 1024,
+          shell: false,
+          signal,
+          timeout: Math.max(25, timeoutMs - 25),
+          windowsHide: true,
+        });
+      } catch (error) {
+        if (
+          signal?.aborted || error?.name === "AbortError" || error?.code === "ABORT_ERR" ||
+          error?.code === "ETIMEDOUT" || error?.killed === true || error?.signal === "SIGKILL"
+        ) fail("MONITOR_DATABASE_TIMEOUT", "Database aggregate check timed out");
+        fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate check failed");
+      }
+      const stdout = typeof output?.stdout === "string" ? output.stdout : "";
+      const stderr = typeof output?.stderr === "string" ? output.stderr : "";
+      if (Buffer.byteLength(stdout, "utf8") > 4 * 1024 || stderr !== "" || !/^\{[^\r\n]+\}\n?$/u.test(stdout)) {
+        fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate result was invalid");
+      }
+      let result;
+      try {
+        result = JSON.parse(stdout);
+      } catch {
+        fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate result was invalid");
+      }
+      if (!exactKeys(result, ["indexNowFailures", "notificationFailures", "publicationFailures"]) ||
+        !Object.values(result).every((value) => boundedCount(value) !== undefined)) {
+        fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate result was invalid");
+      }
+      return result;
     },
+    loadIncidentState: async (statePath) => loadProtectedIncidentState(statePath),
+    writeIncidentState: async (statePath, value) => writeProtectedIncidentState(statePath, value),
+    clearIncidentState: async (statePath) => clearProtectedIncidentState(statePath),
     deliverHermes: async ({
       endpoint,
       secret,
@@ -456,7 +583,9 @@ export function createSystemMonitoringAdapters({
       if (!literalLoopback(target) || target.protocol !== "http:" || target.username || target.password || target.search || target.hash) {
         fail("MONITOR_HERMES_INVALID", "Hermes monitor endpoint must be literal loopback");
       }
-      if (!(secret instanceof Uint8Array) || secret.byteLength < 32) fail("MONITOR_HERMES_SECRET_INVALID", "Hermes monitor secret is invalid");
+      if (!(secret instanceof Uint8Array) || secret.byteLength < 32 || secret.byteLength > 512) {
+        fail("MONITOR_HERMES_SECRET_INVALID", "Hermes monitor secret is invalid");
+      }
       const body = JSON.stringify(payload);
       const timestamp = String(timestampMs);
       const nonceValue = nonce();

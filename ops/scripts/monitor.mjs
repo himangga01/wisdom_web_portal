@@ -40,7 +40,7 @@ async function main() {
   if (apply && process.env.WISDOM_KEYCHAIN_EXEC !== "1") {
     throw Object.assign(new Error("Applied monitoring requires Keychain execution"), { code: "MONITOR_KEYCHAIN_EXEC_REQUIRED" });
   }
-  const secret = process.env.MONITOR_HERMES_HMAC_SECRET;
+  const secret = apply ? process.env.MONITOR_HERMES_HMAC_SECRET : undefined;
   const report = await runLocalMonitor({
     config,
     runId: randomUUID(),

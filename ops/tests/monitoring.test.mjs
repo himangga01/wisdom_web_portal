@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +29,10 @@ function configValue(overrides = {}) {
       backupRoot: absoluteFixture("backups"),
       databasePath: absoluteFixture("data/portal.sqlite"),
       diskPath: absoluteFixture("data"),
+      incidentState: {
+        path: absoluteFixture("data/monitor-incident-state.json"),
+        cooldownMinutes: 30,
+      },
       controlReadyUrl: "http://127.0.0.1:8787/health/ready",
       requiredRunningLaunchdLabels: [
         "com.jihye.portal.caddy",
@@ -74,6 +78,9 @@ function healthyAdapters(overrides = {}) {
       publicationFailures: 0,
       indexNowFailures: 0,
     }),
+    loadIncidentState: async () => undefined,
+    writeIncidentState: async () => {},
+    clearIncidentState: async () => {},
     deliverHermes: async () => assert.fail("healthy monitor must not notify Hermes"),
     ...overrides,
   };
@@ -84,6 +91,7 @@ test("monitor config strictly separates external uptime from bounded private che
   assert.equal(parsed.externalPublic.source, "outside-mac-and-lan");
   assert.equal(parsed.local.hermes.keychainService, "com.jihye.portal.monitor-hermes-hmac");
   assert.equal(parsed.local.timeouts.overallMs, 15_000);
+  assert.equal(parsed.local.incidentState.cooldownMinutes, 30);
 
   const unsafe = [
     configValue({ databasePath: "relative.sqlite" }),
@@ -92,6 +100,8 @@ test("monitor config strictly separates external uptime from bounded private che
     configValue({ hermes: { ...configValue().local.hermes, endpoint: "http://192.168.0.2:8788/monitor" } }),
     configValue({ hermes: { ...configValue().local.hermes, keychainService: "com.example.monitor-hmac" } }),
     configValue({ timeouts: { ...configValue().local.timeouts, overallMs: 60_001 } }),
+    configValue({ incidentState: { ...configValue().local.incidentState, path: absoluteFixture("outside/incident.json") } }),
+    configValue({ incidentState: { ...configValue().local.incidentState, cooldownMinutes: 0 } }),
     configValue({ unexpected: true }),
   ];
   for (const value of unsafe) {
@@ -121,6 +131,31 @@ test("a healthy local run is bounded, machine-readable, and sends no handoff", a
   assert.equal(report.handoff, "not-required");
   assert.ok(report.checks.every(({ state }) => state === "healthy"));
   assert.ok(Buffer.byteLength(JSON.stringify(report)) < 16 * 1024);
+});
+
+test("apply mode validates the independent HMAC secret before any health or state operation", async () => {
+  for (const secret of [undefined, Buffer.alloc(31, 1), Buffer.alloc(513, 1)]) {
+    const calls = [];
+    const adapters = Object.fromEntries([
+      "loadNewestBackupStatus", "diskFreePercent", "launchdRunning", "controlReady", "readBacklogs",
+      "loadIncidentState", "writeIncidentState", "clearIncidentState", "deliverHermes",
+    ].map((name) => [name, async () => calls.push(name)]));
+    const report = await runLocalMonitor({
+      config: parseMonitoringConfig(JSON.stringify(configValue())),
+      now: new Date("2026-07-16T01:00:00.000Z"),
+      runId: "00000000-0000-4000-8000-000000000099",
+      dryRun: false,
+      secret,
+    }, adapters);
+
+    assert.equal(report.ok, false);
+    assert.equal(report.exitCode, 3);
+    assert.equal(report.handoff, "failed");
+    assert.equal(report.handoffCode, "MONITOR_HMAC_INVALID");
+    assert.deepEqual(report.checks, [{ id: "monitor-hmac", state: "failed", code: "MONITOR_HMAC_INVALID" }]);
+    assert.deepEqual(calls, []);
+    assert.doesNotMatch(JSON.stringify(report), /secret|keychain|credential/i);
+  }
 });
 
 test("an injected failure produces exactly one signed sanitized Hermes handoff", async (t) => {
@@ -184,6 +219,7 @@ test("an injected failure produces exactly one signed sanitized Hermes handoff",
 
 test("dry-run reports failures without requiring or sending a secret", async () => {
   let sends = 0;
+  let stateOperations = 0;
   const report = await runLocalMonitor({
     config: parseMonitoringConfig(JSON.stringify(configValue())),
     now: new Date("2026-07-16T01:00:00.000Z"),
@@ -192,10 +228,140 @@ test("dry-run reports failures without requiring or sending a secret", async () 
   }, healthyAdapters({
     controlReady: async () => false,
     deliverHermes: async () => sends++,
+    loadIncidentState: async () => stateOperations++,
+    writeIncidentState: async () => stateOperations++,
+    clearIncidentState: async () => stateOperations++,
   }));
   assert.equal(report.ok, false);
   assert.equal(report.handoff, "dry-run-suppressed");
   assert.equal(sends, 0);
+  assert.equal(stateOperations, 0);
+});
+
+test("incident fingerprint suppresses unchanged alerts, changes re-alert, failed delivery is not recorded, and health clears state", async () => {
+  let state;
+  let sends = 0;
+  let writes = 0;
+  let clears = 0;
+  let failDelivery = false;
+  const adapters = healthyAdapters({
+    diskFreePercent: async () => 4,
+    loadIncidentState: async () => state,
+    writeIncidentState: async (_statePath, next) => {
+      writes++;
+      state = structuredClone(next);
+    },
+    clearIncidentState: async () => {
+      clears++;
+      state = undefined;
+    },
+    deliverHermes: async () => {
+      sends++;
+      if (failDelivery) throw Object.assign(new Error("private upstream response"), { code: "PRIVATE" });
+    },
+  });
+  const parsed = parseMonitoringConfig(JSON.stringify(configValue()));
+  const invoke = (runId, now) => runLocalMonitor({
+    config: parsed,
+    now: new Date(now),
+    runId,
+    dryRun: false,
+    secret: Buffer.alloc(32, 5),
+  }, adapters);
+
+  const first = await invoke("00000000-0000-4000-8000-000000000101", "2026-07-16T01:00:00.000Z");
+  assert.equal(first.handoff, "delivered");
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  assert.match(state.fingerprint, /^[a-f0-9]{64}$/u);
+  assert.equal(state.lastSentAt, "2026-07-16T01:00:00.000Z");
+
+  const repeated = await invoke("00000000-0000-4000-8000-000000000102", "2026-07-16T01:05:00.000Z");
+  assert.equal(repeated.ok, false);
+  assert.equal(repeated.exitCode, 2);
+  assert.equal(repeated.handoff, "cooldown-suppressed");
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+
+  adapters.controlReady = async () => false;
+  const changed = await invoke("00000000-0000-4000-8000-000000000103", "2026-07-16T01:10:00.000Z");
+  assert.equal(changed.handoff, "delivered");
+  assert.equal(sends, 2);
+  assert.equal(writes, 2);
+
+  state = undefined;
+  failDelivery = true;
+  const failed = await invoke("00000000-0000-4000-8000-000000000104", "2026-07-16T01:15:00.000Z");
+  assert.equal(failed.handoff, "failed");
+  assert.equal(failed.exitCode, 3);
+  assert.equal(state, undefined);
+  assert.equal(writes, 2);
+  assert.doesNotMatch(JSON.stringify(failed), /private|upstream|response/i);
+
+  failDelivery = false;
+  adapters.diskFreePercent = async () => 80;
+  adapters.controlReady = async () => true;
+  state = { formatVersion: 1, fingerprint: "a".repeat(64), lastSentAt: "2026-07-16T01:00:00.000Z" };
+  const recovered = await invoke("00000000-0000-4000-8000-000000000105", "2026-07-16T01:20:00.000Z");
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.handoff, "not-required");
+  assert.equal(clears, 1);
+  assert.equal(state, undefined);
+  assert.equal(sends, 3);
+});
+
+test("protected incident state survives independent monitor runs and is removed without a resolution alert", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-incident-"));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const statePath = path.join(root, "monitor-incident-state.json");
+  const parsed = parseMonitoringConfig(JSON.stringify(configValue({
+    databasePath: path.join(root, "portal.sqlite"),
+    diskPath: root,
+    incidentState: { path: statePath, cooldownMinutes: 30 },
+  })));
+  let sends = 0;
+  const stateSystem = createSystemMonitoringAdapters();
+  const stateMethods = {
+    loadIncidentState: stateSystem.loadIncidentState,
+    writeIncidentState: stateSystem.writeIncidentState,
+    clearIncidentState: stateSystem.clearIncidentState,
+  };
+  const invoke = (runId, now, diskFreePercent) => runLocalMonitor({
+    config: parsed,
+    runId,
+    now: new Date(now),
+    dryRun: false,
+    secret: Buffer.alloc(32, 8),
+  }, healthyAdapters({
+    ...stateMethods,
+    diskFreePercent,
+    deliverHermes: async () => sends++,
+  }));
+
+  assert.equal((await invoke(
+    "00000000-0000-4000-8000-000000000111",
+    "2026-07-16T01:00:00.000Z",
+    async () => 4,
+  )).handoff, "delivered");
+  const persisted = JSON.parse(await readFile(statePath, "utf8"));
+  assert.match(persisted.fingerprint, /^[a-f0-9]{64}$/u);
+
+  assert.equal((await invoke(
+    "00000000-0000-4000-8000-000000000112",
+    "2026-07-16T01:05:00.000Z",
+    async () => 4,
+  )).handoff, "cooldown-suppressed");
+  assert.equal(sends, 1);
+
+  const recovered = await invoke(
+    "00000000-0000-4000-8000-000000000113",
+    "2026-07-16T01:10:00.000Z",
+    async () => 80,
+  );
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.handoff, "not-required");
+  assert.equal(sends, 1);
+  await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
 });
 
 test("system launchd inspection uses an absolute executable, no shell, and bounded output", async () => {
@@ -238,6 +404,58 @@ test("system backlog reader opens only aggregate operational tables", async () =
     publicationFailures: 2,
     indexNowFailures: 1,
   });
+});
+
+test("hung database helper is hard-killed within the bound and Hermes receives only DB_TIMEOUT", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-timeout-"));
+  const databasePath = path.join(root, "portal.sqlite");
+  const helperPath = path.join(root, "hang-helper.mjs");
+  await writeFile(databasePath, "not customer records", { mode: 0o600 });
+  await writeFile(helperPath, "process.stderr.write('raw customer PII and sqlite details\\n'); setInterval(() => {}, 1_000);", { mode: 0o600 });
+  const system = createSystemMonitoringAdapters({ databaseHelper: helperPath, nodeBinary: process.execPath });
+  const deliveries = [];
+  const config = configValue({
+    databasePath,
+    diskPath: root,
+    incidentState: { path: path.join(root, "monitor-incident-state.json"), cooldownMinutes: 30 },
+    timeouts: { overallMs: 1_000, checkMs: 150, hermesRequestMs: 100 },
+  });
+  const started = performance.now();
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(config)),
+    now: new Date("2026-07-16T01:00:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000106",
+    dryRun: false,
+    secret: Buffer.alloc(32, 6),
+  }, healthyAdapters({
+    readBacklogs: system.readBacklogs,
+    deliverHermes: async (request) => deliveries.push(request.payload),
+  }));
+  const elapsed = performance.now() - started;
+
+  assert.ok(elapsed < 2_000, `monitor exceeded hard bound: ${elapsed}ms`);
+  assert.equal(report.exitCode, 2);
+  assert.equal(report.handoff, "delivered");
+  assert.ok(report.checks.some(({ id, code }) => id === "backlogs" && code === "DB_TIMEOUT"));
+  assert.equal(deliveries.length, 1);
+  assert.deepEqual(deliveries[0].failures, [{ checkId: "backlogs", code: "DB_TIMEOUT" }]);
+  assert.doesNotMatch(JSON.stringify({ report, deliveries }), /customer|sqlite|details|PII/i);
+});
+
+test("corrupt database errors are sanitized and bounded by the child protocol", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-corrupt-"));
+  const databasePath = path.join(root, "portal.sqlite");
+  await writeFile(databasePath, "customer@example.test private record", { mode: 0o600 });
+  const started = performance.now();
+  await assert.rejects(
+    createSystemMonitoringAdapters().readBacklogs(databasePath, { timeoutMs: 500 }),
+    (error) => {
+      assert.equal(error.code, "MONITOR_DATABASE_QUERY_FAILED");
+      assert.doesNotMatch(error.message, /customer|example|private|sqlite|record/i);
+      return true;
+    },
+  );
+  assert.ok(performance.now() - started < 2_000);
 });
 
 test("Hermes handoff retries are bounded and discard private response bodies", async () => {
