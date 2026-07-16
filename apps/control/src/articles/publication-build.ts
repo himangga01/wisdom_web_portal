@@ -13,8 +13,10 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   parsePublicOrigin,
   parseSearchVerificationConfig,
+  publishedConsentBundleSchema,
   publishedManifestSchema,
   type Locale,
+  type PublishedConsentBundle,
 } from "@wisdom/shared";
 
 import {
@@ -57,12 +59,17 @@ export interface PublicationBuildDependencies {
 export interface PublicationReleaseManifest {
   schemaVersion: 1;
   snapshotManifestSha256: string;
+  consentBundle: {
+    bundleId: string;
+    contentFileSha256: string;
+  };
   files: Array<{ path: string; sha256: string; size: number }>;
 }
 
 export interface SealedPublicationRelease {
   manifest: PublicationReleaseManifest;
   manifestSha256: string;
+  consentBundle: PublishedConsentBundle;
   sitemapUrls: string[];
   urlSetSha256: string;
 }
@@ -508,10 +515,16 @@ function parseReleaseManifest(bytes: Buffer): PublicationReleaseManifest {
     throw new Error("PUBLICATION_RELEASE_MANIFEST_NOT_CANONICAL");
   }
   const record = value as Partial<PublicationReleaseManifest>;
-  if (Object.keys(record).sort().join("\0") !== "files\0schemaVersion\0snapshotManifestSha256"
+  if (Object.keys(record).sort().join("\0") !== "consentBundle\0files\0schemaVersion\0snapshotManifestSha256"
     || record.schemaVersion !== 1
     || typeof record.snapshotManifestSha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(record.snapshotManifestSha256)
+    || !record.consentBundle || typeof record.consentBundle !== "object"
+    || Object.keys(record.consentBundle).sort().join("\0") !== "bundleId\0contentFileSha256"
+    || typeof record.consentBundle.bundleId !== "string"
+    || !record.consentBundle.bundleId.trim() || record.consentBundle.bundleId.length > 200
+    || typeof record.consentBundle.contentFileSha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(record.consentBundle.contentFileSha256)
     || !Array.isArray(record.files)) {
     throw new Error("PUBLICATION_RELEASE_MANIFEST_INVALID");
   }
@@ -575,6 +588,25 @@ export function verifyAndSealPublicationBuild(input: {
   if (origin.origin !== input.publicOrigin || origin.username || origin.password) {
     throw new Error("PUBLICATION_ORIGIN_INVALID");
   }
+  const consentBytes = Buffer.from(canonicalJson(
+    publishedConsentBundleSchema.parse(input.snapshot.consentBundle),
+  ), "utf8");
+  const consentPath = join(input.outputDirectory, "consent-bundle.json");
+  try {
+    const metadata = lstatSync(consentPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()
+      || !readFileSync(consentPath).equals(consentBytes)) {
+      throw new Error("PUBLICATION_CONSENT_ARTIFACT_MISMATCH");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "PUBLICATION_CONSENT_ARTIFACT_MISMATCH") {
+      throw error;
+    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error("PUBLICATION_CONSENT_ARTIFACT_INVALID");
+    }
+    writeFileSync(consentPath, consentBytes, { flag: "wx", mode: 0o600 });
+  }
   const files = inventoryFiles(input.outputDirectory, false);
   const paths = new Set(files.map((file) => file.path));
   for (const route of input.requiredCoreRoutes) {
@@ -594,6 +626,10 @@ export function verifyAndSealPublicationBuild(input: {
   const manifest: PublicationReleaseManifest = {
     schemaVersion: 1,
     snapshotManifestSha256: computePublicationSnapshotManifestSha256(input.snapshot),
+    consentBundle: {
+      bundleId: input.snapshot.consentBundle.bundleId,
+      contentFileSha256: sha256Hex(consentBytes),
+    },
     files: files.map((file) => ({
       path: file.path,
       sha256: sha256Hex(file.bytes),
@@ -631,10 +667,29 @@ export function verifySealedPublicationRelease(
       throw new Error("PUBLICATION_RELEASE_HASH_MISMATCH");
     }
   }
+  const consentFile = actualFiles.find(({ path }) => path === "consent-bundle.json");
+  if (!consentFile
+    || sha256Hex(consentFile.bytes) !== manifest.consentBundle.contentFileSha256) {
+    throw new Error("PUBLICATION_RELEASE_CONSENT_HASH_MISMATCH");
+  }
+  let consentBundle;
+  try {
+    const parsed = JSON.parse(consentFile.bytes.toString("utf8"));
+    if (consentFile.bytes.toString("utf8") !== canonicalJson(parsed)) {
+      throw new Error("non-canonical");
+    }
+    consentBundle = publishedConsentBundleSchema.parse(parsed);
+  } catch {
+    throw new Error("PUBLICATION_RELEASE_CONSENT_INVALID");
+  }
+  if (consentBundle.bundleId !== manifest.consentBundle.bundleId) {
+    throw new Error("PUBLICATION_RELEASE_CONSENT_METADATA_MISMATCH");
+  }
   const sitemapPayload = publicationSitemapPayload(actualFiles, expectedOrigin);
   return {
     manifest,
     manifestSha256: sha256Hex(manifestFile.bytes),
+    consentBundle,
     sitemapUrls: sitemapPayload.urls,
     urlSetSha256: sitemapPayload.urlSetSha256,
   };

@@ -4,7 +4,9 @@ import {
   computePublishedConsentDocumentSha256,
   consentVersionSchema,
   LOCALES,
+  publishedConsentBundleSchema,
   type Locale,
+  type PublishedConsentBundle,
 } from "@wisdom/shared";
 
 import type { ControlDatabase } from "../db/client.js";
@@ -32,6 +34,17 @@ export interface ActiveConsentBundle {
   bundleId: string;
   documents: StoredConsentDocument[];
 }
+
+export type ConsentAuthority =
+  | { source: "database"; bundle: PublishedConsentBundle }
+  | {
+      source: "release";
+      releaseId: string;
+      releaseManifestSha256: string;
+      bundle: PublishedConsentBundle;
+    };
+
+export type ConsentAuthorityResolver = () => ConsentAuthority | undefined;
 
 interface ConsentRow {
   id: string;
@@ -210,6 +223,13 @@ export function activateConsentBundle(
 ): void {
   db.sqlite.exec("BEGIN IMMEDIATE");
   try {
+    const pendingPublication = db.sqlite.prepare(`
+      SELECT 1 present FROM release_activations
+      WHERE state IN ('prepared', 'switched') LIMIT 1
+    `).get();
+    if (pendingPublication) {
+      throw new Error("CONSENT_ACTIVATION_BLOCKED_BY_PUBLICATION");
+    }
     const rows = db.sqlite.prepare(
       "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale",
     ).all(bundleId) as ConsentRow[];
@@ -256,28 +276,98 @@ export function getActiveConsentBundle(db: ControlDatabase): ActiveConsentBundle
   return { bundleId, documents: rows.map(toStored) };
 }
 
-export function getPublicConsentDocuments(db: ControlDatabase, locale: Locale) {
-  const bundle = getActiveConsentBundle(db);
-  if (!bundle) return undefined;
-  const privacy = bundle.documents.find((document) => document.locale === locale && document.kind === "privacy");
-  const marketing = bundle.documents.find((document) => document.locale === locale && document.kind === "marketing");
-  if (!privacy || !marketing || privacy.effectiveAtMs === undefined || marketing.effectiveAtMs === undefined) {
+export function getActivePublishedConsentBundle(
+  db: ControlDatabase,
+): PublishedConsentBundle | undefined {
+  const rows = db.sqlite.prepare(
+    "SELECT * FROM consent_documents WHERE state = 'active' ORDER BY kind, locale",
+  ).all() as ConsentRow[];
+  return publishedConsentBundleFromRows(rows);
+}
+
+function publishedConsentBundleFromRows(
+  rows: readonly ConsentRow[],
+): PublishedConsentBundle | undefined {
+  if (!hasCompletePairs(rows) || !hasRequiredRetention(rows) || !hasCanonicalVersions(rows)) {
     return undefined;
   }
-  const publicDocument = (document: StoredConsentDocument, required: boolean) => ({
+  const bundleId = rows[0]?.bundle_id;
+  if (!bundleId || rows.some((row) => row.bundle_id !== bundleId)) return undefined;
+  const documents = LOCALES.flatMap((locale) => (["privacy", "marketing"] as const).map((kind) => {
+    const document = rows.find((candidate) => (
+      candidate.locale === locale && candidate.kind === kind
+    ));
+    if (!document || document.effective_at_ms === null) return undefined;
+    return {
+      kind,
+      locale,
+      version: document.version,
+      title: document.title,
+      bodyMarkdown: document.body_markdown,
+      contentSha256: document.content_sha256.toString("hex"),
+      effectiveAt: new Date(document.effective_at_ms).toISOString(),
+      retentionMonths: document.retention_months,
+      required: kind === "privacy",
+    };
+  }));
+  if (documents.some((document) => document === undefined)) return undefined;
+  const parsed = publishedConsentBundleSchema.safeParse({
+    schemaVersion: 1,
+    bundleId,
+    documents,
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function getPublishedConsentBundleById(
+  db: ControlDatabase,
+  bundleId: string,
+): PublishedConsentBundle | undefined {
+  const rows = db.sqlite.prepare(
+    "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale",
+  ).all(bundleId) as ConsentRow[];
+  return publishedConsentBundleFromRows(rows);
+}
+
+export function createDatabaseConsentAuthorityResolver(
+  db: ControlDatabase,
+): ConsentAuthorityResolver {
+  return () => {
+    const bundle = getActivePublishedConsentBundle(db);
+    return bundle ? { source: "database", bundle } : undefined;
+  };
+}
+
+export function publicConsentDocumentsFromBundle(
+  bundle: PublishedConsentBundle,
+  locale: Locale,
+) {
+  const privacy = bundle.documents.find((document) => (
+    document.locale === locale && document.kind === "privacy"
+  ));
+  const marketing = bundle.documents.find((document) => (
+    document.locale === locale && document.kind === "marketing"
+  ));
+  if (!privacy || !marketing) return undefined;
+  const publicDocument = (document: typeof privacy) => ({
     version: document.version,
     title: document.title,
     bodyMarkdown: document.bodyMarkdown,
-    contentSha256: document.contentSha256.toString("hex"),
-    effectiveAt: new Date(document.effectiveAtMs!).toISOString(),
+    contentSha256: document.contentSha256,
+    effectiveAt: document.effectiveAt,
     retentionMonths: document.retentionMonths,
-    required,
+    required: document.required,
   });
   return {
     locale,
     documents: {
-      privacy: publicDocument(privacy, true),
-      marketing: publicDocument(marketing, false),
+      privacy: publicDocument(privacy),
+      marketing: publicDocument(marketing),
     },
   };
+}
+
+export function getPublicConsentDocuments(db: ControlDatabase, locale: Locale) {
+  const bundle = getActivePublishedConsentBundle(db);
+  return bundle ? publicConsentDocumentsFromBundle(bundle, locale) : undefined;
 }
