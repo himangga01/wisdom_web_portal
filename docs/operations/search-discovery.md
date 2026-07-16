@@ -128,17 +128,17 @@ export NAVER_SITE_VERIFICATION_FILE='naver발급값.html'
 
 ## 8. IndexNow 순서와 재시도
 
-IndexNow 키와 전송은 Control의 durable outbox가 소유합니다. Site는 현재 릴리스의 정렬된 `indexNowUrls`와 안정적인 `releaseSetSha256`만 생성합니다.
+IndexNow 키와 전송은 Control의 durable outbox가 소유합니다. Site는 `sitemap.xml`을 생성하고, Control은 sealed release의 파일 hash를 다시 검증한 뒤 그 파일의 `<loc>`만 읽습니다. 이 집합은 비어 있지 않고, 중복이 없으며, 모두 설정된 공개 원본과 같은 HTTPS origin이어야 합니다. Control은 URL을 정렬하고 `urls.join("\n")`의 SHA-256을 `urlSetSha256`으로 계산합니다. article DB row에서 IndexNow URL을 다시 만들지 않습니다.
 
 1. 승인 manifest로 임시 릴리스 디렉터리를 빌드합니다.
 2. canonical·sitemap·RSS·내부 링크·민감정보·초안 canary 검증을 통과합니다.
 3. 검증된 릴리스를 원자적으로 `current`에 전환합니다.
-4. 전환이 성공한 후에만 같은 호스트의 현재 canonical URL을 outbox에 기록합니다.
-5. `(releaseSetSha256, canonical URL)`로 중복 전송을 방지합니다.
+4. 전환이 성공한 후에만 검증된 target URL 집합과 직전 active release의 검증된 집합을 합쳐 outbox에 기록합니다. 새 릴리스에서 제거되어 이제 404가 되는 URL도 이 한 번의 제출에 포함됩니다.
+5. 정렬된 실제 제출 집합의 `urlSetSha256`으로 중복을 판별합니다. 같은 hash의 pending/processing row는 유지하고, 집합이 바뀌었거나 기존 row가 sent/failed이면 같은 durable row를 새 payload로 pending 상태에 재무장합니다.
 6. HTTP 200은 요청 수락, HTTP 202는 키 검증 대기로 기록합니다. 어느 응답도 색인 완료를 뜻하지 않습니다.
-7. 실패는 outbox 정책으로 재시도하며 요청 본문, 키 또는 URL 목록을 일반 로그에 남기지 않습니다.
+7. payload byte 수, URL 수와 URL 길이 제한을 검증한 뒤에만 전송합니다. payload/reset이 바뀌면 이전 claim의 payload와 fencing token이 더 이상 일치하지 않으므로 늦은 완료는 반영되지 않습니다. 실패는 outbox 정책으로 재시도하며 요청 본문, 키 또는 URL 목록을 일반 로그에 남기지 않습니다.
 
-롤백은 이전의 검증된 정적 릴리스 전체를 다시 `current`로 전환합니다. 이전 manifest를 임의로 재생성하지 않으며, canonical·sitemap·RSS·IndexNow URL 집합도 이전 릴리스와 동일해야 합니다.
+롤백은 이전의 검증된 정적 릴리스 전체를 다시 `current`로 전환합니다. 이전 manifest나 sitemap을 임의로 재생성하지 않습니다. 새 active sitemap 집합은 rollback target과 정확히 같고, IndexNow 제출 payload만 target과 전환 직전 release의 합집합을 사용해 이번 롤백으로 제거되는 URL까지 알립니다. target의 기존 outbox row가 이미 전송되었어도 같은 row를 재무장합니다.
 
 ## 9. 빌드 및 검증 체크리스트
 

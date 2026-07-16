@@ -54,6 +54,8 @@ export interface PublicationReleaseManifest {
 export interface SealedPublicationRelease {
   manifest: PublicationReleaseManifest;
   manifestSha256: string;
+  sitemapUrls: string[];
+  urlSetSha256: string;
 }
 
 function canonicalJson(value: unknown): string {
@@ -473,6 +475,37 @@ function parseReleaseManifest(bytes: Buffer): PublicationReleaseManifest {
   return record as PublicationReleaseManifest;
 }
 
+function publicationSitemapUrls(
+  files: readonly InventoryFile[],
+  expectedOrigin?: string,
+): string[] {
+  const sitemap = files.find(({ path }) => path === "sitemap.xml");
+  if (!sitemap) throw new Error("PUBLICATION_SITEMAP_MISSING");
+  const urls = [...sitemap.bytes.toString("utf8").matchAll(/<loc>([^<]*)<\/loc>/gu)]
+    .map((match) => match[1]!.trim());
+  if (urls.length === 0) throw new Error("PUBLICATION_SITEMAP_URLS_EMPTY");
+  if (new Set(urls).size !== urls.length) {
+    throw new Error("PUBLICATION_SITEMAP_URL_DUPLICATE");
+  }
+  const parsedUrls = urls.map((value) => {
+    try {
+      return new URL(value);
+    } catch {
+      throw new Error("PUBLICATION_SITEMAP_URL_INVALID");
+    }
+  });
+  const sitemapOrigin = expectedOrigin ?? parsedUrls[0]!.origin;
+  for (const url of parsedUrls) {
+    if (url.protocol !== "https:") {
+      throw new Error("PUBLICATION_SITEMAP_HTTPS_REQUIRED");
+    }
+    if (url.origin !== sitemapOrigin) {
+      throw new Error("PUBLICATION_SITEMAP_URL_ORIGIN_INVALID");
+    }
+  }
+  return urls.sort();
+}
+
 export function verifyAndSealPublicationBuild(input: {
   outputDirectory: string;
   snapshot: PublicationSnapshot;
@@ -514,10 +547,13 @@ export function verifyAndSealPublicationBuild(input: {
     flag: "wx",
     mode: 0o600,
   });
-  return verifySealedPublicationRelease(input.outputDirectory);
+  return verifySealedPublicationRelease(input.outputDirectory, input.publicOrigin);
 }
 
-export function verifySealedPublicationRelease(directory: string): SealedPublicationRelease {
+export function verifySealedPublicationRelease(
+  directory: string,
+  expectedOrigin?: string,
+): SealedPublicationRelease {
   const files = inventoryFiles(directory, true);
   const manifestFile = files.find(({ path }) => path === RELEASE_MANIFEST_NAME);
   if (!manifestFile) throw new Error("PUBLICATION_RELEASE_MANIFEST_MISSING");
@@ -536,5 +572,11 @@ export function verifySealedPublicationRelease(directory: string): SealedPublica
       throw new Error("PUBLICATION_RELEASE_HASH_MISMATCH");
     }
   }
-  return { manifest, manifestSha256: sha256Hex(manifestFile.bytes) };
+  const sitemapUrls = publicationSitemapUrls(actualFiles, expectedOrigin);
+  return {
+    manifest,
+    manifestSha256: sha256Hex(manifestFile.bytes),
+    sitemapUrls,
+    urlSetSha256: sha256Hex(sitemapUrls.join("\n")),
+  };
 }

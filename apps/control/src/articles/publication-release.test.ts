@@ -21,6 +21,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createStaticKeyProvider } from "../crypto/index.js";
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
+  claimIndexNowDelivery,
+  completeIndexNowDelivery,
+} from "./indexnow-outbox.js";
+import {
   verifyAndSealPublicationBuild,
   type SealedPublicationRelease,
 } from "./publication-build.js";
@@ -151,6 +155,15 @@ function prepareRelease(snapshot: PublicationSnapshot, outputDirectory: string):
     write(`${document.route.slice(1)}/index.html`, `<html><head><link rel="canonical" href="${config.publicOrigin}${document.route}">${alternates.get(document.revisionId)}</head><body><article>${document.bodyHtml}</article><a href="/">Home</a></body></html>`, outputDirectory);
   }
   write("robots.txt", "User-agent: *\nAllow: /\n", outputDirectory);
+  write("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${[
+    ...snapshot.documents.map(({ route }) => `${config.publicOrigin}${route}`),
+    `${config.publicOrigin}/`,
+    `${config.publicOrigin}/insights`,
+  ].map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
+</urlset>
+`, outputDirectory);
   return verifyAndSealPublicationBuild({
     outputDirectory,
     snapshot,
@@ -253,7 +266,59 @@ describe("journaled publication activation", () => {
       SELECT state, payload_json FROM publication_outbox
     `).get() as { state: string; payload_json: string };
     expect(outbox.state).toBe("pending");
-    expect(JSON.parse(outbox.payload_json).urls).toEqual([
+    const urls = [
+      "https://www.example.com/",
+      "https://www.example.com/insights",
+      "https://www.example.com/insights/procurement-guide",
+    ];
+    expect(JSON.parse(outbox.payload_json)).toEqual({
+      host: "www.example.com",
+      urlSetSha256: createHash("sha256").update(urls.join("\n")).digest("hex"),
+      urls,
+    });
+  });
+
+  it("submits URLs removed from the new sealed sitemap so crawlers can observe their 404s", async () => {
+    const deps = dependencies();
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW - 500, ARTICLE_ID);
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-ko-en",
+      nowMs: NOW,
+    }, config, deps);
+
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'in_review', approved_revision_id = NULL,
+        published_revision_id = NULL, approved_by_admin_id = NULL,
+        approved_at_ms = NULL, published_at_ms = NULL,
+        row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ARTICLE_ID);
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        published_revision_id = NULL, published_at_ms = NULL,
+        row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'ko'
+    `).run(ARTICLE_ID);
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-ko-only",
+      nowMs: NOW + 1,
+    }, config, deps);
+
+    const payload = fixture.db.sqlite.prepare(`
+      SELECT payload_json FROM publication_outbox WHERE release_id = ?
+    `).pluck().get(second.releaseId) as string;
+    expect(JSON.parse(payload).urls).toEqual([
+      "https://www.example.com/",
+      "https://www.example.com/en/insights/procurement-guide",
       "https://www.example.com/insights",
       "https://www.example.com/insights/procurement-guide",
     ]);
@@ -336,6 +401,11 @@ describe("verified publication rollback", () => {
       actorAdminId: ADMIN_ID, requestId: "publish-ko", nowMs: NOW,
     }, config, deps);
     fixture.db.sqlite.prepare(`
+      UPDATE publication_outbox
+      SET state = 'sent', sent_at_ms = ?, updated_at_ms = ?
+      WHERE release_id = ?
+    `).run(NOW + 1, NOW + 1, first.releaseId);
+    fixture.db.sqlite.prepare(`
       UPDATE article_locale_heads SET state = 'approved', approved_revision_id = head_revision_id,
         approved_by_admin_id = ?, approved_at_ms = ?, row_version = 2
       WHERE article_id = ? AND locale = 'en'
@@ -360,6 +430,75 @@ describe("verified publication rollback", () => {
       { locale: "ko", state: "published", published_revision_id: KO_REVISION_ID },
     ]);
     expect(fixture.db.sqlite.prepare("SELECT state FROM releases WHERE id = ?").pluck().get(second.releaseId)).toBe("retired");
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state, attempt_count, sent_at_ms, payload_json
+      FROM publication_outbox WHERE release_id = ?
+    `).get(first.releaseId)).toEqual({
+      state: "pending",
+      attempt_count: 0,
+      sent_at_ms: null,
+      payload_json: JSON.stringify({
+        host: "www.example.com",
+        urlSetSha256: createHash("sha256").update([
+          "https://www.example.com/",
+          "https://www.example.com/en/insights/procurement-guide",
+          "https://www.example.com/insights",
+          "https://www.example.com/insights/procurement-guide",
+        ].join("\n")).digest("hex"),
+        urls: [
+          "https://www.example.com/",
+          "https://www.example.com/en/insights/procurement-guide",
+          "https://www.example.com/insights",
+          "https://www.example.com/insights/procurement-guide",
+        ],
+      }),
+    });
+    expect(fixture.db.sqlite.prepare(
+      "SELECT count(*) count FROM publication_outbox",
+    ).get()).toEqual({ count: 2 });
+  });
+
+  it("fences a stale delivery claim after rollback replaces and resets its payload", async () => {
+    const deps = dependencies();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID, requestId: "publish-before-claim", nowMs: NOW,
+    }, config, deps);
+    const staleClaim = claimIndexNowDelivery(fixture.db, {
+      workerId: "stale-worker",
+      nowMs: NOW + 1,
+      randomBytes: () => Buffer.alloc(32, 41),
+    });
+    expect(staleClaim?.releaseId).toBe(first.releaseId);
+
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = 2
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW + 2, ARTICLE_ID);
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID, requestId: "publish-after-claim", nowMs: NOW + 3,
+    }, config, deps);
+    rollbackPublication(fixture.db, {
+      releaseId: first.releaseId,
+      actorAdminId: ADMIN_ID,
+      requestId: "rollback-resets-claim",
+      nowMs: NOW + 4,
+    }, config, deps);
+
+    expect(completeIndexNowDelivery(fixture.db, staleClaim!, {
+      nowMs: NOW + 5,
+      providerMessageId: "late-success",
+    })).toBe(false);
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state, attempt_count, locked_by, fencing_token, sent_at_ms
+      FROM publication_outbox WHERE release_id = ?
+    `).get(first.releaseId)).toEqual({
+      state: "pending",
+      attempt_count: 0,
+      locked_by: null,
+      fencing_token: null,
+      sent_at_ms: null,
+    });
   });
 
   it("rejects a tampered rollback release before changing the current pointer", async () => {
@@ -407,15 +546,27 @@ describe("publication release retention", () => {
       const directory = join(config.releaseRoot, version);
       mkdirSync(directory);
       const fileBytes = Buffer.from(`release ${version}\n`, "utf8");
+      const sitemapBytes = Buffer.from(
+        `<?xml version="1.0"?><urlset><url><loc>${config.publicOrigin}/</loc></url></urlset>\n`,
+        "utf8",
+      );
       writeFileSync(join(directory, "index.html"), fileBytes);
+      writeFileSync(join(directory, "sitemap.xml"), sitemapBytes);
       const releaseManifest = canonical({
         schemaVersion: 1,
         snapshotManifestSha256: "ab".repeat(32),
-        files: [{
-          path: "index.html",
-          sha256: createHash("sha256").update(fileBytes).digest("hex"),
-          size: fileBytes.byteLength,
-        }],
+        files: [
+          {
+            path: "index.html",
+            sha256: createHash("sha256").update(fileBytes).digest("hex"),
+            size: fileBytes.byteLength,
+          },
+          {
+            path: "sitemap.xml",
+            sha256: createHash("sha256").update(sitemapBytes).digest("hex"),
+            size: sitemapBytes.byteLength,
+          },
+        ],
       });
       writeFileSync(join(directory, ".wisdom-release-manifest.json"), releaseManifest, "utf8");
       const manifestSha = createHash("sha256").update(releaseManifest).digest();

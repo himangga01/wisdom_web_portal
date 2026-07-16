@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,8 +14,20 @@ import {
 const NOW = Date.parse("2026-07-16T08:00:00.000Z");
 const RELEASE_ID = "11111111-1111-4111-8111-111111111111";
 const MANIFEST_SHA256 = Buffer.alloc(32, 17);
+const DEFAULT_URLS = [
+  "https://www.example.com/insights",
+  "https://www.example.com/insights/procurement-guide",
+];
 
 let fixture: TestDatabase;
+
+function payloadJson(urls: readonly string[]): string {
+  return JSON.stringify({
+    host: "www.example.com",
+    urlSetSha256: createHash("sha256").update(urls.join("\n")).digest("hex"),
+    urls,
+  });
+}
 
 function insertActiveRelease(db: ControlDatabase = fixture.db): void {
   db.sqlite.prepare(`
@@ -48,13 +60,7 @@ function insertOutbox(
     id: "22222222-2222-4222-8222-222222222222",
     releaseId: RELEASE_ID,
     manifestSha256: MANIFEST_SHA256,
-    payloadJson: JSON.stringify({
-      host: "www.example.com",
-      urls: [
-        "https://www.example.com/insights",
-        "https://www.example.com/insights/procurement-guide",
-      ],
-    }),
+    payloadJson: payloadJson(DEFAULT_URLS),
     state: "pending" as const,
     attemptCount: 0,
     availableAtMs: NOW,
@@ -114,10 +120,7 @@ describe("IndexNow outbox claim fencing", () => {
       id: "33333333-3333-4333-8333-333333333333",
       releaseId: "55555555-5555-4555-8555-555555555555",
       manifestSha256: secondManifest,
-      payloadJson: JSON.stringify({
-        host: "www.example.com",
-        urls: ["https://www.example.com/insights/visa-guide"],
-      }),
+      payloadJson: payloadJson(["https://www.example.com/insights/visa-guide"]),
     });
     const second = openDatabase(fixture.path);
     try {

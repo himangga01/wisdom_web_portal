@@ -118,7 +118,13 @@ function writeValidBuild(snapshot = fixtureSnapshot()) {
     </head><body><article>${article.bodyHtml}</article><a href="/">Home</a></body></html>`);
   writeFile("_astro/app.abc123.js", "console.log('public');\n");
   writeFile("robots.txt", "User-agent: *\nAllow: /\n");
-  writeFile("sitemap.xml", "<?xml version=\"1.0\"?><urlset></urlset>\n");
+  writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${PUBLIC_ORIGIN}${article.route}</loc></url>
+  <url><loc>${PUBLIC_ORIGIN}/</loc></url>
+  <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>
+</urlset>
+`);
 }
 
 beforeEach(() => {
@@ -226,6 +232,160 @@ describe("isolated Astro publication build", () => {
 });
 
 describe("static release verification", () => {
+  it("exposes the sorted sitemap URL set and its newline-joined SHA-256", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+
+    const sealed = verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    });
+    const sitemapUrls = [
+      `${PUBLIC_ORIGIN}/`,
+      `${PUBLIC_ORIGIN}/insights`,
+      `${PUBLIC_ORIGIN}/insights/procurement-guide`,
+    ];
+
+    expect(sealed.sitemapUrls).toEqual(sitemapUrls);
+    expect(sealed.urlSetSha256).toBe(sha256(sitemapUrls.join("\n")));
+    expect(verifySealedPublicationRelease(join(root, "dist"))).toEqual(sealed);
+  });
+
+  it("keeps core IndexNow URLs non-empty when a sealed release has no articles", () => {
+    const snapshot: PublicationSnapshot = {
+      capturedAtMs: Date.parse("2026-07-16T01:00:00.000Z"),
+      baseReleaseId: null,
+      baseReleaseGeneration: 0,
+      promotions: [],
+      documents: [],
+      entries: [],
+    };
+    writeFile("index.html", '<html><body><a href="/insights">Insights</a></body></html>');
+    writeFile("insights/index.html", '<html><body><a href="/">Home</a></body></html>');
+    writeFile("robots.txt", "User-agent: *\nAllow: /\n");
+    writeFile("sitemap.xml", `<?xml version="1.0"?>
+<urlset>
+  <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>
+  <url><loc>${PUBLIC_ORIGIN}/</loc></url>
+</urlset>
+`);
+
+    const sealed = verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    });
+    expect(sealed.sitemapUrls).toEqual([
+      `${PUBLIC_ORIGIN}/`,
+      `${PUBLIC_ORIGIN}/insights`,
+    ]);
+    expect(sealed.urlSetSha256).toBe(sha256(sealed.sitemapUrls.join("\n")));
+  });
+
+  it("rejects duplicate sitemap URLs", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    const sitemapPath = join(root, "dist", "sitemap.xml");
+    writeFileSync(sitemapPath, readFileSync(sitemapPath, "utf8").replace(
+      "</urlset>", `  <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>\n</urlset>`,
+    ));
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_DUPLICATE");
+  });
+
+  it("rejects cross-origin sitemap URLs", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    const sitemapPath = join(root, "dist", "sitemap.xml");
+    writeFileSync(sitemapPath, readFileSync(sitemapPath, "utf8").replace(
+      `${PUBLIC_ORIGIN}/insights/procurement-guide`,
+      "https://attacker.example/insights/procurement-guide",
+    ));
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_ORIGIN_INVALID");
+  });
+
+  it("rejects malformed sitemap URLs", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    const sitemapPath = join(root, "dist", "sitemap.xml");
+    writeFileSync(sitemapPath, readFileSync(sitemapPath, "utf8").replace(
+      `${PUBLIC_ORIGIN}/insights/procurement-guide`,
+      "/insights/procurement-guide",
+    ));
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_INVALID");
+  });
+
+  it("rejects an empty sitemap URL set", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeFile("sitemap.xml", "<?xml version=\"1.0\"?><urlset></urlset>\n");
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URLS_EMPTY");
+  });
+
+  it("rejects a sealed build with no sitemap", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    rmSync(join(root, "dist", "sitemap.xml"));
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_MISSING");
+  });
+
+  it("rejects non-HTTPS sitemap URLs", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    const sitemapPath = join(root, "dist", "sitemap.xml");
+    writeFileSync(
+      sitemapPath,
+      readFileSync(sitemapPath, "utf8").replaceAll(PUBLIC_ORIGIN, "http://www.example.com"),
+    );
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_HTTPS_REQUIRED");
+  });
+
   it("verifies semantic article HTML, routes, links and hreflang before sealing a sorted manifest", () => {
     const snapshot = fixtureSnapshot();
     writeValidBuild(snapshot);

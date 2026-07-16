@@ -1,4 +1,4 @@
-import { randomBytes as nodeRandomBytes } from "node:crypto";
+import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
 
 import type { ControlDatabase } from "../db/client.js";
 
@@ -287,11 +287,16 @@ function parseIndexNowPayload(payloadJson: string): IndexNowPayload | undefined 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
   const record = parsed as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  if (keys.length !== 2 || keys[0] !== "host" || keys[1] !== "urls") return undefined;
+  if (keys.length !== 3
+    || keys[0] !== "host"
+    || keys[1] !== "urlSetSha256"
+    || keys[2] !== "urls") return undefined;
   if (
     typeof record.host !== "string"
     || record.host !== record.host.toLowerCase()
     || !HOST_PATTERN.test(record.host)
+    || typeof record.urlSetSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(record.urlSetSha256)
     || !Array.isArray(record.urls)
     || record.urls.length < 1
     || record.urls.length > MAX_URLS
@@ -317,6 +322,9 @@ function parseIndexNowPayload(payloadJson: string): IndexNowPayload | undefined 
     ) return undefined;
     unique.add(value);
     urls.push(value);
+  }
+  if (createHash("sha256").update(urls.join("\n")).digest("hex") !== record.urlSetSha256) {
+    return undefined;
   }
   return { host: record.host, urls };
 }

@@ -108,12 +108,6 @@ interface ActivationRow {
 }
 
 const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const localeInsightRoute = {
-  ko: "/insights",
-  en: "/en/insights",
-  "zh-Hans": "/zh-hans/insights",
-  "zh-Hant": "/zh-hant/insights",
-} as const;
 
 function safeUuid(randomUUID: () => string): string {
   const value = randomUUID().toLowerCase();
@@ -374,7 +368,7 @@ function assertBaseReleaseConsistent(
   }
   const path = assertDirectReleasePath(config.releaseRoot, active.path);
   if (current !== path) throw new Error("PUBLICATION_BASE_POINTER_MISMATCH");
-  const verified = verifySealedPublicationRelease(path);
+  const verified = verifySealedPublicationRelease(path, config.publicOrigin);
   if (!active.manifest_sha256.equals(Buffer.from(verified.manifestSha256, "hex"))) {
     throw new Error("PUBLICATION_BASE_MANIFEST_MISMATCH");
   }
@@ -493,22 +487,6 @@ function insertPreparedRelease(
   }).immediate();
 }
 
-function publicationUrls(
-  db: ControlDatabase,
-  releaseId: string,
-  publicOrigin: string,
-): string[] {
-  const rows = db.sqlite.prepare(`
-    SELECT locale, route FROM release_entries WHERE release_id = ? ORDER BY route
-  `).all(releaseId) as Array<{ locale: keyof typeof localeInsightRoute; route: string }>;
-  const routes = new Set<string>();
-  for (const row of rows) {
-    routes.add(localeInsightRoute[row.locale]);
-    routes.add(row.route);
-  }
-  return [...routes].sort().map((route) => `${publicOrigin}${route}`);
-}
-
 function releaseRow(db: ControlDatabase, releaseId: string): ReleaseRow {
   const row = db.sqlite.prepare(`
     SELECT id, version, path, manifest_sha256, state, created_at_ms,
@@ -521,7 +499,7 @@ function releaseRow(db: ControlDatabase, releaseId: string): ReleaseRow {
 
 function verifyReleaseRow(config: PublicationReleaseConfig, row: ReleaseRow): SealedPublicationRelease {
   const path = assertDirectReleasePath(config.releaseRoot, row.path);
-  const verified = verifySealedPublicationRelease(path);
+  const verified = verifySealedPublicationRelease(path, config.publicOrigin);
   if (!row.manifest_sha256.equals(Buffer.from(verified.manifestSha256, "hex"))) {
     throw new Error("PUBLICATION_RELEASE_DATABASE_MANIFEST_MISMATCH");
   }
@@ -625,6 +603,16 @@ function commitActivation(
   if (verified.manifestSha256 !== activation.manifest_sha256.toString("hex")) {
     throw new Error("PUBLICATION_ACTIVATION_MANIFEST_MISMATCH");
   }
+  const previousUrls = activation.previous_release_id
+    ? verifyReleaseRow(config, releaseRow(db, activation.previous_release_id)).sitemapUrls
+    : [];
+  const indexNowUrls = [...new Set([
+    ...verified.sitemapUrls,
+    ...previousUrls,
+  ])].sort();
+  const urlSetSha256 = createHash("sha256")
+    .update(indexNowUrls.join("\n"))
+    .digest("hex");
   const current = readCurrentTarget(config);
   const targetPath = assertDirectReleasePath(config.releaseRoot, target.path);
   if (current !== targetPath) throw new Error("PUBLICATION_ACTIVATION_POINTER_MISMATCH");
@@ -666,14 +654,25 @@ function commitActivation(
     const outboxId = safeUuid(dependencies.randomUUID);
     const payload = JSON.stringify({
       host: new URL(config.publicOrigin).hostname,
-      urls: publicationUrls(db, target.id, config.publicOrigin),
+      urlSetSha256,
+      urls: indexNowUrls,
     });
     db.sqlite.prepare(`
       INSERT INTO publication_outbox (
         id, release_id, event_type, manifest_sha256, payload_json, state,
         available_at_ms, created_at_ms, updated_at_ms
       ) VALUES (?, ?, 'indexnow', ?, ?, 'pending', ?, ?, ?)
-      ON CONFLICT(release_id, event_type, manifest_sha256) DO NOTHING
+      ON CONFLICT(release_id, event_type, manifest_sha256) DO UPDATE SET
+        payload_json = excluded.payload_json,
+        state = 'pending', attempt_count = 0,
+        available_at_ms = excluded.available_at_ms,
+        locked_at_ms = NULL, lease_expires_at_ms = NULL,
+        locked_by = NULL, fencing_token = NULL,
+        last_error_code = NULL, provider_message_id = NULL,
+        updated_at_ms = excluded.updated_at_ms, sent_at_ms = NULL
+      WHERE publication_outbox.state IN ('sent', 'failed')
+        OR json_extract(publication_outbox.payload_json, '$.urlSetSha256')
+          IS NOT json_extract(excluded.payload_json, '$.urlSetSha256')
     `).run(
       outboxId,
       target.id,
@@ -926,7 +925,7 @@ export async function publishApprovedArticles(
     recordBuildFailure(config, error, input.nowMs);
     throw error;
   }
-  const independent = verifySealedPublicationRelease(outputDirectory);
+  const independent = verifySealedPublicationRelease(outputDirectory, config.publicOrigin);
   if (independent.manifestSha256 !== sealed.manifestSha256) {
     throw new Error("PUBLICATION_PREPARED_MANIFEST_MISMATCH");
   }
@@ -935,7 +934,7 @@ export async function publishApprovedArticles(
     throw new Error("PUBLICATION_SNAPSHOT_MANIFEST_MISMATCH");
   }
   renameSync(outputDirectory, finalPath);
-  const finalVerified = verifySealedPublicationRelease(finalPath);
+  const finalVerified = verifySealedPublicationRelease(finalPath, config.publicOrigin);
   insertPreparedRelease(db, keyProvider, snapshot, input, {
     releaseId,
     activationId,
@@ -1026,7 +1025,7 @@ export function reconcilePublicationActivation(
       return { kind: "already-consistent" };
     }
     if (active && current === assertDirectReleasePath(config.releaseRoot, active.path)) {
-      const verified = verifySealedPublicationRelease(current);
+      const verified = verifySealedPublicationRelease(current, config.publicOrigin);
       if (!active.manifest_sha256.equals(Buffer.from(verified.manifestSha256, "hex"))) {
         throw new Error("PUBLICATION_ACTIVE_MANIFEST_MISMATCH");
       }
