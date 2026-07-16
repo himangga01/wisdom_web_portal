@@ -347,6 +347,10 @@ test("monitoring template keeps external uptime separate from executable local c
   assert.equal(parsed.local.thresholds.publicationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.indexNowFailureBacklogMaximum, 0);
   assert.equal(parsed.local.controlReadyUrl, "http://127.0.0.1:8787/health/ready");
+  assert.deepEqual(parsed.local.incidentState, {
+    path: "/Users/wisdom/Library/Application Support/WisdomPortal/monitor-incident-state.json",
+    cooldownMinutes: 30,
+  });
   assert.equal(parsed.local.hermes.keychainService, "com.jihye.portal.monitor-hermes-hmac");
   assert.match(parsed.local.databasePath, /^\/Users\/wisdom\//u);
   assert.doesNotMatch(monitoring, /admin\.example\.test|telegram|api[_-]?key|password/i);
@@ -387,6 +391,10 @@ test("runbooks and release gate require local monitor and independent external u
   assert.match(deployment, /--monitor-config/);
   assert.match(deployment, /launchctl[\s\S]*com\.jihye\.portal\.monitor/i);
   assert.match(incidents, /HERMES_HANDOFF_FAILED[\s\S]*metadata/i);
+  assert.match(deployment, /apply mode[\s\S]*HMAC[\s\S]*before[\s\S]*checks/i);
+  assert.match(incidents, /DB_TIMEOUT[\s\S]*child process[\s\S]*hard timeout/i);
+  assert.match(incidents, /fingerprint[\s\S]*cooldown[\s\S]*no resolution alert/i);
+  assert.match(incidents, /monitor-incident-state\.json[\s\S]*protected[\s\S]*atomic/i);
   assert.match(releaseCandidate, /실제 Mac mini[\s\S]*monitor.*dry-run/i);
   assert.match(releaseCandidate, /Mac.*LAN 밖[\s\S]*별도/i);
   assert.match(incidents, /Telegram bot[\s\S]*직접 호출하지 않는다/i);

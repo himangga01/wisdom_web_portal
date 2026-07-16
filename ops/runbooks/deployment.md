@@ -21,6 +21,12 @@
 10. monitor 설정은 먼저 `node ops/scripts/monitor.mjs --config /Users/wisdom/portal/shared/monitoring.json --validate-only`로 구조만 검증한다. 필요한 서비스와 첫 verified backup이 준비되면 같은 절대 경로에 `--dry-run`을 사용해 실제 사설 검사를 수행하되 Hermes 전송은 억제한다. 출력에는 check ID, 안전한 오류 코드, 숫자 메트릭만 있는지 확인한다.
 11. launchd plist를 `plutil -lint`로 확인하고 사용자 LaunchAgents로 설치한다. `com.jihye.portal.monitor`는 5분마다 Keychain wrapper를 통해 독립 monitor HMAC 하나만 읽는다. 설치 뒤 `launchctl print gui/$(id -u)/com.jihye.portal.monitor`와 `launchctl kickstart -k gui/$(id -u)/com.jihye.portal.monitor`로 첫 실행과 exit status를 확인한다. bootstrap public release 동안에는 tunnel agent를 시작하지 않는다. application과 정상 Wisdom public release를 게시한 뒤 `preflight.mjs`에 `--monitor-config /Users/wisdom/portal/shared/monitoring.json`을 포함한 플래그 없는 외부 preflight가 `monitoringConfigValidated: true`, `tunnelReady: true`를 반환해야만 tunnel을 `launchctl bootstrap`한다. 그 후 Caddy, tunnel, control, worker, monitor 상태와 공개 live 응답을 확인한다.
 
+Applied monitoring has an additional fail-closed preflight. In apply mode, the independent
+Keychain HMAC secret must be present and at least 32 bytes before any local checks, incident
+state reads, or Hermes requests begin. A missing, short, or malformed secret stops the run
+with a sanitized monitor error. `--validate-only` and `--dry-run` never read that secret and
+never send or mutate incident state.
+
 이후 application 배포는 `deploy.mjs`의 dry-run을 확인한 다음 `--apply`한다. apply에는 `--monitor-config`로 release 밖의 보호된 monitoring JSON 절대경로를 전달한다. 새 release에서 Mac native dependency 설치, build, migration을 실행한 뒤 `npm prune --omit=dev --workspaces --include-workspace-root --ignore-scripts`로 실행용 의존성만 남긴다. 운영 CLI와 worker는 `tsx`가 아니라 빌드된 `dist/*.js`를 실행한다. canary live/ready와 manifest 검증을 모두 통과해야 pointer를 전환한다. 전환 후 launchd와 active health가 실패하면 이전 pointer와 서비스를 복구한다. public 정적 산출물은 동일 release ID를 사용해도 별도 public release/pointer 계약으로 게시한다.
 
 앱 배포 내부 preflight만 `--allow-bootstrap-local-staging`을 사용한다. 이 경우 검증된 bootstrap public release를 허용하지만 결과는 반드시 `tunnelReady: false`, `tunnelDisabledVerified: true`이며 Cloudflare Tunnel LaunchAgent는 unloaded 상태여야 한다. Mac 배포 어댑터는 preflight JSON을 직접 파싱하고 이 증명이 빠지거나 모순되면 배포를 중단한다. 정상 Wisdom 발행과 승인된 동의 snapshot을 게시한 뒤, tunnel을 시작하기 직전에 `preflight.mjs`를 이 플래그 없이 다시 실행하여 `tunnelReady: true`를 확인한다. 플래그 없는 외부 공개 preflight는 bootstrap을 거부한다.

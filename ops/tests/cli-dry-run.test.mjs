@@ -50,6 +50,10 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
       backupRoot: path.join(root, "backups"),
       databasePath: path.join(root, "data", "portal.sqlite"),
       diskPath: path.join(root, "data"),
+      incidentState: {
+        path: path.join(root, "data", "monitor-incident-state.json"),
+        cooldownMinutes: 30,
+      },
       controlReadyUrl: "http://127.0.0.1:8787/health/ready",
       requiredRunningLaunchdLabels: ["com.jihye.portal.control"],
       thresholds: {

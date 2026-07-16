@@ -50,6 +50,7 @@ const REQUIRED_ARTIFACTS = [
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
   "ops/scripts/keychain-exec.mjs",
+  "ops/scripts/monitor-db-check.mjs",
   "ops/scripts/monitor.mjs",
   "ops/scripts/preflight.mjs",
   "ops/scripts/recover-lock.mjs",

@@ -9,6 +9,10 @@
     "backupRoot": "{{BACKUP_ROOT}}",
     "databasePath": "{{DATA_ROOT}}/portal.sqlite",
     "diskPath": "{{DATA_ROOT}}",
+    "incidentState": {
+      "path": "{{DATA_ROOT}}/monitor-incident-state.json",
+      "cooldownMinutes": 30
+    },
     "controlReadyUrl": "http://127.0.0.1:{{CONTROL_PORT}}/health/ready",
     "requiredRunningLaunchdLabels": [
       "com.jihye.portal.caddy",

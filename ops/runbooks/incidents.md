@@ -32,6 +32,32 @@ Cloudflare DNS hostname, tunnel ingress, 인증서 상태를 확인한다. apex,
 
 Mac 자체·전원·LAN 전체 장애는 로컬 monitor가 전달할 수 없다. Mac/LAN 밖의 external public uptime 경보를 별도 확인하고, 두 경보가 모두 없을 때도 실제 장비 전원과 네트워크를 독립 점검한다.
 
+### Bounded database check
+
+The queue aggregate check runs in a separate Node child process with SQLite opened read-only
+and with file existence required. The parent applies a hard timeout and forcibly terminates
+the child process; a hung child is reported as `DB_TIMEOUT`. Do not copy raw SQLite errors,
+database bytes, paths, or consultation data into a ticket. Confirm the database is a regular
+non-symlink file under the configured data root, then investigate lock pressure or corruption
+using the database-corruption procedure above.
+`DB_TIMEOUT` therefore means the child process exceeded its hard timeout.
+
+### Repeated incident suppression
+
+For an unhealthy run, the monitor derives a deterministic fingerprint from sorted failing
+check IDs and safe error codes only. Run IDs, timestamps, metric values, and PII are excluded.
+After Hermes accepts an alert, the fingerprint and send time enter a bounded cooldown. The
+same unresolved fingerprint inside that cooldown remains unhealthy but sends no duplicate;
+a changed fingerprint or an expired cooldown sends again. Failed delivery never marks an
+incident as sent. A healthy run clears the state and emits no resolution alert.
+
+The configured `monitor-incident-state.json` is a protected owner-only file below the data
+root. It is written by atomic sibling replacement after a successful delivery. Reject a
+symlinked file or parent, a canonical-path mismatch, an oversized or malformed state file,
+and any path outside the configured data root. Do not manually edit it while the monitor is
+running; if recovery is necessary, stop the launchd job, preserve the file for diagnosis,
+verify the path, and restart the job.
+
 ## rollback
 
 보존된 release ID를 명시하고 manifest/migration compatibility/canary health를 다시 검증한다. 원자적 pointer 전환과 launchd 재시작 후 public/control active health를 확인한다. 실패하면 이전 pointer와 서비스를 복구한다.
