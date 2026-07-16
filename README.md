@@ -90,6 +90,12 @@ npm.cmd run notifications:worker --workspace @wisdom/control
 npm.cmd run dev --workspace @wisdom/control
 ```
 
+동의 bundle의 `consent:activate`는 다음 발행 후보를 선택하는 단계입니다. 현재 공개
+홈페이지와 상담 API는 기존의 검증된 public release를 계속 사용합니다. 활성화 직후
+관리자 `/admin/publish/preview`에서 글이 없어도 가능한 policy-only 발행을 완료해야
+새 동의문이 8개 정책 화면과 상담 접수에 함께 적용됩니다. 전체 절차는
+[`docs/operations/consent-publication.md`](docs/operations/consent-publication.md)를 따릅니다.
+
 동의문 seed 파일은 개인정보·마케팅 문서 각각 4개 언어, 총 8개 문서를 포함해야 합니다. seed는 draft만 만들고 명령 출력의 묶음 SHA-256을 다시 입력해야 활성화됩니다. 보존기간 정리는 기본적으로 dry-run이며 `--apply`가 있을 때만 암호문과 정확검색 인덱스를 제거하고 미발송 아웃박스를 취소합니다.
 
 관리자 CLI 비밀번호는 명령 인자가 아니라 표준 입력 한 줄로만 전달합니다. bootstrap과 MFA 교체가 만드는 등록 JSON은 기존 파일을 덮어쓰지 않으며 POSIX에서는 `0600`, Windows에서는 현재 사용자 SID만 접근 가능한 ACL을 적용합니다. 파일에는 TOTP secret과 10개 복구 코드가 있으므로 인증 앱 등록과 안전한 오프라인 보관을 마친 뒤 일반 공유 폴더에서 제거합니다. CLI는 비밀번호·TOTP·복구 코드를 stdout/stderr에 출력하지 않습니다.

@@ -34,6 +34,19 @@
 
 검색엔진 운영 파일도 verified public release에 포함한다. 배포 후 `/sitemap.xml`은 `Content-Type: application/xml; charset=utf-8`, `/rss.xml`은 `application/rss+xml; charset=utf-8`인지 확인한다. Naver 소유권 확인 raw 파일은 Site와 동일하게 루트의 `naver` + 24~128자리 ASCII 영숫자·밑줄·하이픈 + `.html` 형식만 허용하며 Caddy가 `X-Robots-Tag: noindex, nofollow`를 붙인다. 더 넓은 `/naver*` matcher나 임의 파일명을 허용하지 말고, 파일 변경 시 새 public manifest와 pointer로 게시한다.
 
+## Consent release authority
+
+`consent:activate` only selects the next complete database bundle. The currently sealed
+release remains authoritative for both the public policy pages and consultation intake
+until an administrator completes the verified publish action. Policy-only publication is
+valid when there are no eligible article heads. Follow
+[`docs/operations/consent-publication.md`](../../docs/operations/consent-publication.md)
+and do not start or expose the tunnel while consent readiness is unavailable.
+
+Production Site builds must receive an absolute Control-generated
+`WISDOM_PUBLISHED_CONTENT_DIR`. `build:fixture` is test/local-QA only and must never be
+used for the tunneled public release.
+
 ## FileVault와 전원
 
 FileVault has a pre-login limit: after a cold boot, the user must unlock the volume before user LaunchAgents and Keychain-backed services can run. `autorestart` cannot bypass that user unlock. 원격 무인 복구 계획에 이 제한을 반영한다.

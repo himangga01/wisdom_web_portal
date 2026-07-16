@@ -8,7 +8,12 @@ loadLocalEnvironment();
 const runtime = createControlRuntime();
 try {
   activateConsentBundle(runtime.db, arguments_.bundleId, Date.now(), arguments_.confirmSha);
-  console.log(JSON.stringify({ event: "consent.activated", bundleId: arguments_.bundleId }));
+  console.log(JSON.stringify({
+    event: "consent.activated",
+    bundleId: arguments_.bundleId,
+    publicAuthority: "pending-publication",
+    nextAction: "publish a verified release from /admin/publish/preview",
+  }));
 } finally {
   closeDatabase(runtime.db);
 }

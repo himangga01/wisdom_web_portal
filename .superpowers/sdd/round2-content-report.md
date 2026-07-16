@@ -55,7 +55,8 @@ The snapshot test compares the captured English privacy and marketing records di
 - `apps/site/src/content/published-articles.ts` and `.test.ts` — strict consent bundle loading, inventory enforcement, hash verification, and deep freeze.
 - `apps/site/src/test/published-content.ts` — one canonical content fixture builder for Site tests.
 - `apps/site/src/content/__fixtures__/published-content/consent-bundle.json` and `manifest.json` — E2E fixture bundle and seal.
-- `apps/site/published-content/consent-bundle.json` and `manifest.json` — checked-in non-launch build fixture and seal.
+- `apps/site/scripts/build.mjs` and the root Site build gate — production builds require
+  an absolute Control snapshot; the former tracked production fallback was removed.
 - `apps/site/src/lib/static-paths.ts`, `static-paths.test.ts`, `article-routes.test.ts`, `search/search-index.test.ts`, `components/PublishedArticle.test.ts`, and `pages/[...path].astro` — propagate the sealed bundle through every static route/test fixture.
 - `apps/site/src/components/PublicPage.astro` and `.test.ts` — exact localized escaped policy surfaces and honest one-time-link/support wording.
 - `apps/site/src/content/site-content.ts` — removes hard-coded draft policy bodies/warnings and supplies localized support/withdrawal copy and illustration labels.
@@ -104,9 +105,36 @@ All those regression tests are GREEN in the final commands below.
 - Confirmed no search/IndexNow/JSON-LD or macOS release-lock implementation was changed and `prototypes/` is untouched.
 - Corrected release wording from impossible “privacy non-consent consultation” to “optional marketing non-consent consultation.”
 
+## Follow-up release-authority remediation
+
+The independent review found that snapshot-level parity alone did not make the currently
+served API and static release one authority. The accepted follow-up closes that boundary:
+
+1. The sealed release now inventories canonical `consent-bundle.json` and records its
+   bundle ID and byte SHA-256 in both the release manifest and strict database metadata.
+2. Production consent reads and consultation acceptance resolve the verified active
+   release, exact `public-current` pointer, strict metadata, sealed artifact, and immutable
+   database rows. Any mismatch or pending activation fails closed with HTTP 503.
+3. Policy-only publication is supported when no article head is eligible, so a consent
+   change can move the API and all eight policy DOMs together.
+4. Consent activation is fenced while a release activation is prepared or switched. A
+   long build rechecks the active bundle inside `BEGIN IMMEDIATE`; final rename, seal
+   re-verification, release insert, and activation-journal insert share that boundary.
+5. A production Site build has no checked-in fallback. Missing or relative publication
+   directories fail before Astro, while fixture builds require the explicit `--fixture`
+   path. A boundary test writes a Control snapshot, runs the real Site build, and seals it.
+6. Rollback resolves the retained release's historical sealed bundle and verifies it
+   against immutable database rows, rather than silently substituting the current candidate.
+
+The operational sequence and failure states are documented in
+`docs/operations/consent-publication.md`.
+
 ## Concerns / launch gates
 
-1. The checked-in consent content is a deterministic non-launch test/build fixture, including script-like text used to prove escaping. Production publication must use the Control-generated activated snapshot via `WISDOM_PUBLISHED_CONTENT_DIR`; do not expose the checked-in fixture through the tunnel.
+1. The fixture under `apps/site/src/content/__fixtures__` is deterministic non-launch
+   test content, including script-like text used to prove escaping. Production publication
+   has no tracked fallback and must use the Control-generated absolute snapshot via
+   `WISDOM_PUBLISHED_CONTENT_DIR`; never expose the explicit fixture build through the tunnel.
 2. Final Korean, English, Simplified Chinese, and Traditional Chinese consent text still requires representative/privacy-operator review. Professional legal/advertising review is an external approval, not something tests can supply.
 3. The approved 24-month marketing path retains the full encrypted consultation envelope, not only contact fields. Launch remains gated on explicit documented approval of that scope.
 4. The representative portrait remains optional and was not fabricated. The brand illustration is the truthful launch-safe default until an approved photo asset is supplied.
