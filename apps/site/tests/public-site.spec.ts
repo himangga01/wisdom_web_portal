@@ -370,6 +370,7 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
 });
 
 test("reloads stale consent, clears choices, and requires a fresh explicit agreement", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   let consentLoads = 0;
   let submissions = 0;
   await page.route("**/api/v1/consent-documents**", async (route) => {
@@ -428,6 +429,7 @@ test("reloads stale consent, clears choices, and requires a fresh explicit agree
 });
 
 test("reuses an idempotency key for retries and rotates it when the submission changes", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   const idempotencyKeys: string[] = [];
   await page.route("**/api/v1/consent-documents**", async (route) => {
     await route.fulfill({
@@ -469,9 +471,49 @@ test("reuses an idempotency key for retries and rotates it when the submission c
   await page.fill('[name="message"]', "Please review our public procurement registration plan.");
   await page.check('[name="privacyConsent"]');
   const submit = page.getByRole("button", { name: "Send consultation request" });
+  await page.evaluate(() => {
+    const form = document.querySelector<HTMLFormElement>("[data-consultation-form]");
+    const status = document.querySelector<HTMLElement>("[data-form-status]");
+    const button = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const textContent = Object.getOwnPropertyDescriptor(Node.prototype, "textContent");
+    if (!form || !status || !button || !textContent?.get || !textContent.set) {
+      throw new Error("Consultation form status instrumentation is unavailable");
+    }
+    const snapshots: Array<{ state: string; submitDisabled: boolean; formBusy: string | null }> = [];
+    Object.defineProperty(status, "textContent", {
+      configurable: true,
+      get() {
+        return textContent.get?.call(this) ?? null;
+      },
+      set(value) {
+        if (status.dataset.state === "error" || status.dataset.state === "success") {
+          snapshots.push({
+            state: status.dataset.state,
+            submitDisabled: button.disabled,
+            formBusy: form.getAttribute("aria-busy"),
+          });
+        }
+        textContent.set?.call(this, value);
+      },
+    });
+    (window as Window & { __terminalStatusSnapshots?: typeof snapshots }).__terminalStatusSnapshots = snapshots;
+  });
 
   await submit.click();
   await expect(page.locator("[data-form-status]")).toHaveAttribute("role", "alert");
+  expect(await page.evaluate(() => (
+    window as Window & {
+      __terminalStatusSnapshots?: Array<{
+        state: string;
+        submitDisabled: boolean;
+        formBusy: string | null;
+      }>;
+    }
+  ).__terminalStatusSnapshots?.at(-1))).toEqual({
+    state: "error",
+    submitDisabled: false,
+    formBusy: null,
+  });
   await submit.click();
   await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
   expect(idempotencyKeys[0]).toMatch(

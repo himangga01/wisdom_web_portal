@@ -179,6 +179,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
       void (async () => {
         const originalSubmitLabel = submit?.textContent ?? "";
+        let terminalStatus: { state: "success" | "error"; message: string } | undefined;
         submitting = true;
         form.setAttribute("aria-busy", "true");
         if (submit) {
@@ -192,7 +193,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
           try {
             submission = buildConsultationSubmission(submissionData, consentAtSubmit);
           } catch {
-            showStatus("error", form.dataset.statusInvalid ?? "");
+            terminalStatus = { state: "error", message: form.dataset.statusInvalid ?? "" };
             return;
           }
 
@@ -206,19 +207,22 @@ export function initializeConsultationForms(documentRef: Document = document): v
                 if (selectedLocale() === submissionLocale) {
                   await refreshConsent(submissionLocale);
                 }
-                showStatus("error", form.dataset.statusConsentUpdated ?? "");
+                terminalStatus = {
+                  state: "error",
+                  message: form.dataset.statusConsentUpdated ?? "",
+                };
                 return;
               }
-              showStatus("error", form.dataset.statusFailure ?? "");
+              terminalStatus = { state: "error", message: form.dataset.statusFailure ?? "" };
               return;
             }
             const message = (form.dataset.statusSuccess ?? "").replace(
               "{receiptId}",
               result.receipt.receiptId,
             );
-            showStatus("success", message);
+            terminalStatus = { state: "success", message };
           } catch {
-            showStatus("error", form.dataset.statusFailure ?? "");
+            terminalStatus = { state: "error", message: form.dataset.statusFailure ?? "" };
           }
         } finally {
           submitting = false;
@@ -227,6 +231,9 @@ export function initializeConsultationForms(documentRef: Document = document): v
             submit.textContent = originalSubmitLabel;
           }
           syncSubmitAvailability();
+          if (terminalStatus) {
+            showStatus(terminalStatus.state, terminalStatus.message);
+          }
         }
       })();
     });
