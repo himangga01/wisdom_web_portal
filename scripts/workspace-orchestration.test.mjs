@@ -48,6 +48,18 @@ test("keeps the orchestration contract in the root test and verify flows", () =>
   assert.match(packageJson.scripts.test, /npm run test:ops/);
 });
 
+test("builds Control before Ops tests import its dist output", () => {
+  const controlBuild = "npm run build --workspace @wisdom/control";
+  const controlBuildIndex = packageJson.scripts.test.indexOf(controlBuild);
+  const opsTestIndex = packageJson.scripts.test.indexOf("npm run test:ops");
+
+  assert.notEqual(controlBuildIndex, -1, "root test must build @wisdom/control");
+  assert.ok(
+    opsTestIndex > controlBuildIndex,
+    "Ops tests must run after the Control dist build",
+  );
+});
+
 test("keeps raw Site production builds gated and opts root verification into fixtures explicitly", () => {
   assert.equal(sitePackageJson.scripts.build, "node ./scripts/build.mjs");
   assert.equal(sitePackageJson.scripts["build:fixture"], "node ./scripts/build.mjs --fixture");

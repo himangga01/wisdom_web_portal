@@ -35,6 +35,10 @@ test("canonical publication fixtures stay LF-only across Git checkouts", () => {
   assert.equal(existsSync(attributesPath), true, ".gitattributes must pin canonical fixture bytes");
   assert.match(
     readFileSync(attributesPath, "utf8"),
+    /^\* text=auto eol=lf$/m,
+  );
+  assert.match(
+    readFileSync(attributesPath, "utf8"),
     /^apps\/site\/src\/content\/__fixtures__\/published-content\/\*\* text eol=lf$/m,
   );
 
