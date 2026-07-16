@@ -1,7 +1,11 @@
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 
-import { parseEnvironment, type EnvironmentSource } from "@wisdom/shared";
+import {
+  parseEnvironment,
+  parseSearchVerificationConfig,
+  type EnvironmentSource,
+} from "@wisdom/shared";
 
 import { createStaticKeyProvider, type KeyMaterial, type KeyProvider } from "./crypto/index.js";
 import { isFrozenAdminPasswordHash } from "./auth/password.js";
@@ -86,6 +90,14 @@ function parsePublicationConfig(
   const siteSourceRoot = publicationPath(source, "SITE_SOURCE_ROOT");
   const nodeBinary = publicationPath(source, "NODE_BINARY");
   const npmBinary = publicationPath(source, "NPM_BINARY");
+  const searchVerification = parseSearchVerificationConfig({
+    ...(source.NAVER_SITE_VERIFICATION_META !== undefined
+      ? { NAVER_SITE_VERIFICATION_META: source.NAVER_SITE_VERIFICATION_META }
+      : {}),
+    ...(source.NAVER_SITE_VERIFICATION_FILE !== undefined
+      ? { NAVER_SITE_VERIFICATION_FILE: source.NAVER_SITE_VERIFICATION_FILE }
+      : {}),
+  });
   if (new Set([releaseRoot, currentLink, siteSourceRoot]).size !== 3) {
     throw new Error("Publication roots and current link must be distinct");
   }
@@ -106,6 +118,12 @@ function parsePublicationConfig(
     requiredCoreRoutes: Object.freeze([...REQUIRED_PUBLICATION_ROUTES]),
     forbiddenCanaries: Object.freeze(["DRAFT_PRIVATE_CANARY", "CONSULTATION_PRIVATE_CANARY"]),
     publicOrigin,
+    ...(searchVerification.naverMetaToken
+      ? { naverSiteVerificationMeta: searchVerification.naverMetaToken }
+      : {}),
+    ...(searchVerification.naverFile
+      ? { naverSiteVerificationFile: searchVerification.naverFile.filename }
+      : {}),
   });
 }
 

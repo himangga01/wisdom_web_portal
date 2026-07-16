@@ -54,6 +54,17 @@ async function render(relativePath, extra = {}) {
   });
 }
 
+test("operator environment templates expose exactly-one Naver verification settings as opt-in", async () => {
+  const rootExample = await readFile(path.resolve(opsRoot, "../.env.example"), "utf8");
+  const runtime = await readFile(path.join(opsRoot, "config/runtime.env.template"), "utf8");
+
+  for (const source of [rootExample, runtime]) {
+    assert.match(source, /^# NAVER_SITE_VERIFICATION_META=your-token-here$/m);
+    assert.match(source, /^# NAVER_SITE_VERIFICATION_FILE=naver-site-verification\.html$/m);
+    assert.doesNotMatch(source, /^NAVER_SITE_VERIFICATION_(?:META|FILE)=/m);
+  }
+});
+
 test("Caddy is loopback-only and separates apex, public, and admin hosts", async () => {
   const caddy = await render("caddy/Caddyfile.template");
 

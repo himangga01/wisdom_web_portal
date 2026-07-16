@@ -29,6 +29,8 @@ import type { PublicationSnapshot } from "./publication-snapshot.js";
 const ARTICLE_ID = "11111111-1111-4111-8111-111111111111";
 const REVISION_ID = "22222222-2222-4222-8222-222222222222";
 const PUBLIC_ORIGIN = "https://www.example.com";
+const PRODUCTION_PUBLIC_ORIGIN = "https://www.jihye-office.kr";
+const NAVER_META_TOKEN = "unit_test_naver_meta_token_1234567890";
 const BODY = "## Complete answer\n\nSafe public guidance.\n";
 const SOURCES = [{
   id: "official",
@@ -139,6 +141,8 @@ describe("isolated Astro publication build", () => {
       npmBinary: resolve(root, "bin", "npm"),
       nodeBinary: resolve(root, "bin", "node"),
       timeoutMs: 120_000,
+      publicOrigin: PRODUCTION_PUBLIC_ORIGIN,
+      naverSiteVerificationMeta: NAVER_META_TOKEN,
     }, {
       runProcess(request) {
         observed = request;
@@ -154,8 +158,10 @@ describe("isolated Astro publication build", () => {
         CI: "1",
         HOME: resolve(root, "home"),
         NODE_ENV: "production",
+        NAVER_SITE_VERIFICATION_META: NAVER_META_TOKEN,
         NO_COLOR: "1",
         PATH: dirname(resolve(root, "bin", "node")),
+        PUBLIC_ORIGIN: PRODUCTION_PUBLIC_ORIGIN,
         WISDOM_PUBLISHED_CONTENT_DIR: resolve(root, "snapshot"),
       },
       timeoutMs: 120_000,
@@ -163,6 +169,44 @@ describe("isolated Astro publication build", () => {
       stderrLimit: 65_536,
     });
     expect(JSON.stringify(observed)).not.toContain("SECRET");
+  });
+
+  it("rejects non-exact HTTPS origins and ambiguous Naver verification before spawning", async () => {
+    let calls = 0;
+    const dependencies = {
+      runProcess() {
+        calls += 1;
+        return Promise.resolve({ exitCode: 0, stdout: "ok", stderr: "" });
+      },
+    };
+    const input = {
+      siteSourceRoot: resolve(root, "site"),
+      snapshotDirectory: resolve(root, "snapshot"),
+      outputDirectory: resolve(root, "dist"),
+      buildHome: resolve(root, "home"),
+      npmBinary: resolve(root, "bin", "npm"),
+      nodeBinary: resolve(root, "bin", "node"),
+      timeoutMs: 120_000,
+    };
+
+    for (const publicOrigin of [
+      "http://www.jihye-office.kr",
+      "https://www.jihye-office.kr/path",
+      "https://www.jihye-office.kr/",
+      "https://www.jihye-office.kr:8443",
+      "https://www.example.test",
+      "https://WWW.jihye-office.kr",
+    ]) {
+      await expect(runPublicationBuild({ ...input, publicOrigin }, dependencies))
+        .rejects.toThrow("PUBLICATION_ORIGIN_INVALID");
+    }
+    await expect(runPublicationBuild({
+      ...input,
+      publicOrigin: PRODUCTION_PUBLIC_ORIGIN,
+      naverSiteVerificationMeta: NAVER_META_TOKEN,
+      naverSiteVerificationFile: "naverunit_test_file_token_1234567890.html",
+    }, dependencies)).rejects.toThrow("SEARCH_VERIFICATION_AMBIGUOUS");
+    expect(calls).toBe(0);
   });
 
   it("rejects a failed build without accepting or mutating an existing public release", async () => {
@@ -174,6 +218,7 @@ describe("isolated Astro publication build", () => {
       npmBinary: resolve(root, "bin", "npm"),
       nodeBinary: resolve(root, "bin", "node"),
       timeoutMs: 120_000,
+      publicOrigin: PRODUCTION_PUBLIC_ORIGIN,
     }, {
       runProcess: () => Promise.resolve({ exitCode: 2, stdout: "", stderr: "safe failure" }),
     })).rejects.toThrow("PUBLICATION_BUILD_FAILED");

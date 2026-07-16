@@ -46,5 +46,8 @@ describe("search ownership verification configuration", () => {
       NAVER_SITE_VERIFICATION_META: "valid_test_meta_token_1234567890",
       NAVER_SITE_VERIFICATION_FILE: "navervalid_test_file_1234567890.html",
     })).toThrow("SEARCH_VERIFICATION_AMBIGUOUS");
+    expect(() => parseSearchVerificationConfig({
+      NAVER_SITE_VERIFICATION_META: "valid_test_meta_token_1234567890\n",
+    })).toThrow("SEARCH_VERIFICATION_INVALID");
   });
 });

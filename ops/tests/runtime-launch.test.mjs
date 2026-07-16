@@ -33,6 +33,7 @@ test("runtime config accepts only the non-secret allowlist", () => {
     "NODE_BINARY=/opt/homebrew/bin/node",
     "NPM_BINARY=/opt/homebrew/bin/npm",
     "PUBLICATION_BUILD_TIMEOUT_MS=300000",
+    "NAVER_SITE_VERIFICATION_META=unit_test_naver_meta_token_1234567890",
     "INDEXNOW_KEYCHAIN_SERVICE=com.jihye.portal.indexnow",
     "INDEXNOW_KEY_LOCATION=https://www.example.test/indexnow-key.txt",
     "INDEXNOW_TIMEOUT_MS=10000",
@@ -61,6 +62,7 @@ test("runtime config accepts only the non-secret allowlist", () => {
     NODE_BINARY: "/opt/homebrew/bin/node",
     NPM_BINARY: "/opt/homebrew/bin/npm",
     PUBLICATION_BUILD_TIMEOUT_MS: "300000",
+    NAVER_SITE_VERIFICATION_META: "unit_test_naver_meta_token_1234567890",
     INDEXNOW_KEYCHAIN_SERVICE: "com.jihye.portal.indexnow",
     INDEXNOW_KEY_LOCATION: "https://www.example.test/indexnow-key.txt",
     INDEXNOW_TIMEOUT_MS: "10000",
@@ -73,6 +75,10 @@ test("runtime config accepts only the non-secret allowlist", () => {
     CODEX_TIMEOUT_MS: "120000",
     ADMIN_DUMMY_PASSWORD_HASH: hash,
   });
+  assert.deepEqual(
+    parseRuntimeConfig("NAVER_SITE_VERIFICATION_FILE=naverunit_test_file_token_1234567890.html\n"),
+    { NAVER_SITE_VERIFICATION_FILE: "naverunit_test_file_token_1234567890.html" },
+  );
 
   for (const line of [
     "PII_ENCRYPTION_KEY=not-allowed-here",

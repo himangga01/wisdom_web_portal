@@ -48,6 +48,8 @@ export interface PublicationReleaseConfig {
   requiredCoreRoutes: readonly string[];
   forbiddenCanaries: readonly string[];
   publicOrigin: string;
+  naverSiteVerificationMeta?: string;
+  naverSiteVerificationFile?: string;
 }
 
 export type PublicationActivationFaultPoint =
@@ -282,6 +284,13 @@ async function defaultPrepareRelease(input: {
     npmBinary: input.config.npmBinary,
     nodeBinary: input.config.nodeBinary,
     timeoutMs: input.config.buildTimeoutMs,
+    publicOrigin: input.config.publicOrigin,
+    ...(input.config.naverSiteVerificationMeta
+      ? { naverSiteVerificationMeta: input.config.naverSiteVerificationMeta }
+      : {}),
+    ...(input.config.naverSiteVerificationFile
+      ? { naverSiteVerificationFile: input.config.naverSiteVerificationFile }
+      : {}),
   });
   return verifyAndSealPublicationBuild({
     outputDirectory: input.outputDirectory,

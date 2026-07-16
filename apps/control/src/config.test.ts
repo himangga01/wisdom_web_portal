@@ -82,6 +82,7 @@ describe("control environment", () => {
       PII_ACTIVE_KEY_ID: "pii-v2",
       PII_PREVIOUS_KEYS_JSON: JSON.stringify({ "pii-v1": "e".repeat(32) }),
       ...origins,
+      NAVER_SITE_VERIFICATION_META: "unit_test_naver_meta_token_1234567890",
       CONTROL_PORT: "9876",
     });
     expect(config.port).toBe(9876);
@@ -97,6 +98,7 @@ describe("control environment", () => {
       npmBinary: secrets.NPM_BINARY,
       nodeBinary: secrets.NODE_BINARY,
       publicOrigin: origins.PUBLIC_ORIGIN,
+      naverSiteVerificationMeta: "unit_test_naver_meta_token_1234567890",
     });
     expect(config.indexNow).toEqual({
       endpoint: "https://api.indexnow.org/indexnow",
@@ -104,6 +106,38 @@ describe("control environment", () => {
       keyLocation: secrets.INDEXNOW_KEY_LOCATION,
       timeoutMs: 10_000,
     });
+  });
+
+  it("normalizes one optional Naver verification mode and rejects ambiguous or multiline values safely", () => {
+    const base = {
+      NODE_ENV: "production",
+      DATABASE_PATH: "./data/wisdom.sqlite",
+      ...secrets,
+      ...origins,
+    };
+    const filename = "naverunit_test_file_token_1234567890.html";
+    expect(parseControlConfig({
+      ...base,
+      NAVER_SITE_VERIFICATION_FILE: filename,
+    }).publication).toMatchObject({ naverSiteVerificationFile: filename });
+    expect(parseControlConfig({
+      ...base,
+      NAVER_SITE_VERIFICATION_META: "your-token-here",
+    }).publication).not.toHaveProperty("naverSiteVerificationMeta");
+    expect(() => parseControlConfig({
+      ...base,
+      NAVER_SITE_VERIFICATION_META: "unit_test_naver_meta_token_1234567890",
+      NAVER_SITE_VERIFICATION_FILE: filename,
+    })).toThrow("SEARCH_VERIFICATION_AMBIGUOUS");
+
+    const multiline = "unit_test_naver_meta_token_1234567890\n";
+    try {
+      parseControlConfig({ ...base, NAVER_SITE_VERIFICATION_META: multiline });
+      throw new Error("expected Naver verification validation to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ message: "SEARCH_VERIFICATION_INVALID" });
+      expect((error as Error).message).not.toContain(multiline);
+    }
   });
 
   it("fails production closed when any independent secret is missing, reused, or test-only", () => {

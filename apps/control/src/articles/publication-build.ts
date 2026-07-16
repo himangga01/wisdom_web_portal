@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
-import { publishedManifestSchema, type Locale } from "@wisdom/shared";
+import {
+  parseSearchVerificationConfig,
+  publishedManifestSchema,
+  type Locale,
+} from "@wisdom/shared";
 
 import type { PublicationSnapshot } from "./publication-snapshot.js";
 
@@ -19,6 +23,13 @@ const MAX_RELEASE_MANIFEST_BYTES = 2 * 1_048_576;
 const MAX_RELEASE_FILE_BYTES = 16 * 1_048_576;
 const MAX_RELEASE_BYTES = 256 * 1_048_576;
 const LAUNCH_LOCALES = new Set<Locale>(["ko", "en", "zh-Hans", "zh-Hant"]);
+const NON_PRODUCTION_PUBLIC_HOSTS = new Set([
+  "example.com",
+  "www.example.com",
+  "localhost",
+  "127.0.0.1",
+  "::1",
+]);
 
 export interface PublicationProcessRequest {
   command: string;
@@ -61,6 +72,35 @@ function sha256Hex(value: string | Uint8Array): string {
 
 function requireAbsolutePath(value: string, code: string): void {
   if (!isAbsolute(value)) throw new Error(code);
+}
+
+function parsePublicationPublicOrigin(value: string): string {
+  if (!value || value.trim() !== value || value.endsWith("/")) {
+    throw new Error("PUBLICATION_ORIGIN_INVALID");
+  }
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const nonProduction = NON_PRODUCTION_PUBLIC_HOSTS.has(hostname)
+      || hostname.endsWith(".test")
+      || hostname.endsWith(".example")
+      || hostname.endsWith(".invalid")
+      || /(?:^|\.)(?:staging|stage|preview|dev|development)(?:\.|$)/.test(hostname);
+    if (
+      url.protocol !== "https:"
+      || url.username
+      || url.password
+      || url.pathname !== "/"
+      || url.search
+      || url.hash
+      || url.port
+      || url.origin !== value
+      || nonProduction
+    ) throw new Error("PUBLICATION_ORIGIN_INVALID");
+    return url.origin;
+  } catch {
+    throw new Error("PUBLICATION_ORIGIN_INVALID");
+  }
 }
 
 function requireRealDirectory(value: string, code: string, allowSymlink = false): string {
@@ -132,6 +172,9 @@ export async function runPublicationBuild(
     npmBinary: string;
     nodeBinary: string;
     timeoutMs: number;
+    publicOrigin: string;
+    naverSiteVerificationMeta?: string;
+    naverSiteVerificationFile?: string;
   },
   dependencies: PublicationBuildDependencies = { runProcess: defaultRunProcess },
 ): Promise<void> {
@@ -145,6 +188,15 @@ export async function runPublicationBuild(
     "PUBLICATION_SNAPSHOT_ROOT_INVALID",
   );
   const buildHome = requireRealDirectory(input.buildHome, "PUBLICATION_BUILD_HOME_INVALID");
+  const publicOrigin = parsePublicationPublicOrigin(input.publicOrigin);
+  const verification = parseSearchVerificationConfig({
+    ...(input.naverSiteVerificationMeta !== undefined
+      ? { NAVER_SITE_VERIFICATION_META: input.naverSiteVerificationMeta }
+      : {}),
+    ...(input.naverSiteVerificationFile !== undefined
+      ? { NAVER_SITE_VERIFICATION_FILE: input.naverSiteVerificationFile }
+      : {}),
+  });
   requireAbsolutePath(input.outputDirectory, "PUBLICATION_OUTPUT_PATH_INVALID");
   requireAbsolutePath(input.npmBinary, "PUBLICATION_NPM_BINARY_INVALID");
   requireAbsolutePath(input.nodeBinary, "PUBLICATION_NODE_BINARY_INVALID");
@@ -170,8 +222,15 @@ export async function runPublicationBuild(
       CI: "1",
       HOME: buildHome,
       NODE_ENV: "production",
+      ...(verification.naverMetaToken
+        ? { NAVER_SITE_VERIFICATION_META: verification.naverMetaToken }
+        : {}),
+      ...(verification.naverFile
+        ? { NAVER_SITE_VERIFICATION_FILE: verification.naverFile.filename }
+        : {}),
       NO_COLOR: "1",
       PATH: dirname(input.nodeBinary),
+      PUBLIC_ORIGIN: publicOrigin,
       WISDOM_PUBLISHED_CONTENT_DIR: snapshotDirectory,
     },
     timeoutMs: input.timeoutMs,
