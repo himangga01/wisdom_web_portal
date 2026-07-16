@@ -10,13 +10,13 @@
 
 ## TDD evidence
 
-The focused pre-change run reproduced five intended failures across 19 tests:
+The focused pre-change run reproduced five intended failures across 20 tests:
 
 - missing `ListItem` typing on service and article breadcrumbs;
 - fabricated service provenance still present in the DTO, public UI, and Service JSON-LD;
 - approval reviewer still duplicated as Article author in JSON-LD and public UI.
 
-After the production changes, the same focused test set passed 19/19. A repository-wide breadcrumb assertion additionally checks every indexable document for `ListItem` typing and sequential positions.
+After the production changes, the same focused test set passed 20/20. A repository-wide breadcrumb assertion additionally checks every indexable document for `ListItem` typing and sequential positions.
 
 ## Self-review
 
@@ -28,7 +28,7 @@ After the production changes, the same focused test set passed 19/19. A reposito
 
 ## Verification
 
-- Focused Site provenance tests: 4 files, 19 tests passed.
+- Focused Site provenance tests: 4 files, 20 tests passed.
 - Full Site unit suite: 19 files, 98 tests passed.
 - Site typecheck: 59 files, 0 errors, 0 warnings, 0 hints.
 - Playwright `search discovery|published insight`: 39 tests passed across Chromium, Firefox, and WebKit, including 320/390/768/1440 overflow and accessibility coverage.
