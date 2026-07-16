@@ -56,10 +56,13 @@ journal, final directory, or public pointer.
 ## Database migration safety
 
 Schema v4 adds the bundle identity index and immutable content/lifecycle triggers. The
-migration first checks every existing v3 bundle for exactly eight identities and valid
-draft/active/retired timestamps. Malformed legacy data aborts the whole migration and
-keeps both `schema_migrations` and SQLite `user_version` at v3 for operator repair; it is
-never marked ready under a partially applied schema.
+migration first converts every existing v3 bundle through the same canonical validator
+used by consent publication. It requires exactly eight identities, one coherent lifecycle
+state and effective/retired time, fixed 12/24-month roles, canonical versions, nonblank
+bounded text, and a matching semantic content hash. Malformed legacy data aborts the
+whole migration and keeps both `schema_migrations` and SQLite `user_version` at v3 for
+operator repair; it is never marked ready under a partially applied schema. Canonical
+active and retired historical bundles retain their original timestamps during upgrade.
 
 ## Builds and fixtures
 

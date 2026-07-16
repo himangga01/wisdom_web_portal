@@ -4,12 +4,15 @@ import {
   computePublishedConsentDocumentSha256,
   consentVersionSchema,
   LOCALES,
-  publishedConsentBundleSchema,
   type Locale,
   type PublishedConsentBundle,
 } from "@wisdom/shared";
 
 import type { ControlDatabase } from "../db/client.js";
+import {
+  validateCanonicalConsentBundleRows,
+  type ConsentBundleRow as ConsentRow,
+} from "./bundle-validation.js";
 
 export type ConsentKind = "privacy" | "marketing";
 
@@ -45,21 +48,6 @@ export type ConsentAuthority =
     };
 
 export type ConsentAuthorityResolver = () => ConsentAuthority | undefined;
-
-interface ConsentRow {
-  id: string;
-  bundle_id: string;
-  kind: ConsentKind;
-  locale: Locale;
-  version: string;
-  title: string;
-  body_markdown: string;
-  content_sha256: Buffer;
-  retention_months: 12 | 24;
-  state: "draft" | "active" | "retired";
-  effective_at_ms: number | null;
-  retired_at_ms: number | null;
-}
 
 function contentDigest(document: ConsentDocumentSeed): Buffer {
   return Buffer.from(computePublishedConsentDocumentSha256(document), "hex");
@@ -212,26 +200,6 @@ function hasCompletePairs(rows: readonly ConsentRow[]): boolean {
     pairs.has(`privacy\0${locale}`) && pairs.has(`marketing\0${locale}`));
 }
 
-function hasRequiredRetention(rows: readonly ConsentRow[]): boolean {
-  return rows.every((row) => row.retention_months === (row.kind === "privacy" ? 12 : 24));
-}
-
-function hasCanonicalVersions(rows: readonly ConsentRow[]): boolean {
-  return rows.every((row) => consentVersionSchema.safeParse(row.version).success);
-}
-
-function hasValidContentDigests(rows: readonly ConsentRow[]): boolean {
-  return rows.every((row) => row.content_sha256.equals(contentDigest({
-    bundleId: row.bundle_id,
-    kind: row.kind,
-    locale: row.locale,
-    version: row.version,
-    title: row.title,
-    bodyMarkdown: row.body_markdown,
-    retentionMonths: row.retention_months,
-  })));
-}
-
 function digestRows(rows: readonly ConsentRow[]): string {
   return createHash("sha256").update(JSON.stringify(rows.map((row) => ({
     kind: row.kind,
@@ -246,7 +214,7 @@ export function getConsentBundleDigest(db: ControlDatabase, bundleId: string): s
     "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale, version",
   ).all(bundleId) as ConsentRow[];
   if (!hasCompletePairs(rows)) throw new Error("Consent digest requires a complete bundle");
-  if (!hasRequiredRetention(rows) || !hasCanonicalVersions(rows) || !hasValidContentDigests(rows)) {
+  if (!validateCanonicalConsentBundleRows(rows)) {
     throw new Error("Consent digest requires canonical immutable documents");
   }
   return digestRows(rows);
@@ -276,9 +244,9 @@ export function activateConsentBundle(
     ))) {
       throw new Error("CONSENT_BUNDLE_REACTIVATION_REJECTED");
     }
-    if (!hasRequiredRetention(rows)) throw new Error("Consent activation requires fixed retention roles");
-    if (!hasCanonicalVersions(rows)) throw new Error("Consent activation requires canonical versions");
-    if (!hasValidContentDigests(rows)) throw new Error("Consent activation requires valid content digests");
+    if (!validateCanonicalConsentBundleRows(rows)) {
+      throw new Error("Consent activation requires canonical immutable documents");
+    }
     if (confirmSha !== undefined) {
       const actual = digestRows(rows);
       const suppliedBytes = Buffer.from(confirmSha, "hex");
@@ -313,10 +281,9 @@ export function getActiveConsentBundle(db: ControlDatabase): ActiveConsentBundle
   const rows = db.sqlite.prepare(
     "SELECT * FROM consent_documents WHERE state = 'active' ORDER BY kind, locale",
   ).all() as ConsentRow[];
-  if (!hasCompletePairs(rows) || !hasRequiredRetention(rows) || !hasCanonicalVersions(rows)) return undefined;
-  const bundleId = rows[0]?.bundle_id;
-  if (!bundleId || rows.some((row) => row.bundle_id !== bundleId)) return undefined;
-  return { bundleId, documents: rows.map(toStored) };
+  const validated = validateCanonicalConsentBundleRows(rows);
+  if (!validated || validated.state !== "active") return undefined;
+  return { bundleId: validated.bundle.bundleId, documents: rows.map(toStored) };
 }
 
 export function getActivePublishedConsentBundle(
@@ -331,35 +298,8 @@ export function getActivePublishedConsentBundle(
 function publishedConsentBundleFromRows(
   rows: readonly ConsentRow[],
 ): PublishedConsentBundle | undefined {
-  if (!hasCompletePairs(rows) || !hasRequiredRetention(rows) || !hasCanonicalVersions(rows)) {
-    return undefined;
-  }
-  const bundleId = rows[0]?.bundle_id;
-  if (!bundleId || rows.some((row) => row.bundle_id !== bundleId)) return undefined;
-  const documents = LOCALES.flatMap((locale) => (["privacy", "marketing"] as const).map((kind) => {
-    const document = rows.find((candidate) => (
-      candidate.locale === locale && candidate.kind === kind
-    ));
-    if (!document || document.effective_at_ms === null) return undefined;
-    return {
-      kind,
-      locale,
-      version: document.version,
-      title: document.title,
-      bodyMarkdown: document.body_markdown,
-      contentSha256: document.content_sha256.toString("hex"),
-      effectiveAt: new Date(document.effective_at_ms).toISOString(),
-      retentionMonths: document.retention_months,
-      required: kind === "privacy",
-    };
-  }));
-  if (documents.some((document) => document === undefined)) return undefined;
-  const parsed = publishedConsentBundleSchema.safeParse({
-    schemaVersion: 1,
-    bundleId,
-    documents,
-  });
-  return parsed.success ? parsed.data : undefined;
+  const validated = validateCanonicalConsentBundleRows(rows);
+  return validated && validated.state !== "draft" ? validated.bundle : undefined;
 }
 
 export function getPublishedConsentBundleById(

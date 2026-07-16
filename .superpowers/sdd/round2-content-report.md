@@ -154,9 +154,12 @@ closed and regression-tested.
    all temporary output and create no release, activation, or public pointer.
 2. Schema v4 makes `(bundle_id, kind, locale)` unique, rejects malformed legacy bundles
    before migration, and enforces immutable content, deletion, effective time, retired
-   time, and `draft -> active -> retired` lifecycle transitions. The seed service accepts
-   only a canonical eight-document bundle; only an exact reseed is a no-op. Revised text
-   or versions require a new bundle ID, and retired bundle reactivation is rejected.
+   time, and `draft -> active -> retired` lifecycle transitions. One shared row-to-bundle
+   validator applies the published schema to migration, activation, reads, and rollback
+   authority, including uniform lifecycle timestamps, 12/24-month roles, canonical
+   versions, bounded nonblank text, and semantic hashes. The seed service accepts only a
+   canonical eight-document bundle; only an exact reseed is a no-op. Revised text or
+   versions require a new bundle ID, and retired bundle reactivation is rejected.
 3. Activation revalidates canonical version, fixed retention roles, and every semantic
    content hash before assigning an effective time. Exact reseeding after activation does
    not alter row IDs, creation time, state, effective time, or retired time.
@@ -172,14 +175,16 @@ Observed RED evidence for this follow-up:
 - reactivating a retired bundle overwrote its original effective time;
 - retained consultation PII in consent titles/bodies passed snapshot and release creation;
 - the database remained at schema v3 when the new v4 migration test expected the
-  immutable bundle boundary.
+  immutable bundle boundary;
+- the initial v4 preflight still accepted mixed lifecycle timestamps, swapped retention,
+  invalid versions, blank text, and semantic hash mismatches until all legacy rows were
+  routed through the shared canonical bundle validator.
 
 Final follow-up verification:
 
-- focused consent/snapshot/release/database suite: 4 files, 60/60 passed;
-- full `@wisdom/control` suite: 37 files, 403/403 passed;
-- root `npm.cmd run typecheck`: Shared and Control passed; Astro checked 60 files with
-  0 errors, 0 warnings, and 0 hints;
+- focused consent/snapshot/release/database suite: 4 files, 69/69 passed;
+- full `@wisdom/control` suite: 37 files, 412/412 passed;
+- `npm.cmd run typecheck --workspace @wisdom/control` — passed;
 - `git diff --check`: passed.
 
 ## Concerns / launch gates

@@ -6,6 +6,10 @@ import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 
 import {
+  validateCanonicalConsentBundleRows,
+  type ConsentBundleRow,
+} from "../consent/bundle-validation.js";
+import {
   drizzleSchema,
   REQUIRED_INDEXES,
   REQUIRED_TABLES,
@@ -778,25 +782,6 @@ CREATE INDEX publication_outbox_queue_idx
 `;
 
 const FOURTH_MIGRATION = `
-CREATE TABLE consent_documents_v4_guard (
-  valid INTEGER NOT NULL CHECK (valid = 1)
-);
-INSERT INTO consent_documents_v4_guard (valid)
-SELECT 0 FROM consent_documents
-WHERE (state = 'draft' AND (effective_at_ms IS NOT NULL OR retired_at_ms IS NOT NULL))
-  OR (state = 'active' AND (effective_at_ms IS NULL OR retired_at_ms IS NOT NULL))
-  OR (state = 'retired' AND (
-    effective_at_ms IS NULL OR retired_at_ms IS NULL OR retired_at_ms < effective_at_ms
-  ))
-LIMIT 1;
-INSERT INTO consent_documents_v4_guard (valid)
-SELECT 0 FROM consent_documents
-GROUP BY bundle_id
-HAVING count(*) <> 8
-  OR count(DISTINCT kind || char(0) || locale) <> 8
-LIMIT 1;
-DROP TABLE consent_documents_v4_guard;
-
 CREATE UNIQUE INDEX consent_documents_bundle_identity_uidx
   ON consent_documents(bundle_id, kind, locale);
 
@@ -1202,6 +1187,25 @@ function synchronizeMigrationMetadata(sqlite: Database.Database): MigrationHisto
   });
 }
 
+function assertCanonicalConsentBundlesBeforeV4(sqlite: Database.Database): void {
+  const rows = sqlite.prepare(`
+    SELECT id, bundle_id, kind, locale, version, title, body_markdown,
+      content_sha256, retention_months, state, effective_at_ms, retired_at_ms
+    FROM consent_documents ORDER BY bundle_id, kind, locale, version
+  `).all() as ConsentBundleRow[];
+  const bundles = new Map<string, ConsentBundleRow[]>();
+  for (const row of rows) {
+    const bundle = bundles.get(row.bundle_id) ?? [];
+    bundle.push(row);
+    bundles.set(row.bundle_id, bundle);
+  }
+  if ([...bundles.values()].some((bundle) => (
+    validateCanonicalConsentBundleRows(bundle) === undefined
+  ))) {
+    throw new Error("DATABASE_CONSENT_BUNDLE_INVALID");
+  }
+}
+
 export function assertRollbackCompatibleMigration(
   db: ControlDatabase,
   targetVersion = SCHEMA_VERSION,
@@ -1244,6 +1248,7 @@ export function runMigrations(
     const applied = new Set(appliedRows.map((row) => row.version));
     for (const migration of MIGRATIONS) {
       if (migration.version > targetVersion || applied.has(migration.version)) continue;
+      if (migration.version === 4) assertCanonicalConsentBundlesBeforeV4(sqlite);
       sqlite.exec(migration.sql);
       sqlite.prepare(
         "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",

@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { computePublishedConsentDocumentSha256 } from "@wisdom/shared";
+
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
   assertRollbackCompatibleMigration,
@@ -19,6 +21,87 @@ import { REQUIRED_INDEXES, REQUIRED_TABLES, SCHEMA_VERSION } from "./schema.js";
 let testDatabase: TestDatabase | undefined;
 
 afterEach(() => testDatabase?.close());
+
+type LegacyConsentState = "draft" | "active" | "retired";
+
+interface LegacyConsentRow {
+  id: string;
+  bundleId: string;
+  kind: "privacy" | "marketing";
+  locale: "ko" | "en" | "zh-Hans" | "zh-Hant";
+  version: string;
+  title: string;
+  bodyMarkdown: string;
+  contentSha256: Buffer;
+  retentionMonths: 12 | 24;
+  state: LegacyConsentState;
+  effectiveAtMs: number | null;
+  retiredAtMs: number | null;
+}
+
+function legacyContentSha256(row: Pick<LegacyConsentRow,
+  "kind" | "locale" | "version" | "title" | "bodyMarkdown" | "retentionMonths"
+>): Buffer {
+  return Buffer.from(computePublishedConsentDocumentSha256({
+    kind: row.kind,
+    locale: row.locale,
+    version: row.version,
+    title: row.title,
+    bodyMarkdown: row.bodyMarkdown,
+    retentionMonths: row.retentionMonths,
+  }), "hex");
+}
+
+function canonicalLegacyConsentRows(state: LegacyConsentState): LegacyConsentRow[] {
+  return (["ko", "en", "zh-Hans", "zh-Hant"] as const).flatMap((locale) => (
+    ["privacy", "marketing"] as const
+  ).map((kind, kindIndex) => {
+    const index = (["ko", "en", "zh-Hans", "zh-Hant"] as const).indexOf(locale) * 2 + kindIndex;
+    const row: LegacyConsentRow = {
+      id: `legacy-${state}-${index}`,
+      bundleId: `legacy-${state}`,
+      kind,
+      locale,
+      version: `${kind}-legacy-${index}`,
+      title: `${kind} ${locale}`,
+      bodyMarkdown: `# ${kind} ${locale}`,
+      contentSha256: Buffer.alloc(32),
+      retentionMonths: kind === "privacy" ? 12 : 24,
+      state,
+      effectiveAtMs: state === "draft" ? null : 1_000,
+      retiredAtMs: state === "retired" ? 2_000 : null,
+    };
+    row.contentSha256 = legacyContentSha256(row);
+    return row;
+  }));
+}
+
+function insertLegacyConsentRows(
+  db: ReturnType<typeof openDatabase>,
+  rows: readonly LegacyConsentRow[],
+): void {
+  const insert = db.sqlite.prepare(`
+    INSERT INTO consent_documents (
+      id, bundle_id, kind, locale, version, title, body_markdown,
+      content_sha256, retention_months, state, effective_at_ms,
+      retired_at_ms, created_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 500)
+  `);
+  for (const row of rows) insert.run(
+    row.id,
+    row.bundleId,
+    row.kind,
+    row.locale,
+    row.version,
+    row.title,
+    row.bodyMarkdown,
+    row.contentSha256,
+    row.retentionMonths,
+    row.state,
+    row.effectiveAtMs,
+    row.retiredAtMs,
+  );
+}
 
 describe("SQLite durability and migrations", () => {
   it("keeps SQLite user_version synchronized with the exact migration history", () => {
@@ -207,33 +290,47 @@ describe("SQLite durability and migrations", () => {
     `).run()).toThrow(/effective/i);
   });
 
-  it.each(["incomplete-bundle", "invalid-lifecycle"] as const)(
+  it.each([
+    "incomplete-bundle",
+    "invalid-lifecycle",
+    "mixed-state",
+    "mixed-effective-time",
+    "mixed-retired-time",
+    "swapped-retention",
+    "invalid-version",
+    "blank-title",
+    "content-hash-mismatch",
+  ] as const)(
     "rolls back v4 atomically for malformed v3 consent data: %s",
     (scenario) => {
       const db = openDatabase(":memory:");
       try {
         runMigrations(db, 1_000, 3);
-        const insert = db.sqlite.prepare(`
-          INSERT INTO consent_documents (
-            id, bundle_id, kind, locale, version, title, body_markdown,
-            content_sha256, retention_months, state, effective_at_ms, created_at_ms
-          ) VALUES (?, 'legacy-malformed', ?, ?, ?, 'Title', '# Body', ?, ?, ?, ?, 500)
-        `);
-        const rows = scenario === "incomplete-bundle"
-          ? [{ kind: "privacy", locale: "ko" }]
-          : (["ko", "en", "zh-Hans", "zh-Hant"] as const).flatMap((locale) => (
-              ["privacy", "marketing"] as const
-            ).map((kind) => ({ kind, locale })));
-        rows.forEach(({ kind, locale }, index) => insert.run(
-          `legacy-${index}`,
-          kind,
-          locale,
-          `${kind}-legacy-${locale}`,
-          Buffer.alloc(32, index + 1),
-          kind === "privacy" ? 12 : 24,
-          scenario === "invalid-lifecycle" ? "active" : "draft",
-          null,
-        ));
+        const rows = canonicalLegacyConsentRows(
+          scenario === "mixed-retired-time" ? "retired" : "active",
+        );
+        if (scenario === "incomplete-bundle") rows.pop();
+        if (scenario === "invalid-lifecycle") rows[0]!.effectiveAtMs = null;
+        if (scenario === "mixed-state") {
+          rows[0]!.state = "retired";
+          rows[0]!.retiredAtMs = 2_000;
+        }
+        if (scenario === "mixed-effective-time") rows[0]!.effectiveAtMs = 1_001;
+        if (scenario === "mixed-retired-time") rows[0]!.retiredAtMs = 2_001;
+        if (scenario === "swapped-retention") {
+          rows[0]!.retentionMonths = 24;
+          rows[0]!.contentSha256 = legacyContentSha256(rows[0]!);
+        }
+        if (scenario === "invalid-version") {
+          rows[0]!.version = " invalid/version ";
+          rows[0]!.contentSha256 = legacyContentSha256(rows[0]!);
+        }
+        if (scenario === "blank-title") {
+          rows[0]!.title = "   ";
+          rows[0]!.contentSha256 = legacyContentSha256(rows[0]!);
+        }
+        if (scenario === "content-hash-mismatch") rows[0]!.contentSha256 = Buffer.alloc(32, 99);
+        insertLegacyConsentRows(db, rows);
 
         expect(() => runMigrations(db, 2_000)).toThrow();
         expect(db.sqlite.prepare(
@@ -244,6 +341,29 @@ describe("SQLite durability and migrations", () => {
           SELECT count(*) count FROM sqlite_master
           WHERE name = 'consent_documents_bundle_identity_uidx'
         `).get()).toEqual({ count: 0 });
+      } finally {
+        closeDatabase(db);
+      }
+    },
+  );
+
+  it.each(["active", "retired"] as const)(
+    "upgrades a canonical %s v3 consent bundle to v4",
+    (state) => {
+      const db = openDatabase(":memory:");
+      try {
+        runMigrations(db, 1_000, 3);
+        insertLegacyConsentRows(db, canonicalLegacyConsentRows(state));
+
+        expect(() => runMigrations(db, 2_000)).not.toThrow();
+        expect(db.sqlite.pragma("user_version", { simple: true })).toBe(4);
+        expect(db.sqlite.prepare(
+          "SELECT max(version) version FROM schema_migrations",
+        ).get()).toEqual({ version: 4 });
+        expect(db.sqlite.prepare(`
+          SELECT count(*) count FROM consent_documents WHERE bundle_id = ?
+        `).get(`legacy-${state}`)).toEqual({ count: 8 });
+        expect(isDatabaseReady(db)).toBe(true);
       } finally {
         closeDatabase(db);
       }
