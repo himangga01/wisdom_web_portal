@@ -29,6 +29,46 @@ test("service inspection accepts only launchctl's known missing-service error", 
   await assert.rejects(denied.assertStopped(), { code: "SERVICE_INSPECTION_FAILED" });
 });
 
+test("service inspection accepts only bounded launchctl missing-service line forms", async (t) => {
+  const serviceLine = 'Could not find service "com.example.missing" in domain for user gui: 501';
+  for (const [name, stderr] of [
+    ["one line LF", `${serviceLine}\n`],
+    ["one line CRLF", `${serviceLine}\r\n`],
+    ["Bad request plus missing service LF", `Bad request.\n${serviceLine}\n`],
+    ["Bad request plus missing service CRLF", `Bad request.\r\n${serviceLine}\r\n`],
+  ]) {
+    await t.test(name, async () => {
+      const adapter = createMacServiceAdapter({
+        labels: ["com.example.missing"],
+        userId: 501,
+        execute: async () => {
+          throw Object.assign(new Error("missing"), { stderr });
+        },
+      });
+      await adapter.assertUnloaded();
+    });
+  }
+
+  for (const [name, stderr] of [
+    ["arbitrary prefix", `Unexpected failure.\n${serviceLine}\n`],
+    ["arbitrary suffix", `${serviceLine}\nUnexpected failure.\n`],
+    ["extra line after documented prefix", `Bad request.\nUnexpected failure.\n${serviceLine}\n`],
+    ["extra line after documented pair", `Bad request.\n${serviceLine}\nUnexpected failure.\n`],
+    ["unknown error", "Operation not permitted\n"],
+  ]) {
+    await t.test(`rejects ${name}`, async () => {
+      const adapter = createMacServiceAdapter({
+        labels: ["com.example.missing"],
+        userId: 501,
+        execute: async () => {
+          throw Object.assign(new Error("inspection failed"), { stderr });
+        },
+      });
+      await assert.rejects(adapter.assertUnloaded(), { code: "SERVICE_INSPECTION_FAILED" });
+    });
+  }
+});
+
 test("service inspection rejects running launch agents", async () => {
   const adapter = createMacServiceAdapter({
     labels: ["com.example.running"],

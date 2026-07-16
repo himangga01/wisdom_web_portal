@@ -4,10 +4,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
+const MAX_LAUNCHCTL_MISSING_ERROR_BYTES = 1_024;
+const LAUNCHCTL_MISSING_SERVICE = /^(?:Bad request\.(?:\r\n|\n))?Could not find service "[A-Za-z0-9.-]{1,255}" in domain for user gui: [0-9]{1,10}(?:(?:\r\n|\n))?$/u;
 
 function isKnownMissingService(error) {
   const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr ?? "");
-  return /^Could not find service "[^"\r\n]+" in domain for user gui: \d+\s*$/u.test(stderr);
+  return Buffer.byteLength(stderr, "utf8") <= MAX_LAUNCHCTL_MISSING_ERROR_BYTES &&
+    LAUNCHCTL_MISSING_SERVICE.test(stderr);
 }
 
 export function createMacServiceAdapter({
