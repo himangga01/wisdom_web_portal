@@ -142,6 +142,46 @@ served API and static release one authority. The accepted follow-up closes that 
 The operational sequence and failure states are documented in
 `docs/operations/consent-publication.md`.
 
+## Final independent-review remediation
+
+The final adversarial review found two remaining authority boundaries. Both are now
+closed and regression-tested.
+
+1. Publication checks all 16 consent text boundaries (8 documents × title/body) against
+   every retained consultation envelope before snapshot creation. It repeats this check
+   inside the final writer transaction so a consultation received during the static build
+   cannot turn previously safe policy text into retained PII. Both rejection paths clean
+   all temporary output and create no release, activation, or public pointer.
+2. Schema v4 makes `(bundle_id, kind, locale)` unique, rejects malformed legacy bundles
+   before migration, and enforces immutable content, deletion, effective time, retired
+   time, and `draft -> active -> retired` lifecycle transitions. The seed service accepts
+   only a canonical eight-document bundle; only an exact reseed is a no-op. Revised text
+   or versions require a new bundle ID, and retired bundle reactivation is rejected.
+3. Activation revalidates canonical version, fixed retention roles, and every semantic
+   content hash before assigning an effective time. Exact reseeding after activation does
+   not alter row IDs, creation time, state, effective time, or retired time.
+4. Rollback authority now uses one strict verifier for the sealed artifact, release
+   metadata, and historical database bundle. It runs before pointer switching, again in
+   the immediate commit transaction, in reconciliation, and in the production resolver.
+   A valid rollback serves a retired bundle with its original effective time while
+   tampered metadata is rejected before the pointer changes.
+
+Observed RED evidence for this follow-up:
+
+- a changed version under the same bundle ID inserted a ninth row;
+- reactivating a retired bundle overwrote its original effective time;
+- retained consultation PII in consent titles/bodies passed snapshot and release creation;
+- the database remained at schema v3 when the new v4 migration test expected the
+  immutable bundle boundary.
+
+Final follow-up verification:
+
+- focused consent/snapshot/release/database suite: 4 files, 60/60 passed;
+- full `@wisdom/control` suite: 37 files, 403/403 passed;
+- root `npm.cmd run typecheck`: Shared and Control passed; Astro checked 60 files with
+  0 errors, 0 warnings, and 0 hints;
+- `git diff --check`: passed.
+
 ## Concerns / launch gates
 
 1. The fixture under `apps/site/src/content/__fixtures__` is deterministic non-launch

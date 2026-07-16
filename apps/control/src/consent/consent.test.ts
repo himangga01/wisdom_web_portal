@@ -5,6 +5,7 @@ import {
   activateConsentBundle,
   getActiveConsentBundle,
   getConsentBundleDigest,
+  getPublishedConsentBundleById,
   getPublicConsentDocuments,
   seedConsentDocuments,
   seedCompleteConsentBundles,
@@ -33,33 +34,33 @@ describe("immutable consent bundles", () => {
     expect(testDatabase.db.sqlite.prepare("SELECT count(*) count FROM consent_documents").get()).toEqual({ count: 0 });
   });
 
-  it("refuses activation when persisted retention roles are reversed", () => {
+  it("prevents persisted retention roles from being reversed", () => {
     testDatabase = createTestDatabase();
     seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);
-    testDatabase.db.sqlite.prepare(`
+    expect(() => testDatabase!.db.sqlite.prepare(`
       UPDATE consent_documents
       SET retention_months = CASE kind WHEN 'privacy' THEN 24 ELSE 12 END
       WHERE bundle_id = ?
-    `).run("bundle-2026-07-16");
+    `).run("bundle-2026-07-16")).toThrow(/immutable/i);
 
-    expect(() => activateConsentBundle(testDatabase!.db, "bundle-2026-07-16", 2_000)).toThrow(
-      /retention/i,
-    );
-    expect(getActiveConsentBundle(testDatabase.db)).toBeUndefined();
+    activateConsentBundle(testDatabase.db, "bundle-2026-07-16", 2_000);
+    expect(getActiveConsentBundle(testDatabase.db)?.documents.every((document) => (
+      document.retentionMonths === (document.kind === "privacy" ? 12 : 24)
+    ))).toBe(true);
   });
 
-  it("refuses activation when a persisted consent version is non-canonical", () => {
+  it("prevents a persisted consent version from becoming non-canonical", () => {
     testDatabase = createTestDatabase();
     seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);
-    testDatabase.db.sqlite.prepare(`
+    expect(() => testDatabase!.db.sqlite.prepare(`
       UPDATE consent_documents SET version = ?
       WHERE bundle_id = ? AND kind = 'privacy' AND locale = 'ko'
-    `).run(" privacy-2026-07-16 ", "bundle-2026-07-16");
+    `).run(" privacy-2026-07-16 ", "bundle-2026-07-16")).toThrow(/immutable/i);
 
-    expect(() => activateConsentBundle(testDatabase!.db, "bundle-2026-07-16", 2_000)).toThrow(
-      /version/i,
-    );
-    expect(getActiveConsentBundle(testDatabase.db)).toBeUndefined();
+    activateConsentBundle(testDatabase.db, "bundle-2026-07-16", 2_000);
+    expect(getActiveConsentBundle(testDatabase.db)?.documents.find((document) => (
+      document.kind === "privacy" && document.locale === "ko"
+    ))?.version).toBe("privacy-2026-07-16");
   });
 
   it("rejects non-canonical, overlong, or unsupported consent versions before persistence", () => {
@@ -90,25 +91,79 @@ describe("immutable consent bundles", () => {
     const bundle = consentBundle();
     expect(seedConsentDocuments(testDatabase.db, bundle, 1_000)).toBe(8);
     expect(seedConsentDocuments(testDatabase.db, bundle, 1_000)).toBe(0);
+    const identities = testDatabase.db.sqlite.prepare(`
+      SELECT id, kind, locale, created_at_ms FROM consent_documents
+      WHERE bundle_id = ? ORDER BY kind, locale
+    `).all(bundle[0]!.bundleId);
+    activateConsentBundle(testDatabase.db, bundle[0]!.bundleId, 2_000);
+    expect(seedConsentDocuments(testDatabase.db, bundle, 9_000)).toBe(0);
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT id, kind, locale, created_at_ms FROM consent_documents
+      WHERE bundle_id = ? ORDER BY kind, locale
+    `).all(bundle[0]!.bundleId)).toEqual(identities);
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT DISTINCT state, effective_at_ms, retired_at_ms
+      FROM consent_documents WHERE bundle_id = ?
+    `).all(bundle[0]!.bundleId)).toEqual([{
+      state: "active", effective_at_ms: 2_000, retired_at_ms: null,
+    }]);
 
     const changed = bundle.map((document, index) => index === 0
       ? { ...document, bodyMarkdown: `${document.bodyMarkdown} changed` }
       : document);
     expect(() => seedConsentDocuments(testDatabase!.db, changed, 1_000)).toThrow(
-      /immutable consent document conflict/i,
+      "CONSENT_BUNDLE_IMMUTABLE",
     );
+  });
+
+  it("rejects a changed version under an existing bundle identity atomically", () => {
+    testDatabase = createTestDatabase();
+    const original = consentBundle("bundle-fixed", "fixed");
+    seedCompleteConsentBundles(testDatabase.db, original, 1_000);
+    const changedVersion = original.map((document, index) => index === 0
+      ? { ...document, version: "privacy-replacement" }
+      : document);
+
+    expect(() => seedCompleteConsentBundles(
+      testDatabase!.db,
+      changedVersion,
+      2_000,
+    )).toThrow("CONSENT_BUNDLE_IMMUTABLE");
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT count(*) count FROM consent_documents WHERE bundle_id = 'bundle-fixed'
+    `).get()).toEqual({ count: 8 });
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT version FROM consent_documents
+      WHERE bundle_id = 'bundle-fixed' AND kind = 'privacy' AND locale = 'ko'
+    `).pluck().get()).toBe("privacy-fixed");
   });
 
   it("rejects incomplete activation and atomically replaces all eight active documents", () => {
     testDatabase = createTestDatabase();
     const first = consentBundle("bundle-a", "a");
-    seedConsentDocuments(testDatabase.db, first.slice(0, -1), 1_000);
-    expect(() => activateConsentBundle(testDatabase!.db, "bundle-a", 2_000)).toThrow(
+    const insertDraft = testDatabase.db.sqlite.prepare(`
+      INSERT INTO consent_documents (
+        id, bundle_id, kind, locale, version, title, body_markdown,
+        content_sha256, retention_months, state, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1_000)
+    `);
+    first.slice(0, -1).forEach((document, index) => insertDraft.run(
+      `incomplete-${index}`,
+      "bundle-incomplete",
+      document.kind,
+      document.locale,
+      `${document.version}-incomplete`,
+      document.title,
+      document.bodyMarkdown,
+      Buffer.alloc(32, index + 1),
+      document.retentionMonths,
+    ));
+    expect(() => activateConsentBundle(testDatabase!.db, "bundle-incomplete", 2_000)).toThrow(
       /complete bundle/i,
     );
     expect(getActiveConsentBundle(testDatabase.db)).toBeUndefined();
 
-    seedConsentDocuments(testDatabase.db, first.slice(-1), 1_000);
+    seedConsentDocuments(testDatabase.db, first, 1_000);
     const digest = getConsentBundleDigest(testDatabase.db, "bundle-a");
     expect(digest).toMatch(/^[a-f0-9]{64}$/);
     expect(() => activateConsentBundle(testDatabase!.db, "bundle-a", 2_000, "0".repeat(64))).toThrow(
@@ -154,6 +209,25 @@ describe("immutable consent bundles", () => {
       "CONSENT_ACTIVATION_BLOCKED_BY_PUBLICATION",
     );
     expect(getActiveConsentBundle(testDatabase.db)?.bundleId).toBe("bundle-a");
+  });
+
+  it("rejects retired bundle reactivation without changing its effective time or authority rows", () => {
+    testDatabase = createTestDatabase();
+    seedCompleteConsentBundles(testDatabase.db, consentBundle("bundle-a", "a"), 1_000);
+    activateConsentBundle(testDatabase.db, "bundle-a", 2_000);
+    seedCompleteConsentBundles(testDatabase.db, consentBundle("bundle-b", "b"), 3_000);
+    activateConsentBundle(testDatabase.db, "bundle-b", 4_000);
+
+    expect(() => activateConsentBundle(testDatabase!.db, "bundle-a", 5_000)).toThrow(
+      "CONSENT_BUNDLE_REACTIVATION_REJECTED",
+    );
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT DISTINCT state, effective_at_ms, retired_at_ms
+      FROM consent_documents WHERE bundle_id = 'bundle-a'
+    `).all()).toEqual([{ state: "retired", effective_at_ms: 2_000, retired_at_ms: 4_000 }]);
+    expect(getActiveConsentBundle(testDatabase.db)?.bundleId).toBe("bundle-b");
+    expect(getPublishedConsentBundleById(testDatabase.db, "bundle-a")?.bundleId).toBe("bundle-a");
+    expect(getPublishedConsentBundleById(testDatabase.db, "bundle-b")?.bundleId).toBe("bundle-b");
   });
 
   it("returns the nested locale response consumed by the public-site adapter", () => {

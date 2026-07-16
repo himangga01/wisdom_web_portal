@@ -11,14 +11,20 @@ policy authority accepted by consultation intake.
   public API.
 - A release contains canonical `consent-bundle.json`, its content SHA-256 descriptor,
   all eight policy pages, and the strict `.wisdom-release-manifest.json` inventory.
+- A bundle ID is permanent. It owns exactly one privacy and one marketing document for
+  each of the four locales. Document IDs, versions, text, semantic hashes, retention
+  roles, creation metadata, and assigned effective/retired times are immutable.
 - `GET /api/v1/consent-documents`, form tokens, and consultation acceptance resolve the
   same sealed release. If the release row, pointer, metadata, artifact, or database copy
   disagrees, readiness and consent endpoints fail closed rather than mixing versions.
 
 ## Publish a new policy bundle
 
-1. Seed one complete bundle containing privacy and marketing documents for `ko`, `en`,
-   `zh-Hans`, and `zh-Hant`. Record the confirmation SHA printed by `consent:seed`.
+1. Choose a new bundle ID and new canonical document versions. Never reuse a bundle ID
+   for revised text. Seed one complete bundle containing privacy and marketing documents
+   for `ko`, `en`, `zh-Hans`, and `zh-Hant`. Record the confirmation SHA printed by
+   `consent:seed`. An exact eight-document reseed is a no-op; any changed, missing, or
+   additional identity is rejected atomically.
 2. Obtain the representative/privacy operator's recorded approval of the exact four-
    locale text and of the 12-month privacy / 24-month marketing retained-envelope scope.
 3. Run `consent:activate --bundle <id> --confirm-sha <sha>`. The command reports
@@ -36,6 +42,25 @@ Do not activate another consent bundle while a publication activation is `prepar
 change detected during a long build rejects the build with
 `PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD` and leaves the public pointer unchanged.
 
+Activation is one-way: `draft -> active -> retired`. An active or retired bundle cannot
+be activated again. To change policy text, create and publish a new bundle. A static
+release rollback does not reactivate database rows; it serves the verified historical
+bundle retained by that release with its original effective time.
+
+Before a snapshot is written, Control compares every one of the eight policy titles and
+bodies against retained consultation PII. It repeats the comparison inside the final
+writer transaction after the build. `PUBLICATION_CONSENT_PII_REJECTED` or
+`PUBLICATION_PII_CHANGED_DURING_BUILD` therefore leaves no release row, activation
+journal, final directory, or public pointer.
+
+## Database migration safety
+
+Schema v4 adds the bundle identity index and immutable content/lifecycle triggers. The
+migration first checks every existing v3 bundle for exactly eight identities and valid
+draft/active/retired timestamps. Malformed legacy data aborts the whole migration and
+keeps both `schema_migrations` and SQLite `user_version` at v3 for operator repair; it is
+never marked ready under a partially applied schema.
+
 ## Builds and fixtures
 
 - A production Site build requires an absolute `WISDOM_PUBLISHED_CONTENT_DIR` generated
@@ -47,7 +72,9 @@ change detected during a long build rejects the build with
 
 ## Rollback
 
-Rollback re-verifies the retained release and its sealed historical consent bundle before
-switching the pointer. The API then serves that same historical bundle. Database consent
-rows may be retired; their immutable ID, text, metadata, and hashes must still match the
-sealed artifact. Never reconstruct policy text manually during rollback.
+Rollback re-verifies the retained release, strict database release metadata, and its
+sealed historical consent bundle before switching the pointer. The same checks run again
+inside the activation writer transaction and during recovery. The API then serves that
+same historical bundle. Database consent rows may be retired; their immutable ID, text,
+metadata, effective time, and hashes must still match the sealed artifact. Never
+reconstruct policy text manually during rollback.

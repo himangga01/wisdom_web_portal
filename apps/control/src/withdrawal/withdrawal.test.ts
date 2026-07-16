@@ -44,16 +44,16 @@ function seedMarketingConsultation(
   database.sqlite.prepare(`
     INSERT INTO consent_documents (
       id, bundle_id, kind, locale, version, title, body_markdown,
-      content_sha256, retention_months, state, created_at_ms
+      content_sha256, retention_months, state, effective_at_ms, created_at_ms
     ) VALUES ('privacy-document', 'bundle', 'privacy', 'ko', 'privacy-v1',
-      'Privacy', 'Privacy terms', ?, 12, 'active', 0)
+      'Privacy', 'Privacy terms', ?, 12, 'active', 0, 0)
   `).run(Buffer.alloc(32, 3));
   database.sqlite.prepare(`
     INSERT INTO consent_documents (
       id, bundle_id, kind, locale, version, title, body_markdown,
-      content_sha256, retention_months, state, created_at_ms
+      content_sha256, retention_months, state, effective_at_ms, created_at_ms
     ) VALUES ('marketing-document', 'bundle', 'marketing', 'ko', 'marketing-v1',
-      'Marketing', 'Marketing terms', ?, 24, 'active', 0)
+      'Marketing', 'Marketing terms', ?, 24, 'active', 0, 0)
   `).run(Buffer.alloc(32, 2));
   database.sqlite.prepare(`
     INSERT INTO consent_events (

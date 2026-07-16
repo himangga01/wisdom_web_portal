@@ -19,12 +19,13 @@ import {
 } from "@wisdom/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createStaticKeyProvider } from "../crypto/index.js";
+import { blindIndex, createStaticKeyProvider, encryptPii } from "../crypto/index.js";
 import { createControlApp } from "../app.js";
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
   activateConsentBundle,
   getActivePublishedConsentBundle,
+  getPublishedConsentBundleById,
   seedCompleteConsentBundles,
 } from "../consent/service.js";
 import {
@@ -37,6 +38,7 @@ import {
 } from "./publication-build.js";
 import {
   createRetentionPruningPath,
+  createReleaseConsentAuthorityResolver,
   publishApprovedArticles,
   pruneRetiredPublicationReleases,
   reconcilePublicationActivation,
@@ -309,6 +311,95 @@ describe("journaled publication activation", () => {
     expect(existsSync(config.currentLink)).toBe(false);
     expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
     expect(readdirSync(config.releaseRoot).filter((name) => !name.endsWith(".log"))).toEqual([]);
+  });
+
+  it("rejects consent policy PII before creating any publication artifacts", async () => {
+    const consultationId = "policy-pii-consultation";
+    const privatePii = {
+      name: "김민지",
+      phone: "010-1234-5678",
+      email: "policy-private@example.com",
+      company: "비공개테크",
+      message: "공개되면 안 되는 상담 메시지의 충분히 긴 비공개 내용입니다.",
+    };
+    fixture.db.sqlite.prepare(`
+      INSERT INTO consultations (
+        id, receipt_id, status, locale, category, preferred_contact,
+        pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+        blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+        retention_expires_at_ms, row_version
+      ) VALUES (?, 'receipt-policy-pii', 'received', 'ko', 'procurement', 'email',
+        ?, ?, ?, ?, ?, 0, 0, 0, 9999999999999, 1)
+    `).run(
+      consultationId,
+      encryptPii(keyProvider, consultationId, privatePii),
+      keyProvider.active().id,
+      blindIndex(keyProvider, "phone", privatePii.phone),
+      blindIndex(keyProvider, "email", privatePii.email),
+      keyProvider.active().id,
+    );
+    const candidate = consentBundle("bundle-policy-pii", "policy-pii");
+    candidate[0] = { ...candidate[0]!, title: `Client ${privatePii.name}` };
+    seedCompleteConsentBundles(fixture.db, candidate, NOW + 1);
+    activateConsentBundle(fixture.db, "bundle-policy-pii", NOW + 2);
+
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-policy-pii",
+      nowMs: NOW + 3,
+    }, config, dependencies())).rejects.toThrow(/^PUBLICATION_CONSENT_PII_REJECTED$/);
+    expect(existsSync(config.currentLink)).toBe(false);
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
+    expect(readdirSync(config.releaseRoot)).toEqual([]);
+  });
+
+  it("rechecks consent policy PII after the build before creating release authority", async () => {
+    const consultationId = "policy-pii-build-race";
+    const privatePii = {
+      name: "김민지",
+      phone: "010-9876-5432",
+      email: "policy-build-race@example.com",
+      company: "비공개테크",
+      message: "발행 빌드 도중 접수된 상담의 충분히 긴 비공개 내용입니다.",
+    };
+    const candidate = consentBundle("bundle-policy-build-race", "policy-build-race");
+    candidate[0] = {
+      ...candidate[0]!,
+      title: `Public contact ${privatePii.email}`,
+    };
+    seedCompleteConsentBundles(fixture.db, candidate, NOW + 1);
+    activateConsentBundle(fixture.db, candidate[0]!.bundleId, NOW + 2);
+
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-policy-pii-build-race",
+      nowMs: NOW + 3,
+    }, config, dependencies({
+      prepareRelease: ({ snapshot, outputDirectory }) => {
+        const sealed = prepareRelease(snapshot, outputDirectory);
+        fixture.db.sqlite.prepare(`
+          INSERT INTO consultations (
+            id, receipt_id, status, locale, category, preferred_contact,
+            pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+            blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+            retention_expires_at_ms, row_version
+          ) VALUES (?, 'receipt-policy-pii-build-race', 'received', 'ko',
+            'procurement', 'email', ?, ?, ?, ?, ?, 0, 0, 0, 9999999999999, 1)
+        `).run(
+          consultationId,
+          encryptPii(keyProvider, consultationId, privatePii),
+          keyProvider.active().id,
+          blindIndex(keyProvider, "phone", privatePii.phone),
+          blindIndex(keyProvider, "email", privatePii.email),
+          keyProvider.active().id,
+        );
+        return Promise.resolve(sealed);
+      },
+    }))).rejects.toThrow(/^PUBLICATION_PII_CHANGED_DURING_BUILD$/);
+    expect(existsSync(config.currentLink)).toBe(false);
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM release_activations").get()).toEqual({ count: 0 });
+    expect(readdirSync(config.releaseRoot)).toEqual([]);
   });
 
   it("accepts one fully verified ops bootstrap pointer before the first database release", async () => {
@@ -601,6 +692,58 @@ describe("journaled publication activation", () => {
 });
 
 describe("verified publication rollback", () => {
+  it("serves a retired bundle with its original effective time after a valid release rollback", async () => {
+    const deps = dependencies();
+    const originalEffectiveAtMs = NOW - 9_000;
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-consent-authority-a",
+      nowMs: NOW,
+    }, config, deps);
+
+    seedCompleteConsentBundles(fixture.db, consentBundle("bundle-b", "b"), NOW + 1);
+    activateConsentBundle(fixture.db, "bundle-b", NOW + 2);
+    expect(() => activateConsentBundle(
+      fixture.db,
+      "bundle-2026-07-16",
+      NOW + 3,
+    )).toThrow("CONSENT_BUNDLE_REACTIVATION_REJECTED");
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-consent-authority-b",
+      nowMs: NOW + 4,
+    }, config, deps);
+
+    rollbackPublication(fixture.db, {
+      releaseId: first.releaseId,
+      actorAdminId: ADMIN_ID,
+      requestId: "rollback-consent-authority-a",
+      nowMs: NOW + 5,
+    }, config, deps);
+
+    const authority = createReleaseConsentAuthorityResolver(fixture.db, config)();
+    expect(authority?.source).toBe("release");
+    if (authority?.source !== "release") throw new Error("expected release consent authority");
+    expect(authority.releaseId).toBe(first.releaseId);
+    expect(authority?.bundle.bundleId).toBe("bundle-2026-07-16");
+    expect(authority?.bundle.documents.every((document) => (
+      document.effectiveAt === new Date(originalEffectiveAtMs).toISOString()
+    ))).toBe(true);
+    expect(getPublishedConsentBundleById(
+      fixture.db,
+      "bundle-2026-07-16",
+    )?.documents.every((document) => (
+      document.effectiveAt === new Date(originalEffectiveAtMs).toISOString()
+    ))).toBe(true);
+    expect(fixture.db.sqlite.prepare(`
+      SELECT DISTINCT state, effective_at_ms FROM consent_documents
+      WHERE bundle_id = 'bundle-2026-07-16'
+    `).all()).toEqual([{ state: "retired", effective_at_ms: originalEffectiveAtMs }]);
+    expect(fixture.db.sqlite.prepare(
+      "SELECT state FROM releases WHERE id = ?",
+    ).pluck().get(second.releaseId)).toBe("retired");
+  });
+
   it("re-verifies and atomically rolls back without Codex or a rebuild", async () => {
     const deps = dependencies();
     const first = await publishApprovedArticles(fixture.db, keyProvider, {
@@ -728,6 +871,40 @@ describe("verified publication rollback", () => {
       nowMs: NOW + 2,
     }, config, deps)).toThrow(/PUBLICATION_RELEASE_(HASH|INVENTORY)_MISMATCH/);
     expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
+  });
+
+  it("rejects tampered release consent metadata before changing the current pointer", async () => {
+    const deps = dependencies();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-metadata-first",
+      nowMs: NOW,
+    }, config, deps);
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-metadata-second",
+      nowMs: NOW + 1,
+    }, config, deps);
+    const metadata = JSON.parse(fixture.db.sqlite.prepare(
+      "SELECT metadata_json FROM releases WHERE id = ?",
+    ).pluck().get(first.releaseId) as string) as {
+      consentBundle: { contentFileSha256: string };
+    };
+    metadata.consentBundle.contentFileSha256 = "00".repeat(32);
+    fixture.db.sqlite.prepare(
+      "UPDATE releases SET metadata_json = ? WHERE id = ?",
+    ).run(JSON.stringify(metadata), first.releaseId);
+
+    expect(() => rollbackPublication(fixture.db, {
+      releaseId: first.releaseId,
+      actorAdminId: ADMIN_ID,
+      requestId: "rollback-metadata-tampered",
+      nowMs: NOW + 2,
+    }, config, deps)).toThrow(/^PUBLICATION_RELEASE_METADATA_MISMATCH$/);
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
+    expect(fixture.db.sqlite.prepare(
+      "SELECT count(*) count FROM release_activations",
+    ).get()).toEqual({ count: 2 });
   });
 });
 

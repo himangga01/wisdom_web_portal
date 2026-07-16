@@ -103,8 +103,8 @@ describe("SQLite durability and migrations", () => {
       expect(exitCode).toBe(0);
       expect(coordinator.sqlite.prepare(
         "SELECT max(version) version FROM schema_migrations",
-      ).get()).toEqual({ version: 3 });
-      expect(coordinator.sqlite.pragma("user_version", { simple: true })).toBe(3);
+      ).get()).toEqual({ version: 4 });
+      expect(coordinator.sqlite.pragma("user_version", { simple: true })).toBe(4);
     } finally {
       if (coordinator.sqlite.inTransaction) coordinator.sqlite.exec("ROLLBACK");
       closeDatabase(coordinator);
@@ -144,15 +144,16 @@ describe("SQLite durability and migrations", () => {
     ]);
   });
 
-  it("appends the v3 article publication schema without rewriting v1 or v2", () => {
+  it("appends the article publication and immutable consent schemas without rewriting v1 or v2", () => {
     testDatabase = createTestDatabase();
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(SCHEMA_VERSION).toBe(4);
     expect(testDatabase.db.sqlite.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     ).all()).toEqual([
       { version: 1, name: "initial-control-schema" },
       { version: 2, name: "admin-notification-withdrawal" },
       { version: 3, name: "article-publication-pipeline" },
+      { version: 4, name: "immutable-consent-bundles" },
     ]);
     const tables = new Set((testDatabase.db.sqlite.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table'
@@ -168,6 +169,86 @@ describe("SQLite durability and migrations", () => {
       "hermes_article_nonces",
     ]) expect(tables.has(table), table).toBe(true);
   });
+
+  it("appends v4 consent bundle identity and effective-time immutability", () => {
+    testDatabase = createTestDatabase();
+    const db = testDatabase.db.sqlite;
+    expect(SCHEMA_VERSION).toBe(4);
+    expect(db.prepare(
+      "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1",
+    ).get()).toEqual({ version: 4, name: "immutable-consent-bundles" });
+
+    const schemaObjects = new Set((db.prepare(`
+      SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger')
+    `).all() as Array<{ name: string }>).map((row) => row.name));
+    for (const name of [
+      "consent_documents_bundle_identity_uidx",
+      "consent_documents_immutable_content_update",
+      "consent_documents_lifecycle_insert",
+      "consent_documents_effective_time_immutable",
+    ]) expect(schemaObjects.has(name), name).toBe(true);
+
+    const insert = db.prepare(`
+      INSERT INTO consent_documents (
+        id, bundle_id, kind, locale, version, title, body_markdown,
+        content_sha256, retention_months, state, effective_at_ms, created_at_ms
+      ) VALUES (?, 'bundle-fixed', 'privacy', 'ko', ?, 'Privacy', '# Privacy',
+        ?, 12, 'active', 1_000, 500)
+    `);
+    insert.run("consent-original", "privacy-v1", Buffer.alloc(32, 1));
+    expect(() => insert.run(
+      "consent-replacement", "privacy-v2", Buffer.alloc(32, 2),
+    )).toThrow();
+    expect(() => db.prepare(`
+      UPDATE consent_documents SET title = 'Changed' WHERE id = 'consent-original'
+    `).run()).toThrow(/immutable/i);
+    expect(() => db.prepare(`
+      UPDATE consent_documents SET effective_at_ms = 2_000 WHERE id = 'consent-original'
+    `).run()).toThrow(/effective/i);
+  });
+
+  it.each(["incomplete-bundle", "invalid-lifecycle"] as const)(
+    "rolls back v4 atomically for malformed v3 consent data: %s",
+    (scenario) => {
+      const db = openDatabase(":memory:");
+      try {
+        runMigrations(db, 1_000, 3);
+        const insert = db.sqlite.prepare(`
+          INSERT INTO consent_documents (
+            id, bundle_id, kind, locale, version, title, body_markdown,
+            content_sha256, retention_months, state, effective_at_ms, created_at_ms
+          ) VALUES (?, 'legacy-malformed', ?, ?, ?, 'Title', '# Body', ?, ?, ?, ?, 500)
+        `);
+        const rows = scenario === "incomplete-bundle"
+          ? [{ kind: "privacy", locale: "ko" }]
+          : (["ko", "en", "zh-Hans", "zh-Hant"] as const).flatMap((locale) => (
+              ["privacy", "marketing"] as const
+            ).map((kind) => ({ kind, locale })));
+        rows.forEach(({ kind, locale }, index) => insert.run(
+          `legacy-${index}`,
+          kind,
+          locale,
+          `${kind}-legacy-${locale}`,
+          Buffer.alloc(32, index + 1),
+          kind === "privacy" ? 12 : 24,
+          scenario === "invalid-lifecycle" ? "active" : "draft",
+          null,
+        ));
+
+        expect(() => runMigrations(db, 2_000)).toThrow();
+        expect(db.sqlite.prepare(
+          "SELECT max(version) version FROM schema_migrations",
+        ).get()).toEqual({ version: 3 });
+        expect(db.sqlite.pragma("user_version", { simple: true })).toBe(3);
+        expect(db.sqlite.prepare(`
+          SELECT count(*) count FROM sqlite_master
+          WHERE name = 'consent_documents_bundle_identity_uidx'
+        `).get()).toEqual({ count: 0 });
+      } finally {
+        closeDatabase(db);
+      }
+    },
+  );
 
   it("enforces immutable revisions, locale ownership, one Codex lane, and one active release", () => {
     testDatabase = createTestDatabase();
@@ -852,7 +933,7 @@ describe("SQLite durability and migrations", () => {
       runMigrations(restarted, 3_000);
       expect(restarted.sqlite.prepare(
         "SELECT version, name FROM schema_migrations ORDER BY version",
-      ).all()).toHaveLength(3);
+      ).all()).toHaveLength(4);
       expect(restarted.sqlite.prepare(
         "SELECT body_markdown FROM article_revisions WHERE id = 'legacy-revision'",
       ).get()).toEqual({ body_markdown: "# Legacy body" });
@@ -953,7 +1034,7 @@ describe("SQLite durability and migrations", () => {
     }
   });
 
-  it("reports ready only for the exact full history and required v3 schema invariants", () => {
+  it("reports ready only for the exact full history and required latest schema invariants", () => {
     for (const mutation of [
       "ALTER TABLE consultations DROP COLUMN marketing_withdrawn_at_ms",
       "DROP TABLE admin_pre_auth_challenges",
@@ -988,7 +1069,7 @@ describe("SQLite durability and migrations", () => {
     }
   });
 
-  it("upgrades a file-backed v1 database to v3 without losing consultations or sessions", () => {
+  it("upgrades a file-backed v1 database to the latest schema without losing consultations or sessions", () => {
     const directory = mkdtempSync(join(tmpdir(), "wisdom-control-v1-"));
     const path = join(directory, "control.sqlite");
     const v1 = openDatabase(path);
@@ -1022,6 +1103,7 @@ describe("SQLite durability and migrations", () => {
       { version: 1 },
       { version: 2 },
       { version: 3 },
+      { version: 4 },
     ]);
     expect(upgraded.sqlite.prepare("SELECT id FROM consultations").all()).toEqual([{ id: "consultation-v1" }]);
     expect(upgraded.sqlite.prepare("SELECT admin_id FROM admin_sessions").all()).toEqual([{ admin_id: "admin-v1" }]);
@@ -1057,7 +1139,7 @@ describe("SQLite durability and migrations", () => {
     closeDatabase(upgraded);
     const restarted = openDatabase(path);
     runMigrations(restarted, 4_000);
-    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 3 });
+    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 4 });
     closeDatabase(restarted);
     rmSync(directory, { force: true, recursive: true });
   });
@@ -1177,16 +1259,16 @@ describe("SQLite durability and migrations", () => {
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_documents (
         id, bundle_id, kind, locale, version, title, body_markdown,
-        content_sha256, retention_months, state, created_at_ms
+        content_sha256, retention_months, state, effective_at_ms, created_at_ms
       ) VALUES ('marketing-document', 'bundle', 'marketing', 'ko', 'm-v1',
-        'Marketing', 'Terms', ?, 24, 'active', 0)
+        'Marketing', 'Terms', ?, 24, 'active', 0, 0)
     `).run(Buffer.alloc(32, 3));
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_documents (
         id, bundle_id, kind, locale, version, title, body_markdown,
-        content_sha256, retention_months, state, created_at_ms
+        content_sha256, retention_months, state, effective_at_ms, created_at_ms
       ) VALUES ('privacy-document', 'bundle', 'privacy', 'ko', 'p-v1',
-        'Privacy', 'Terms', ?, 12, 'active', 0)
+        'Privacy', 'Terms', ?, 12, 'active', 0, 0)
     `).run(Buffer.alloc(32, 6));
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_events (

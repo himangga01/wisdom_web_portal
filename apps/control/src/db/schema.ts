@@ -59,6 +59,7 @@ export const consentDocuments = sqliteTable("consent_documents", {
   createdByAdminId: text("created_by_admin_id"),
 }, (table) => [
   uniqueIndex("consent_documents_identity_uidx").on(table.kind, table.locale, table.version),
+  uniqueIndex("consent_documents_bundle_identity_uidx").on(table.bundleId, table.kind, table.locale),
   index("consent_documents_bundle_idx").on(table.bundleId, table.state),
   index("consent_documents_state_kind_locale_idx").on(table.state, table.kind, table.locale),
 ]);
@@ -284,6 +285,7 @@ export const REQUIRED_INDEXES = [
   "consultations_phone_blind_idx",
   "consultations_email_blind_idx",
   "consent_documents_identity_uidx",
+  "consent_documents_bundle_identity_uidx",
   "consent_documents_one_active_uidx",
   "consent_documents_bundle_idx",
   "consent_documents_state_kind_locale_idx",
@@ -327,6 +329,12 @@ export const REQUIRED_INDEXES = [
 ] as const;
 
 export const REQUIRED_TRIGGERS = [
+  "consent_documents_immutable_content_update",
+  "consent_documents_immutable_delete",
+  "consent_documents_lifecycle_insert",
+  "consent_documents_effective_time_immutable",
+  "consent_documents_retired_time_immutable",
+  "consent_documents_state_transition_update",
   "article_revisions_immutable_update",
   "article_revisions_immutable_delete",
   "article_review_runs_immutable_update",
@@ -340,7 +348,7 @@ export const REQUIRED_TRIGGERS = [
   "releases_delete_retired_only",
 ] as const;
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const drizzleSchema = {
   schemaMigrations,

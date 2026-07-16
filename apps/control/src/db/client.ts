@@ -777,10 +777,101 @@ CREATE INDEX publication_outbox_queue_idx
   ON publication_outbox(state, available_at_ms, lease_expires_at_ms);
 `;
 
+const FOURTH_MIGRATION = `
+CREATE TABLE consent_documents_v4_guard (
+  valid INTEGER NOT NULL CHECK (valid = 1)
+);
+INSERT INTO consent_documents_v4_guard (valid)
+SELECT 0 FROM consent_documents
+WHERE (state = 'draft' AND (effective_at_ms IS NOT NULL OR retired_at_ms IS NOT NULL))
+  OR (state = 'active' AND (effective_at_ms IS NULL OR retired_at_ms IS NOT NULL))
+  OR (state = 'retired' AND (
+    effective_at_ms IS NULL OR retired_at_ms IS NULL OR retired_at_ms < effective_at_ms
+  ))
+LIMIT 1;
+INSERT INTO consent_documents_v4_guard (valid)
+SELECT 0 FROM consent_documents
+GROUP BY bundle_id
+HAVING count(*) <> 8
+  OR count(DISTINCT kind || char(0) || locale) <> 8
+LIMIT 1;
+DROP TABLE consent_documents_v4_guard;
+
+CREATE UNIQUE INDEX consent_documents_bundle_identity_uidx
+  ON consent_documents(bundle_id, kind, locale);
+
+CREATE TRIGGER consent_documents_immutable_content_update
+BEFORE UPDATE ON consent_documents
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.bundle_id IS NOT OLD.bundle_id
+  OR NEW.kind IS NOT OLD.kind
+  OR NEW.locale IS NOT OLD.locale
+  OR NEW.version IS NOT OLD.version
+  OR NEW.title IS NOT OLD.title
+  OR NEW.body_markdown IS NOT OLD.body_markdown
+  OR NEW.content_sha256 IS NOT OLD.content_sha256
+  OR NEW.retention_months IS NOT OLD.retention_months
+  OR NEW.created_at_ms IS NOT OLD.created_at_ms
+  OR NEW.created_by_admin_id IS NOT OLD.created_by_admin_id
+BEGIN
+  SELECT RAISE(ABORT, 'consent document content is immutable');
+END;
+
+CREATE TRIGGER consent_documents_immutable_delete
+BEFORE DELETE ON consent_documents
+BEGIN
+  SELECT RAISE(ABORT, 'consent documents are immutable');
+END;
+
+CREATE TRIGGER consent_documents_lifecycle_insert
+BEFORE INSERT ON consent_documents
+WHEN (NEW.state = 'draft' AND (NEW.effective_at_ms IS NOT NULL OR NEW.retired_at_ms IS NOT NULL))
+  OR (NEW.state = 'active' AND (NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NOT NULL))
+  OR (NEW.state = 'retired' AND (
+    NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NULL
+    OR NEW.retired_at_ms < NEW.effective_at_ms
+  ))
+BEGIN
+  SELECT RAISE(ABORT, 'invalid consent document lifecycle');
+END;
+
+CREATE TRIGGER consent_documents_effective_time_immutable
+BEFORE UPDATE ON consent_documents
+WHEN OLD.effective_at_ms IS NOT NULL
+  AND NEW.effective_at_ms IS NOT OLD.effective_at_ms
+BEGIN
+  SELECT RAISE(ABORT, 'consent document effective time is immutable');
+END;
+
+CREATE TRIGGER consent_documents_retired_time_immutable
+BEFORE UPDATE ON consent_documents
+WHEN OLD.retired_at_ms IS NOT NULL
+  AND NEW.retired_at_ms IS NOT OLD.retired_at_ms
+BEGIN
+  SELECT RAISE(ABORT, 'consent document retired time is immutable');
+END;
+
+CREATE TRIGGER consent_documents_state_transition_update
+BEFORE UPDATE ON consent_documents
+WHEN (OLD.state = 'draft' AND NEW.state NOT IN ('draft','active'))
+  OR (OLD.state = 'active' AND NEW.state NOT IN ('active','retired'))
+  OR (OLD.state = 'retired' AND NEW.state <> 'retired')
+  OR (NEW.state = 'draft' AND (NEW.effective_at_ms IS NOT NULL OR NEW.retired_at_ms IS NOT NULL))
+  OR (NEW.state = 'active' AND (NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NOT NULL))
+  OR (NEW.state = 'retired' AND (
+    NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NULL
+    OR NEW.retired_at_ms < NEW.effective_at_ms
+  ))
+BEGIN
+  SELECT RAISE(ABORT, 'invalid consent document state transition');
+END;
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
   { version: 3, name: "article-publication-pipeline", sql: THIRD_MIGRATION },
+  { version: 4, name: "immutable-consent-bundles", sql: FOURTH_MIGRATION },
 ] as const;
 
 export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
@@ -793,6 +884,95 @@ function normalizeSchemaSql(sql: string): string {
 }
 
 const REQUIRED_SCHEMA_DEFINITIONS = [
+  {
+    type: "index",
+    name: "consent_documents_bundle_identity_uidx",
+    sql: "CREATE UNIQUE INDEX consent_documents_bundle_identity_uidx ON consent_documents(bundle_id, kind, locale)",
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_immutable_content_update",
+    sql: `CREATE TRIGGER consent_documents_immutable_content_update
+      BEFORE UPDATE ON consent_documents
+      WHEN NEW.id IS NOT OLD.id
+        OR NEW.bundle_id IS NOT OLD.bundle_id
+        OR NEW.kind IS NOT OLD.kind
+        OR NEW.locale IS NOT OLD.locale
+        OR NEW.version IS NOT OLD.version
+        OR NEW.title IS NOT OLD.title
+        OR NEW.body_markdown IS NOT OLD.body_markdown
+        OR NEW.content_sha256 IS NOT OLD.content_sha256
+        OR NEW.retention_months IS NOT OLD.retention_months
+        OR NEW.created_at_ms IS NOT OLD.created_at_ms
+        OR NEW.created_by_admin_id IS NOT OLD.created_by_admin_id
+      BEGIN
+        SELECT RAISE(ABORT, 'consent document content is immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_immutable_delete",
+    sql: `CREATE TRIGGER consent_documents_immutable_delete
+      BEFORE DELETE ON consent_documents
+      BEGIN
+        SELECT RAISE(ABORT, 'consent documents are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_lifecycle_insert",
+    sql: `CREATE TRIGGER consent_documents_lifecycle_insert
+      BEFORE INSERT ON consent_documents
+      WHEN (NEW.state = 'draft' AND (NEW.effective_at_ms IS NOT NULL OR NEW.retired_at_ms IS NOT NULL))
+        OR (NEW.state = 'active' AND (NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NOT NULL))
+        OR (NEW.state = 'retired' AND (
+          NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NULL
+          OR NEW.retired_at_ms < NEW.effective_at_ms
+        ))
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid consent document lifecycle');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_effective_time_immutable",
+    sql: `CREATE TRIGGER consent_documents_effective_time_immutable
+      BEFORE UPDATE ON consent_documents
+      WHEN OLD.effective_at_ms IS NOT NULL
+        AND NEW.effective_at_ms IS NOT OLD.effective_at_ms
+      BEGIN
+        SELECT RAISE(ABORT, 'consent document effective time is immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_retired_time_immutable",
+    sql: `CREATE TRIGGER consent_documents_retired_time_immutable
+      BEFORE UPDATE ON consent_documents
+      WHEN OLD.retired_at_ms IS NOT NULL
+        AND NEW.retired_at_ms IS NOT OLD.retired_at_ms
+      BEGIN
+        SELECT RAISE(ABORT, 'consent document retired time is immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_documents_state_transition_update",
+    sql: `CREATE TRIGGER consent_documents_state_transition_update
+      BEFORE UPDATE ON consent_documents
+      WHEN (OLD.state = 'draft' AND NEW.state NOT IN ('draft','active'))
+        OR (OLD.state = 'active' AND NEW.state NOT IN ('active','retired'))
+        OR (OLD.state = 'retired' AND NEW.state <> 'retired')
+        OR (NEW.state = 'draft' AND (NEW.effective_at_ms IS NOT NULL OR NEW.retired_at_ms IS NOT NULL))
+        OR (NEW.state = 'active' AND (NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NOT NULL))
+        OR (NEW.state = 'retired' AND (
+          NEW.effective_at_ms IS NULL OR NEW.retired_at_ms IS NULL
+          OR NEW.retired_at_ms < NEW.effective_at_ms
+        ))
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid consent document state transition');
+      END`,
+  },
   {
     type: "index",
     name: "article_translation_jobs_one_running_uidx",

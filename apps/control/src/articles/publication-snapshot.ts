@@ -331,6 +331,12 @@ function captureInsideTransaction(
   } catch {
     throw new Error("PUBLICATION_CONSENT_BUNDLE_INVALID");
   }
+  const consentPii = checkArticleForRetainedConsultationPii(
+    db,
+    keyProvider,
+    consentBundle.documents.flatMap((document) => [document.title, document.bodyMarkdown]),
+  );
+  if (!consentPii.safe) throw new Error("PUBLICATION_CONSENT_PII_REJECTED");
   consentBundle = freezePublishedConsentBundle(consentBundle);
   const consentBytes = canonicalJson(consentBundle);
   const manifest = publishedManifestSchema.parse({

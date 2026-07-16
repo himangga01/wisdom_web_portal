@@ -9,7 +9,7 @@ import {
 } from "@wisdom/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { blindIndex, createStaticKeyProvider } from "../crypto/index.js";
+import { blindIndex, createStaticKeyProvider, encryptPii } from "../crypto/index.js";
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
   activateConsentBundle,
@@ -235,10 +235,59 @@ describe("immutable publication snapshot", () => {
     }
   });
 
+  it("rejects retained consultation PII in every consent title and body boundary", () => {
+    const consultationId = "consent-policy-private";
+    const privatePii = {
+      name: "김민지",
+      phone: "010-1234-5678",
+      email: "retained-person@example.com",
+      company: "비공개테크",
+      message: "혁신제품 지정 심사에서 내부 사정으로 두 차례 보완 요청을 받았습니다.",
+    };
+    fixture.db.sqlite.prepare(`
+      INSERT INTO consultations (
+        id, receipt_id, status, locale, category, preferred_contact,
+        pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+        blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+        retention_expires_at_ms, row_version
+      ) VALUES (?, 'receipt-consent-private', 'received', 'ko', 'procurement', 'email',
+        ?, ?, ?, ?, ?, 0, 0, 0, 9999999999999, 1)
+    `).run(
+      consultationId,
+      encryptPii(keyProvider, consultationId, privatePii),
+      keyProvider.active().id,
+      blindIndex(keyProvider, "phone", privatePii.phone),
+      blindIndex(keyProvider, "email", privatePii.email),
+      keyProvider.active().id,
+    );
+    let caseIndex = 0;
+    for (const documentIndex of consentBundle().keys()) {
+      for (const field of ["title", "bodyMarkdown"] as const) {
+        const candidate = consentBundle(
+          `bundle-private-${caseIndex}`,
+          `private-${caseIndex}`,
+        );
+        candidate[documentIndex] = {
+          ...candidate[documentIndex]!,
+          [field]: `Retained private contact ${privatePii.email}`,
+        };
+        seedCompleteConsentBundles(fixture.db, candidate, NOW + caseIndex + 1);
+        activateConsentBundle(fixture.db, candidate[documentIndex]!.bundleId, NOW + caseIndex + 1);
+        expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
+          promote: [],
+          nowMs: NOW + caseIndex + 1,
+        }), `${documentIndex}:${field}`).toThrow(/^PUBLICATION_CONSENT_PII_REJECTED$/);
+        caseIndex += 1;
+      }
+    }
+    expect(caseIndex).toBe(16);
+  });
+
   it("fails closed when no complete consistent active consent bundle exists", () => {
     fixture.db.sqlite.prepare(
-      "UPDATE consent_documents SET state = 'retired' WHERE kind = 'privacy' AND locale = 'en'",
-    ).run();
+      `UPDATE consent_documents SET state = 'retired', retired_at_ms = ?
+       WHERE kind = 'privacy' AND locale = 'en'`,
+    ).run(NOW);
 
     expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
       promote: [{

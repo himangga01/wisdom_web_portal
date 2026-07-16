@@ -58,6 +58,7 @@ interface ConsentRow {
   retention_months: 12 | 24;
   state: "draft" | "active" | "retired";
   effective_at_ms: number | null;
+  retired_at_ms: number | null;
 }
 
 function contentDigest(document: ConsentDocumentSeed): Buffer {
@@ -107,63 +108,13 @@ export function seedConsentDocuments(
   documents: readonly ConsentDocumentSeed[],
   createdAtMs = Date.now(),
 ): number {
+  if (documents.length === 0) throw new Error("Consent seed requires a complete bundle");
   for (const document of documents) assertSeed(document);
-  const identities = new Set(documents.map((document) => `${document.kind}\0${document.locale}\0${document.version}`));
+  const identities = new Set(documents.map((document) => (
+    `${document.bundleId}\0${document.kind}\0${document.locale}`
+  )));
   if (identities.size !== documents.length) throw new Error("Duplicate consent document seed");
 
-  let inserted = 0;
-  db.sqlite.exec("BEGIN IMMEDIATE");
-  try {
-    const find = db.sqlite.prepare(
-      "SELECT * FROM consent_documents WHERE kind = ? AND locale = ? AND version = ?",
-    );
-    const insert = db.sqlite.prepare(`
-      INSERT INTO consent_documents (
-        id, bundle_id, kind, locale, version, title, body_markdown,
-        content_sha256, retention_months, state, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
-    `);
-    for (const document of documents) {
-      const digest = contentDigest(document);
-      const existing = find.get(document.kind, document.locale, document.version) as ConsentRow | undefined;
-      if (existing) {
-        const unchanged =
-          existing.bundle_id === document.bundleId &&
-          existing.title === document.title &&
-          existing.body_markdown === document.bodyMarkdown &&
-          existing.retention_months === document.retentionMonths &&
-          existing.content_sha256.equals(digest);
-        if (!unchanged) throw new Error("Immutable consent document conflict");
-        continue;
-      }
-      insert.run(
-        randomUUID(),
-        document.bundleId,
-        document.kind,
-        document.locale,
-        document.version,
-        document.title,
-        document.bodyMarkdown,
-        digest,
-        document.retentionMonths,
-        createdAtMs,
-      );
-      inserted += 1;
-    }
-    db.sqlite.exec("COMMIT");
-    return inserted;
-  } catch (error) {
-    if (db.sqlite.inTransaction) db.sqlite.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-export function seedCompleteConsentBundles(
-  db: ControlDatabase,
-  documents: readonly ConsentDocumentSeed[],
-  createdAtMs = Date.now(),
-): number {
-  if (documents.length === 0) throw new Error("Consent seed requires a complete bundle");
   const bundles = new Map<string, ConsentDocumentSeed[]>();
   for (const document of documents) {
     const bundle = bundles.get(document.bundleId) ?? [];
@@ -180,6 +131,77 @@ export function seedCompleteConsentBundles(
       throw new Error("Consent seed requires every complete bundle to contain all eight documents");
     }
   }
+
+  let inserted = 0;
+  db.sqlite.exec("BEGIN IMMEDIATE");
+  try {
+    const findBundle = db.sqlite.prepare(
+      "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale",
+    );
+    const findVersion = db.sqlite.prepare(
+      "SELECT bundle_id FROM consent_documents WHERE kind = ? AND locale = ? AND version = ?",
+    );
+    const insert = db.sqlite.prepare(`
+      INSERT INTO consent_documents (
+        id, bundle_id, kind, locale, version, title, body_markdown,
+        content_sha256, retention_months, state, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)
+    `);
+    for (const [bundleId, bundle] of bundles) {
+      const existingRows = findBundle.all(bundleId) as ConsentRow[];
+      if (existingRows.length > 0) {
+        const exactReseed = existingRows.length === LOCALES.length * 2 && bundle.every((document) => {
+          const existing = existingRows.find((row) => (
+            row.kind === document.kind && row.locale === document.locale
+          ));
+          const digest = contentDigest(document);
+          return existing !== undefined
+            && existing.version === document.version
+            && existing.title === document.title
+            && existing.body_markdown === document.bodyMarkdown
+            && existing.retention_months === document.retentionMonths
+            && existing.content_sha256.equals(digest);
+        });
+        if (!exactReseed) {
+          throw new Error("CONSENT_BUNDLE_IMMUTABLE");
+        }
+        continue;
+      }
+
+      for (const document of bundle) {
+        if (findVersion.get(document.kind, document.locale, document.version)) {
+          throw new Error("CONSENT_DOCUMENT_IDENTITY_CONFLICT");
+        }
+      }
+      for (const document of bundle) {
+        insert.run(
+          randomUUID(),
+          document.bundleId,
+          document.kind,
+          document.locale,
+          document.version,
+          document.title,
+          document.bodyMarkdown,
+          contentDigest(document),
+          document.retentionMonths,
+          createdAtMs,
+        );
+        inserted += 1;
+      }
+    }
+    db.sqlite.exec("COMMIT");
+    return inserted;
+  } catch (error) {
+    if (db.sqlite.inTransaction) db.sqlite.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function seedCompleteConsentBundles(
+  db: ControlDatabase,
+  documents: readonly ConsentDocumentSeed[],
+  createdAtMs = Date.now(),
+): number {
   return seedConsentDocuments(db, documents, createdAtMs);
 }
 
@@ -198,6 +220,18 @@ function hasCanonicalVersions(rows: readonly ConsentRow[]): boolean {
   return rows.every((row) => consentVersionSchema.safeParse(row.version).success);
 }
 
+function hasValidContentDigests(rows: readonly ConsentRow[]): boolean {
+  return rows.every((row) => row.content_sha256.equals(contentDigest({
+    bundleId: row.bundle_id,
+    kind: row.kind,
+    locale: row.locale,
+    version: row.version,
+    title: row.title,
+    bodyMarkdown: row.body_markdown,
+    retentionMonths: row.retention_months,
+  })));
+}
+
 function digestRows(rows: readonly ConsentRow[]): string {
   return createHash("sha256").update(JSON.stringify(rows.map((row) => ({
     kind: row.kind,
@@ -212,6 +246,9 @@ export function getConsentBundleDigest(db: ControlDatabase, bundleId: string): s
     "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale, version",
   ).all(bundleId) as ConsentRow[];
   if (!hasCompletePairs(rows)) throw new Error("Consent digest requires a complete bundle");
+  if (!hasRequiredRetention(rows) || !hasCanonicalVersions(rows) || !hasValidContentDigests(rows)) {
+    throw new Error("Consent digest requires canonical immutable documents");
+  }
   return digestRows(rows);
 }
 
@@ -234,8 +271,14 @@ export function activateConsentBundle(
       "SELECT * FROM consent_documents WHERE bundle_id = ? ORDER BY kind, locale",
     ).all(bundleId) as ConsentRow[];
     if (!hasCompletePairs(rows)) throw new Error("Consent activation requires a complete bundle");
+    if (rows.some((row) => (
+      row.state !== "draft" || row.effective_at_ms !== null || row.retired_at_ms !== null
+    ))) {
+      throw new Error("CONSENT_BUNDLE_REACTIVATION_REJECTED");
+    }
     if (!hasRequiredRetention(rows)) throw new Error("Consent activation requires fixed retention roles");
     if (!hasCanonicalVersions(rows)) throw new Error("Consent activation requires canonical versions");
+    if (!hasValidContentDigests(rows)) throw new Error("Consent activation requires valid content digests");
     if (confirmSha !== undefined) {
       const actual = digestRows(rows);
       const suppliedBytes = Buffer.from(confirmSha, "hex");
@@ -256,7 +299,7 @@ export function activateConsentBundle(
     const result = db.sqlite.prepare(`
       UPDATE consent_documents
       SET state = 'active', effective_at_ms = ?, retired_at_ms = NULL
-      WHERE bundle_id = ?
+      WHERE bundle_id = ? AND state = 'draft' AND effective_at_ms IS NULL
     `).run(effectiveAtMs, bundleId);
     if (result.changes !== LOCALES.length * 2) throw new Error("Consent activation was incomplete");
     db.sqlite.exec("COMMIT");

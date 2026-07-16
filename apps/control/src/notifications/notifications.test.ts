@@ -811,9 +811,9 @@ describe("notification worker privacy rechecks", () => {
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_documents (
         id, bundle_id, kind, locale, version, title, body_markdown,
-        content_sha256, retention_months, state, created_at_ms
+        content_sha256, retention_months, state, effective_at_ms, created_at_ms
       ) VALUES ('marketing-document', 'bundle', 'marketing', 'ko', 'marketing-v1',
-        'Marketing', 'Terms', ?, 24, 'active', 0)
+        'Marketing', 'Terms', ?, 24, 'active', 0, 0)
     `).run(Buffer.alloc(32, 31));
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_events (
@@ -908,9 +908,9 @@ describe("notification worker privacy rechecks", () => {
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_documents (
         id, bundle_id, kind, locale, version, title, body_markdown,
-        content_sha256, retention_months, state, created_at_ms
+        content_sha256, retention_months, state, effective_at_ms, created_at_ms
       ) VALUES ('marketing-document-error', 'bundle', 'marketing', 'ko', 'marketing-v1',
-        'Marketing', 'Terms', ?, 24, 'active', 0)
+        'Marketing', 'Terms', ?, 24, 'active', 0, 0)
     `).run(Buffer.alloc(32, 32));
     testDatabase.db.sqlite.prepare(`
       INSERT INTO consent_events (

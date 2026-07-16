@@ -466,11 +466,12 @@ function assertBaseReleaseConsistent(
 function assertConsentBundleConsistent(
   db: ControlDatabase,
   snapshot: PublicationSnapshot,
-): void {
+): PublishedConsentBundle {
   const active = getActivePublishedConsentBundle(db);
   if (!active || !consentBundlesEqual(active, snapshot.consentBundle)) {
     throw new Error("PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD");
   }
+  return active;
 }
 
 function insertPreparedRelease(
@@ -507,7 +508,13 @@ function insertPreparedRelease(
       || (active?.activation_generation ?? 0) !== snapshot.baseReleaseGeneration) {
       throw new Error("PUBLICATION_BASE_RELEASE_CHANGED");
     }
-    assertConsentBundleConsistent(db, snapshot);
+    const activeConsentBundle = assertConsentBundleConsistent(db, snapshot);
+    const consentPii = checkArticleForRetainedConsultationPii(
+      db,
+      keyProvider,
+      activeConsentBundle.documents.flatMap((document) => [document.title, document.bodyMarkdown]),
+    );
+    if (!consentPii.safe) throw new Error("PUBLICATION_PII_CHANGED_DURING_BUILD");
     for (const promotion of snapshot.promotions) {
       const head = db.sqlite.prepare(`
         SELECT state, head_revision_id, approved_revision_id, row_version
@@ -653,6 +660,23 @@ function verifyReleaseMetadata(
   return metadata;
 }
 
+function verifyReleaseAuthority(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+  row: ReleaseRow,
+): { verified: SealedPublicationRelease; metadata: PublicationReleaseMetadata } {
+  const verified = verifyReleaseRow(config, row);
+  const metadata = verifyReleaseMetadata(row, verified);
+  const databaseBundle = getPublishedConsentBundleById(
+    db,
+    verified.consentBundle.bundleId,
+  );
+  if (!databaseBundle || !consentBundlesEqual(databaseBundle, verified.consentBundle)) {
+    throw new Error("PUBLICATION_RELEASE_CONSENT_BUNDLE_MISMATCH");
+  }
+  return { verified, metadata };
+}
+
 export function createReleaseConsentAuthorityResolver(
   db: ControlDatabase,
   config: PublicationReleaseConfig,
@@ -675,15 +699,7 @@ export function createReleaseConsentAuthorityResolver(
         const active = activeRows[0]!;
         const activePath = assertDirectReleasePath(config.releaseRoot, active.path);
         if (readCurrentTarget(config) !== activePath) return undefined;
-        const verified = verifyReleaseRow(config, active);
-        verifyReleaseMetadata(active, verified);
-        const databaseBundle = getPublishedConsentBundleById(
-          db,
-          verified.consentBundle.bundleId,
-        );
-        if (!databaseBundle || !consentBundlesEqual(databaseBundle, verified.consentBundle)) {
-          return undefined;
-        }
+        const { verified } = verifyReleaseAuthority(db, config, active);
         return {
           source: "release" as const,
           releaseId: active.id,
@@ -810,12 +826,16 @@ function commitActivation(
     throw new Error("PUBLICATION_ACTIVATION_NOT_PENDING");
   }
   const target = releaseRow(db, activation.release_id);
-  const verified = verifyReleaseRow(config, target);
+  const { verified } = verifyReleaseAuthority(db, config, target);
   if (verified.manifestSha256 !== activation.manifest_sha256.toString("hex")) {
     throw new Error("PUBLICATION_ACTIVATION_MANIFEST_MISMATCH");
   }
   const previousUrls = activation.previous_release_id
-    ? verifyReleaseRow(config, releaseRow(db, activation.previous_release_id)).sitemapUrls
+    ? verifyReleaseAuthority(
+        db,
+        config,
+        releaseRow(db, activation.previous_release_id),
+      ).verified.sitemapUrls
     : [];
   const indexNowPayload = activationIndexNowPayload(
     config,
@@ -833,6 +853,11 @@ function commitActivation(
     if (!liveActivation || !["prepared", "switched"].includes(liveActivation)) {
       throw new Error("PUBLICATION_ACTIVATION_FENCE_LOST");
     }
+    const liveTarget = releaseRow(db, activation.release_id);
+    const { verified: liveVerified } = verifyReleaseAuthority(db, config, liveTarget);
+    if (liveVerified.manifestSha256 !== activation.manifest_sha256.toString("hex")) {
+      throw new Error("PUBLICATION_ACTIVATION_MANIFEST_MISMATCH");
+    }
     const active = db.sqlite.prepare(`
       SELECT id FROM releases WHERE state = 'active'
     `).get() as { id: string } | undefined;
@@ -841,7 +866,7 @@ function commitActivation(
     }
     if (activation.operation === "publish") {
       const liveConsentBundle = getActivePublishedConsentBundle(db);
-      if (!liveConsentBundle || !consentBundlesEqual(liveConsentBundle, verified.consentBundle)) {
+      if (!liveConsentBundle || !consentBundlesEqual(liveConsentBundle, liveVerified.consentBundle)) {
         throw new Error("PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD");
       }
     }
@@ -1196,7 +1221,7 @@ export function rollbackPublication(
   const dependencies = resolvedDependencies(dependencyOverrides);
   const target = releaseRow(db, input.releaseId);
   if (target.state !== "retired") throw new Error("PUBLICATION_ROLLBACK_TARGET_NOT_RETIRED");
-  const verified = verifyReleaseRow(config, target);
+  const { verified } = verifyReleaseAuthority(db, config, target);
   const active = db.sqlite.prepare(`
     SELECT id, path FROM releases WHERE state = 'active'
   `).get() as { id: string; path: string } | undefined;
@@ -1205,7 +1230,11 @@ export function rollbackPublication(
   if (current !== assertDirectReleasePath(config.releaseRoot, active.path)) {
     throw new Error("PUBLICATION_BASE_POINTER_MISMATCH");
   }
-  const activeVerified = verifyReleaseRow(config, releaseRow(db, active.id));
+  const activeVerified = verifyReleaseAuthority(
+    db,
+    config,
+    releaseRow(db, active.id),
+  ).verified;
   activationIndexNowPayload(config, verified.sitemapUrls, activeVerified.sitemapUrls);
   const activationId = safeUuid(dependencies.randomUUID);
   db.sqlite.prepare(`
@@ -1257,7 +1286,8 @@ export function reconcilePublicationActivation(
       return { kind: "already-consistent" };
     }
     if (active && current === assertDirectReleasePath(config.releaseRoot, active.path)) {
-      const verified = verifySealedPublicationRelease(current, config.publicOrigin);
+      const activeRow = releaseRow(db, active.id);
+      const { verified } = verifyReleaseAuthority(db, config, activeRow);
       if (!active.manifest_sha256.equals(Buffer.from(verified.manifestSha256, "hex"))) {
         throw new Error("PUBLICATION_ACTIVE_MANIFEST_MISMATCH");
       }
