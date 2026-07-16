@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -285,6 +285,26 @@ test("incident state rejects a linked parent", async (t) => {
     writeProtectedIncidentState(path.join(linkedParent, "monitor-state.json"), { formatVersion: 1 }),
     { code: "MONITOR_INCIDENT_STATE_INVALID" },
   );
+});
+
+test("incident state load rejects a parent directory swapped after validation", async (t) => {
+  const root = await fixture(t);
+  const parent = path.join(root, "state");
+  const replacement = path.join(root, "replacement");
+  const moved = path.join(root, "state-original");
+  await mkdir(parent, { mode: 0o700 });
+  await mkdir(replacement, { mode: 0o700 });
+  const original = { formatVersion: 1, fingerprint: "a".repeat(64), lastSentAt: "2026-07-16T01:00:00.000Z" };
+  const injected = { ...original, fingerprint: "b".repeat(64) };
+  await writeFile(path.join(parent, "incident.json"), JSON.stringify(original), { mode: 0o600 });
+  await writeFile(path.join(replacement, "incident.json"), JSON.stringify(injected), { mode: 0o600 });
+
+  await assert.rejects(loadProtectedIncidentState(path.join(parent, "incident.json"), {
+    beforeRead: async () => {
+      await rename(parent, moved);
+      await rename(replacement, parent);
+    },
+  }), { code: "MONITOR_INCIDENT_STATE_INVALID" });
 });
 
 test("incident state rejects oversized JSON", async (t) => {

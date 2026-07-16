@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -37,7 +37,7 @@ test("backup CLI dry-run needs no SQLite, age binary, identity, or filesystem wr
 });
 
 test("monitor CLI validates an absolute config without checks, secrets, or sends", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-cli-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-cli-")));
   const configPath = path.join(root, "monitoring.json");
   await writeFile(configPath, JSON.stringify({
     externalPublic: {

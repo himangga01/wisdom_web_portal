@@ -3,37 +3,86 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const MAX_RESULT_BYTES = 4 * 1024;
 
-function fail() {
+function fail(code = "MONITOR_DATABASE_QUERY_FAILED") {
   const error = new Error("Database aggregate check failed");
-  error.code = "MONITOR_DATABASE_QUERY_FAILED";
+  error.code = code;
   throw error;
 }
 
-async function assertIndependentSecureDatabase(databasePath) {
+function pathChanged() {
+  fail("DB_PATH_CHANGED");
+}
+
+function protectedMode(metadata) {
+  return process.platform === "win32" || (metadata.mode & 0o022n) === 0n;
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+}
+
+async function walkIndependentSecurePath(databasePath) {
+  const parsed = path.parse(databasePath);
+  let current = parsed.root;
+  const components = [];
+  for (const segment of databasePath.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const metadata = await lstat(current, { bigint: true });
+    if (metadata.isSymbolicLink() || !protectedMode(metadata)) pathChanged();
+    components.push({ path: current, metadata });
+  }
+  return components;
+}
+
+function assertSameWalk(expected, actual) {
+  if (expected.length !== actual.length) pathChanged();
+  for (let index = 0; index < expected.length; index += 1) {
+    if (expected[index].path !== actual[index].path || !sameIdentity(expected[index].metadata, actual[index].metadata)) pathChanged();
+  }
+}
+
+async function openIndependentSecureDatabase(databasePath) {
   if (
     typeof databasePath !== "string" || databasePath.length > 4_096 || !path.isAbsolute(databasePath) ||
-    path.normalize(databasePath) !== databasePath || /[\0\r\n]/u.test(databasePath)
-  ) fail();
-  const resolved = path.resolve(databasePath);
-  const parsed = path.parse(resolved);
-  let current = parsed.root;
-  for (const segment of resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
-    current = path.join(current, segment);
-    const metadata = await lstat(current);
-    if (metadata.isSymbolicLink()) fail();
-    if (process.platform !== "win32" && (metadata.mode & 0o022) !== 0) fail();
-  }
-  if (await realpath(resolved) !== resolved) fail();
-  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(resolved, flags);
+    path.normalize(databasePath) !== databasePath || path.resolve(databasePath) !== databasePath || /[\0\r\n]/u.test(databasePath)
+  ) pathChanged();
+  let components;
+  let handle;
   try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || (process.platform !== "win32" && (metadata.mode & 0o022) !== 0)) fail();
-  } finally {
-    await handle.close();
+    components = await walkIndependentSecurePath(databasePath);
+    if (await realpath(databasePath) !== databasePath) pathChanged();
+    handle = await open(databasePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const metadata = await handle.stat({ bigint: true });
+    const walkedFile = components.at(-1)?.metadata;
+    if (!metadata.isFile() || !protectedMode(metadata) || !walkedFile || !sameIdentity(walkedFile, metadata)) pathChanged();
+    return { databasePath, components, handle, metadata };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (error?.code === "DB_PATH_CHANGED") throw error;
+    pathChanged();
+  }
+}
+
+async function assertDatabasePathUnchanged(guard) {
+  try {
+    const components = await walkIndependentSecurePath(guard.databasePath);
+    assertSameWalk(guard.components, components);
+    if (await realpath(guard.databasePath) !== guard.databasePath) pathChanged();
+    const current = await open(guard.databasePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const currentMetadata = await current.stat({ bigint: true });
+      const heldMetadata = await guard.handle.stat({ bigint: true });
+      if (!sameIdentity(guard.metadata, heldMetadata) || !sameIdentity(guard.metadata, currentMetadata)) pathChanged();
+    } finally {
+      await current.close().catch(() => undefined);
+    }
+  } catch (error) {
+    if (error?.code === "DB_PATH_CHANGED") throw error;
+    pathChanged();
   }
 }
 
@@ -41,13 +90,28 @@ function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
 }
 
-async function main() {
-  if (process.argv.length !== 4 || process.argv[2] !== "--database") fail();
-  const databasePath = process.argv[3];
-  await assertIndependentSecureDatabase(databasePath);
+export async function queryDatabaseAggregates(databasePath, {
+  afterSqliteOpen,
+  beforeFinalIdentityCheck,
+} = {}) {
+  if (afterSqliteOpen !== undefined && typeof afterSqliteOpen !== "function") fail();
+  if (beforeFinalIdentityCheck !== undefined && typeof beforeFinalIdentityCheck !== "function") fail();
   const { default: Database } = await import("better-sqlite3");
-  const database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 100 });
+  const guard = await openIndependentSecureDatabase(databasePath);
+  let database;
   try {
+    database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 100 });
+    await afterSqliteOpen?.();
+    await assertDatabasePathUnchanged(guard);
+    const main = database.pragma("database_list").find(({ name }) => name === "main");
+    if (!main || path.resolve(main.file) !== databasePath) pathChanged();
+    let mainCanonical;
+    try {
+      mainCanonical = await realpath(main.file);
+    } catch {
+      pathChanged();
+    }
+    if (mainCanonical !== databasePath) pathChanged();
     database.pragma("query_only = ON");
     database.pragma("trusted_schema = OFF");
     const count = (sql) => Number(database.prepare(sql).get().count);
@@ -65,17 +129,33 @@ async function main() {
       indexNowFailures: count("SELECT count(*) count FROM publication_outbox WHERE state = 'failed'"),
     };
     if (!Object.values(result).every(boundedCount)) fail();
-    const output = JSON.stringify(result);
-    if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) fail();
-    process.stdout.write(`${output}\n`);
+    await beforeFinalIdentityCheck?.();
+    await assertDatabasePathUnchanged(guard);
+    return result;
+  } catch (error) {
+    if (error?.code === "DB_PATH_CHANGED") throw error;
+    fail();
   } finally {
-    database.close();
+    database?.close();
+    await guard.handle.close().catch(() => undefined);
   }
 }
 
-try {
-  await main();
-} catch {
-  process.stderr.write("MONITOR_DATABASE_QUERY_FAILED\n");
-  process.exitCode = 2;
+async function main() {
+  if (process.argv.length !== 4 || process.argv[2] !== "--database") fail();
+  const result = await queryDatabaseAggregates(process.argv[3]);
+  const output = JSON.stringify(result);
+  if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) fail();
+  process.stdout.write(`${output}\n`);
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+if (invokedPath === import.meta.url) {
+  try {
+    await main();
+  } catch (error) {
+    const changed = error?.code === "DB_PATH_CHANGED";
+    process.stderr.write(changed ? "DB_PATH_CHANGED\n" : "MONITOR_DATABASE_QUERY_FAILED\n");
+    process.exitCode = changed ? 4 : 2;
+  }
 }

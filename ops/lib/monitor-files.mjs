@@ -176,14 +176,47 @@ export async function assertSecureRealDirectory(candidate, {
   code = "MONITOR_DIRECTORY_INVALID",
   requireProtected = false,
 } = {}) {
+  return withSecureRealDirectory(candidate, { code, requireProtected }, async ({ canonicalPath }) => canonicalPath);
+}
+
+export async function withSecureRealDirectory(candidate, {
+  code = "MONITOR_DIRECTORY_INVALID",
+  requireProtected = false,
+} = {}, operation) {
+  if (typeof operation !== "function") fail(code, "Directory operation is required");
   const initialWalk = await walkNoLinks(candidate, code);
   const metadata = initialWalk.finalMetadata;
   if (!metadata?.isDirectory()) fail(code, "Expected a real directory");
   if (requireProtected && !protectedMode(metadata)) fail(code, "Directory permissions are not protected");
   const canonical = await canonicalPath(candidate, code);
-  const finalWalk = await walkNoLinks(candidate, code);
-  assertSameWalk(initialWalk, finalWalk, code);
-  return canonical;
+  let handle;
+  try {
+    if (process.platform !== "win32") {
+      handle = await open(candidate, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | noFollowFlag());
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isDirectory() || !sameIdentity(metadata, opened)) {
+        fail(code, "Directory identity changed before access");
+      }
+    }
+    const preOperationWalk = await walkNoLinks(candidate, code);
+    assertSameWalk(initialWalk, preOperationWalk, code);
+    const result = await operation({ canonicalPath: canonical, handle });
+    if (handle) {
+      const after = await handle.stat({ bigint: true });
+      if (!after.isDirectory() || !sameIdentity(metadata, after)) {
+        fail(code, "Directory identity changed during access");
+      }
+    }
+    const finalWalk = await walkNoLinks(candidate, code);
+    assertSameWalk(initialWalk, finalWalk, code);
+    await canonicalPath(candidate, code);
+    return result;
+  } catch (error) {
+    if (error?.code === code) throw error;
+    fail(code, "Directory operation failed safely");
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export async function assertSecureRegularFile(candidate, {
@@ -291,27 +324,33 @@ function encodeIncidentState(value, maximumBytes, code) {
 
 export async function loadProtectedIncidentState(statePath, {
   maxBytes = MAX_MONITOR_INCIDENT_STATE_BYTES,
+  beforeRead,
 } = {}) {
   const code = "MONITOR_INCIDENT_STATE_INVALID";
   if (!isBoundedSize(maxBytes)) fail(code, "Incident state size bound is invalid");
-  await protectedStateParent(statePath, code);
-  const stateWalk = await walkNoLinks(statePath, code, { allowMissingFinal: true });
-  if (stateWalk.missing) return undefined;
-  const source = (await readSecureRegularFile(statePath, {
-    code,
-    maxBytes,
-    requirePrivate: true,
-  })).toString("utf8");
-  let value;
-  try {
-    value = JSON.parse(source);
-  } catch {
-    fail(code, "Incident state is not valid JSON");
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    fail(code, "Incident state must be a JSON object");
-  }
-  return value;
+  assertNormalizedAbsolutePath(statePath, code);
+  if (beforeRead !== undefined && typeof beforeRead !== "function") fail(code, "Incident read hook is invalid");
+  const parent = path.dirname(statePath);
+  return withSecureRealDirectory(parent, { code, requireProtected: true }, async () => {
+    await beforeRead?.();
+    const stateWalk = await walkNoLinks(statePath, code, { allowMissingFinal: true });
+    if (stateWalk.missing) return undefined;
+    const source = (await readSecureRegularFile(statePath, {
+      code,
+      maxBytes,
+      requirePrivate: true,
+    })).toString("utf8");
+    let value;
+    try {
+      value = JSON.parse(source);
+    } catch {
+      fail(code, "Incident state is not valid JSON");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      fail(code, "Incident state must be a JSON object");
+    }
+    return value;
+  });
 }
 
 export async function writeProtectedIncidentState(statePath, value, {

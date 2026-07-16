@@ -47,6 +47,8 @@ const REQUIRED_ARTIFACTS = [
   "apps/control/dist/cli/consent-activate.js",
   "apps/control/dist/cli/purge.js",
   "apps/site/dist/index.html",
+  "ops/lib/monitor-files.mjs",
+  "ops/lib/monitoring.mjs",
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
   "ops/scripts/keychain-exec.mjs",

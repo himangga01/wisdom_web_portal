@@ -14,6 +14,7 @@ import {
   loadProtectedIncidentState,
   readProtectedConfigFile,
   readSecureRegularFile,
+  withSecureRealDirectory,
   writeProtectedIncidentState,
 } from "./monitor-files.mjs";
 
@@ -165,49 +166,58 @@ export async function loadMonitoringConfigFile(configPath) {
   return parseMonitoringConfig(source);
 }
 
-export async function loadNewestBackupStatus(backupRoot, { signal, maxArtifactBytes = MAX_BACKUP_BYTES } = {}) {
+export async function loadNewestBackupStatus(backupRoot, {
+  signal,
+  maxArtifactBytes = MAX_BACKUP_BYTES,
+  beforeReadEntries,
+} = {}) {
   if (!absolutePath(backupRoot)) fail("MONITOR_INPUT_INVALID", "Backup root must be absolute");
-  const canonicalRoot = await assertSecureRealDirectory(backupRoot, {
+  if (beforeReadEntries !== undefined && typeof beforeReadEntries !== "function") {
+    fail("MONITOR_INPUT_INVALID", "Backup directory hook is invalid");
+  }
+  return withSecureRealDirectory(backupRoot, {
     code: "MONITOR_INPUT_INVALID",
     requireProtected: true,
-  });
-  const names = (await readdir(canonicalRoot))
-    .filter((name) => /^hourly-\d{8}T\d{6}Z\.json$/u.test(name))
-    .toSorted((left, right) => right.localeCompare(left))
-    .slice(0, 48);
-  for (const name of names) {
-    try {
-      const statusPath = path.join(backupRoot, name);
-      const statusSource = await readSecureRegularFile(statusPath, {
-        code: "MONITOR_BACKUP_INVALID",
-        maxBytes: MAX_STATUS_BYTES,
-        signal,
-        requireProtected: true,
-      });
-      const value = JSON.parse(statusSource.toString("utf8"));
-      const createdAtMs = Date.parse(value.createdAt);
-      const timestamp = Number.isFinite(createdAtMs)
-        ? new Date(createdAtMs).toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z")
-        : "";
-      const artifactPath = path.join(backupRoot, name.replace(/\.json$/u, ".age"));
-      const artifact = await hashSecureRegularFile(artifactPath, {
-        code: "MONITOR_BACKUP_INVALID",
-        maxBytes: maxArtifactBytes,
-        signal,
-        requireProtected: true,
-      });
-      if (
-        value.verified === true && value.integrity === "ok" && value.kind === "hourly" &&
-        name === `hourly-${timestamp}.json` &&
-        /^[a-f0-9]{64}$/u.test(value.encryptedSha256 ?? "") &&
-        value.encryptedBytes === artifact.size && value.encryptedSha256 === artifact.sha256
-      ) return value;
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      // A malformed or incomplete pair is not a verified successful backup.
+  }, async ({ canonicalPath: canonicalRoot }) => {
+    await beforeReadEntries?.();
+    const names = (await readdir(canonicalRoot))
+      .filter((name) => /^hourly-\d{8}T\d{6}Z\.json$/u.test(name))
+      .toSorted((left, right) => right.localeCompare(left))
+      .slice(0, 48);
+    for (const name of names) {
+      try {
+        const statusPath = path.join(backupRoot, name);
+        const statusSource = await readSecureRegularFile(statusPath, {
+          code: "MONITOR_BACKUP_INVALID",
+          maxBytes: MAX_STATUS_BYTES,
+          signal,
+          requireProtected: true,
+        });
+        const value = JSON.parse(statusSource.toString("utf8"));
+        const createdAtMs = Date.parse(value.createdAt);
+        const timestamp = Number.isFinite(createdAtMs)
+          ? new Date(createdAtMs).toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z")
+          : "";
+        const artifactPath = path.join(backupRoot, name.replace(/\.json$/u, ".age"));
+        const artifact = await hashSecureRegularFile(artifactPath, {
+          code: "MONITOR_BACKUP_INVALID",
+          maxBytes: maxArtifactBytes,
+          signal,
+          requireProtected: true,
+        });
+        if (
+          value.verified === true && value.integrity === "ok" && value.kind === "hourly" &&
+          name === `hourly-${timestamp}.json` &&
+          /^[a-f0-9]{64}$/u.test(value.encryptedSha256 ?? "") &&
+          value.encryptedBytes === artifact.size && value.encryptedSha256 === artifact.sha256
+        ) return value;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        // A malformed or incomplete pair is not a verified successful backup.
+      }
     }
-  }
-  return undefined;
+    return undefined;
+  });
 }
 
 export function backupFreshness(status, now, staleAfterMs = 90 * 60 * 1000) {
@@ -388,6 +398,7 @@ export async function runLocalMonitor({
     }, {
       MONITOR_CHECK_TIMEOUT: "DB_TIMEOUT",
       MONITOR_DATABASE_TIMEOUT: "DB_TIMEOUT",
+      MONITOR_DATABASE_PATH_CHANGED: "DB_PATH_CHANGED",
     }),
   ];
 
@@ -455,10 +466,6 @@ function numericStat(value) {
   return typeof value === "bigint" ? Number(value) : value;
 }
 
-async function realDirectory(directory) {
-  return assertSecureRealDirectory(directory, { code: "MONITOR_INPUT_INVALID", requireProtected: true });
-}
-
 function delay(durationMs) {
   return new Promise((resolve) => {
     setTimeout(resolve, durationMs);
@@ -470,19 +477,28 @@ export function createSystemMonitoringAdapters({
   fetchImpl = globalThis.fetch,
   databaseHelper = DEFAULT_DATABASE_HELPER,
   nodeBinary = process.execPath,
+  beforeDiskStat,
   userId = process.getuid?.(),
 } = {}) {
   return {
     loadNewestBackupStatus,
     diskFreePercent: async (directory) => {
-      const canonical = await realDirectory(directory);
-      const value = await statfs(canonical);
-      const blocks = numericStat(value.blocks);
-      const available = numericStat(value.bavail);
-      if (!Number.isFinite(blocks) || blocks <= 0 || !Number.isFinite(available) || available < 0) {
-        fail("MONITOR_DISK_INVALID", "Filesystem statistics are invalid");
+      if (beforeDiskStat !== undefined && typeof beforeDiskStat !== "function") {
+        fail("MONITOR_INPUT_INVALID", "Disk operation hook is invalid");
       }
-      return available / blocks * 100;
+      return withSecureRealDirectory(directory, {
+        code: "MONITOR_INPUT_INVALID",
+        requireProtected: true,
+      }, async ({ canonicalPath }) => {
+        await beforeDiskStat?.();
+        const value = await statfs(canonicalPath);
+        const blocks = numericStat(value.blocks);
+        const available = numericStat(value.bavail);
+        if (!Number.isFinite(blocks) || blocks <= 0 || !Number.isFinite(available) || available < 0) {
+          fail("MONITOR_DISK_INVALID", "Filesystem statistics are invalid");
+        }
+        return available / blocks * 100;
+      });
     },
     launchdRunning: async (label, { timeoutMs }) => {
       if (!Number.isInteger(userId) || !LABEL.test(label)) fail("MONITOR_LAUNCHD_INVALID", "launchd target is invalid");
@@ -546,6 +562,10 @@ export function createSystemMonitoringAdapters({
           signal?.aborted || error?.name === "AbortError" || error?.code === "ABORT_ERR" ||
           error?.code === "ETIMEDOUT" || error?.killed === true || error?.signal === "SIGKILL"
         ) fail("MONITOR_DATABASE_TIMEOUT", "Database aggregate check timed out");
+        const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr ?? "");
+        if (Number(error?.code) === 4 && stderr === "DB_PATH_CHANGED\n") {
+          fail("MONITOR_DATABASE_PATH_CHANGED", "Database path identity changed");
+        }
         fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate check failed");
       }
       const stdout = typeof output?.stdout === "string" ? output.stdout : "";
