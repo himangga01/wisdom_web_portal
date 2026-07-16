@@ -115,6 +115,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     const refreshConsent = async (
       locale: Locale | undefined = selectedLocale(),
+      restoreFocus = false,
     ): Promise<ConsentConfiguration | undefined> => {
       const generation = ++consentLoadGeneration;
       consentLocale = locale;
@@ -144,6 +145,10 @@ export function initializeConsultationForms(documentRef: Document = document): v
       }
       consentFieldset?.setAttribute("aria-busy", "false");
       syncSubmitAvailability();
+      if (restoreFocus && privacy instanceof HTMLInputElement) {
+        showStatus("success", form.dataset.statusConsentReady ?? "");
+        privacy.focus();
+      }
       return loaded;
     };
 
@@ -182,7 +187,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
       if (event.target === localeControl) void refreshConsent();
     });
     consentRetry?.addEventListener("click", () => {
-      void refreshConsent();
+      void refreshConsent(selectedLocale(), true);
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();

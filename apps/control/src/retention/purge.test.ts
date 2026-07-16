@@ -10,7 +10,7 @@ import {
 } from "../consent/service.js";
 import { acceptConsultation } from "../consultations/service.js";
 import { createStaticKeyProvider } from "../crypto/index.js";
-import { purgeExpiredConsultations } from "./purge.js";
+import { drainExpiredConsultations, purgeExpiredConsultations } from "./purge.js";
 
 const provider = createStaticKeyProvider({ id: "pii-v1", secret: Buffer.alloc(32, 6) });
 let database: TestDatabase | undefined;
@@ -51,7 +51,89 @@ function createIntake(marketingAccepted: boolean, index: number, nowMs: number):
   expect(result.kind).toBe("created");
 }
 
+function insertDueConsultations(count: number, expiresAtMs = 1): void {
+  const insert = database!.db.sqlite.prepare(`
+    INSERT INTO consultations (
+      id, receipt_id, status, locale, category, preferred_contact,
+      pii_envelope, pii_key_id, phone_blind_index, blind_index_key_id,
+      marketing_accepted, received_at_ms, updated_at_ms,
+      retention_expires_at_ms, row_version
+    ) VALUES (?, ?, 'received', 'en', 'other', 'email',
+      ?, 'pii-v1', ?, 'pii-v1', 0, 0, 0, ?, 1)
+  `);
+  database!.db.sqlite.transaction(() => {
+    for (let index = 0; index < count; index += 1) {
+      insert.run(
+        `drain-consultation-${index}`,
+        `drain-receipt-${index}`,
+        `ciphertext-${index}`,
+        Buffer.alloc(32, index % 256),
+        expiresAtMs,
+      );
+    }
+  })();
+}
+
 describe("retention purge", () => {
+  it("drains every due row across bounded batches in one invocation", () => {
+    database = createTestDatabase();
+    insertDueConsultations(5);
+
+    expect(drainExpiredConsultations(database.db, {
+      nowMs: 1,
+      apply: true,
+      batchSize: 2,
+      maxBatches: 3,
+    })).toEqual({
+      dueCount: 5,
+      purgedCount: 5,
+      batchesProcessed: 3,
+      remainingDueCount: 0,
+      complete: true,
+    });
+  });
+
+  it("reports an incomplete bounded run when due rows remain", () => {
+    database = createTestDatabase();
+    insertDueConsultations(5);
+
+    expect(drainExpiredConsultations(database.db, {
+      nowMs: 1,
+      apply: true,
+      batchSize: 2,
+      maxBatches: 2,
+    })).toEqual({
+      dueCount: 5,
+      purgedCount: 4,
+      batchesProcessed: 2,
+      remainingDueCount: 1,
+      complete: false,
+    });
+  });
+
+  it("keeps bounded drain dry-run non-mutating and validates max batches", () => {
+    database = createTestDatabase();
+    insertDueConsultations(3);
+
+    expect(drainExpiredConsultations(database.db, {
+      nowMs: 1,
+      apply: false,
+      batchSize: 2,
+      maxBatches: 2,
+    })).toEqual({
+      dueCount: 3,
+      purgedCount: 0,
+      batchesProcessed: 0,
+      remainingDueCount: 3,
+      complete: false,
+    });
+    expect(() => drainExpiredConsultations(database!.db, {
+      nowMs: 1,
+      apply: true,
+      maxBatches: 0,
+    })).toThrow(/max batches/i);
+  });
+
   it("is dry-run first and purges normal/marketing records at exact 12/24 month boundaries", () => {
     database = createTestDatabase();
     seedConsentDocuments(database.db, consentBundle(), 1_000);
@@ -143,6 +225,104 @@ describe("retention purge", () => {
     expect(database.db.sqlite.prepare(
       "SELECT count(*) count FROM audit_events WHERE action = 'consultation.purged'",
     ).get()).toEqual({ count: 0 });
+  });
+
+  it("finishes an in-flight delivery attempt before cancelling its expired outbox row", () => {
+    database = createTestDatabase();
+    seedConsentDocuments(database.db, consentBundle(), 1_000);
+    activateConsentBundle(database.db, "bundle-2026-07-16", 2_000);
+    const receivedAtMs = Date.UTC(2026, 0, 1);
+    createIntake(false, 6, receivedAtMs);
+    const expiry = (database.db.sqlite.prepare(`
+      SELECT retention_expires_at_ms value FROM consultations
+    `).get() as { value: number }).value;
+    const outbox = database.db.sqlite.prepare(`
+      SELECT id FROM notification_outbox ORDER BY id LIMIT 1
+    `).get() as { id: string };
+    database.db.sqlite.prepare(`
+      UPDATE notification_outbox
+      SET state = 'processing', attempt_count = 1,
+          locked_at_ms = ?, lease_expires_at_ms = ?, locked_by = 'worker-retention'
+      WHERE id = ?
+    `).run(expiry - 2, expiry + 120_000, outbox.id);
+    database.db.sqlite.prepare(`
+      INSERT INTO notification_delivery_attempts (
+        id, outbox_id, delivery_cycle, attempt_no, worker_id,
+        started_at_ms, finished_at_ms
+      ) VALUES ('retention-attempt', ?, 1, 1, 'worker-retention', ?, NULL)
+    `).run(outbox.id, expiry - 2);
+
+    expect(purgeExpiredConsultations(database.db, {
+      nowMs: expiry,
+      apply: true,
+    })).toEqual({ dueCount: 1, purgedCount: 1 });
+    expect(database.db.sqlite.prepare(`
+      SELECT state, payload_json, last_error_code,
+        locked_at_ms, lease_expires_at_ms, locked_by
+      FROM notification_outbox WHERE id = ?
+    `).get(outbox.id)).toEqual({
+      state: "cancelled",
+      payload_json: null,
+      last_error_code: "RETENTION_PURGED",
+      locked_at_ms: null,
+      lease_expires_at_ms: null,
+      locked_by: null,
+    });
+    expect(database.db.sqlite.prepare(`
+      SELECT outcome_code, finished_at_ms
+      FROM notification_delivery_attempts WHERE id = 'retention-attempt'
+    `).get()).toEqual({
+      outcome_code: "RETENTION_PURGED",
+      finished_at_ms: expiry,
+    });
+  });
+
+  it("preserves a provider-handoff claim while removing its expired stored payload", () => {
+    database = createTestDatabase();
+    seedConsentDocuments(database.db, consentBundle(), 1_000);
+    activateConsentBundle(database.db, "bundle-2026-07-16", 2_000);
+    const receivedAtMs = Date.UTC(2026, 0, 1);
+    createIntake(false, 7, receivedAtMs);
+    const expiry = (database.db.sqlite.prepare(`
+      SELECT retention_expires_at_ms value FROM consultations
+    `).get() as { value: number }).value;
+    const outbox = database.db.sqlite.prepare(`
+      SELECT id FROM notification_outbox ORDER BY id LIMIT 1
+    `).get() as { id: string };
+    database.db.sqlite.prepare(`
+      UPDATE notification_outbox
+      SET state = 'processing', attempt_count = 1,
+          locked_at_ms = ?, lease_expires_at_ms = ?, locked_by = 'worker-handoff',
+          last_error_code = 'PROVIDER_HANDOFF_STARTED'
+      WHERE id = ?
+    `).run(expiry - 2, expiry + 120_000, outbox.id);
+    database.db.sqlite.prepare(`
+      INSERT INTO notification_delivery_attempts (
+        id, outbox_id, delivery_cycle, attempt_no, worker_id,
+        started_at_ms, finished_at_ms
+      ) VALUES ('handoff-attempt', ?, 1, 1, 'worker-handoff', ?, NULL)
+    `).run(outbox.id, expiry - 2);
+
+    expect(purgeExpiredConsultations(database.db, {
+      nowMs: expiry,
+      apply: true,
+    })).toEqual({ dueCount: 1, purgedCount: 1 });
+    expect(database.db.sqlite.prepare(`
+      SELECT state, payload_json, last_error_code,
+        locked_at_ms, lease_expires_at_ms, locked_by
+      FROM notification_outbox WHERE id = ?
+    `).get(outbox.id)).toEqual({
+      state: "processing",
+      payload_json: null,
+      last_error_code: "PROVIDER_HANDOFF_STARTED",
+      locked_at_ms: expiry - 2,
+      lease_expires_at_ms: expiry + 120_000,
+      locked_by: "worker-handoff",
+    });
+    expect(database.db.sqlite.prepare(`
+      SELECT outcome_code, finished_at_ms
+      FROM notification_delivery_attempts WHERE id = 'handoff-attempt'
+    `).get()).toEqual({ outcome_code: null, finished_at_ms: null });
   });
 
   it("retries a busy WAL truncate checkpoint and succeeds within the bounded attempt limit", () => {

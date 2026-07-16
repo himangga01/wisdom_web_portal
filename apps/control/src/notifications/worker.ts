@@ -49,6 +49,10 @@ interface DeliveryRow {
   channel_enabled: number | null;
 }
 
+interface ExternalCancellationRow {
+  last_error_code: string;
+}
+
 export type ProcessNotificationResult =
   | { kind: "idle" }
   | { kind: "sent"; outcomeCode: "SENT" }
@@ -85,9 +89,38 @@ export async function processNextNotification(
       WHERE c.id = ?
     `).get(claim.channel, claim.consultationId) as DeliveryRow | undefined;
 
+  const readExternalCancellation = (): string | undefined => (
+    options.db.sqlite.prepare(`
+      SELECT o.last_error_code
+      FROM notification_outbox o
+      JOIN notification_delivery_attempts a
+        ON a.outbox_id = o.id
+       AND a.delivery_cycle = o.delivery_cycle
+       AND a.attempt_no = o.attempt_count
+      WHERE o.id = ? AND o.state = 'cancelled'
+        AND o.delivery_cycle = ? AND o.attempt_count = ?
+        AND o.last_error_code IN ('RETENTION_PURGED', 'MARKETING_WITHDRAWN')
+        AND a.id = ? AND a.worker_id = ? AND a.finished_at_ms IS NOT NULL
+    `).get(
+      claim.id,
+      claim.deliveryCycle,
+      claim.attemptNo,
+      claim.attemptId,
+      claim.workerId,
+    ) as ExternalCancellationRow | undefined
+  )?.last_error_code;
+
   const cancel = (outcomeCode: string): ProcessNotificationResult => {
     const finishedAtMs = clock();
-    cancelClaimedNotification(options.db, claim, finishedAtMs, outcomeCode);
+    try {
+      cancelClaimedNotification(options.db, claim, finishedAtMs, outcomeCode);
+    } catch (error) {
+      // A retention purge or accountless marketing withdrawal can commit while
+      // provider preparation is awaiting DNS. Those transactions atomically
+      // cancel the claim and finish its attempt, so treat that verified state as
+      // the same successful cancellation rather than surfacing a worker crash.
+      if (!readExternalCancellation()) throw error;
+    }
     logOutcome(options, {
       deliveryId: claim.deliveryId,
       channel: claim.channel,
@@ -98,7 +131,19 @@ export async function processNextNotification(
   };
   const fail = (outcomeCode: string): ProcessNotificationResult => {
     const finishedAtMs = clock();
-    finalizeNotificationFailure(options.db, claim, finishedAtMs, outcomeCode);
+    try {
+      finalizeNotificationFailure(options.db, claim, finishedAtMs, outcomeCode);
+    } catch (error) {
+      const externalCancellation = readExternalCancellation();
+      if (!externalCancellation) throw error;
+      logOutcome(options, {
+        deliveryId: claim.deliveryId,
+        channel: claim.channel,
+        attempt: claim.attemptNo,
+        outcomeCode: externalCancellation,
+      });
+      return { kind: "cancelled", outcomeCode: externalCancellation };
+    }
     logOutcome(options, {
       deliveryId: claim.deliveryId,
       channel: claim.channel,
@@ -178,47 +223,76 @@ export async function processNextNotification(
     return fail("PROVIDER_ERROR");
   }
 
-  // Provider preparation may yield for DNS without touching PII. Re-read the
-  // authoritative row after that I/O, immediately before decrypting or sending.
-  checkedAtMs = clock();
-  row = readDeliveryRow();
-  if (!row) {
-    return cancel("CONSULTATION_PURGED");
+  // Provider preparation may yield for DNS without touching PII. A short
+  // cross-process write guard now linearizes the last authorization read and
+  // the synchronous provider handoff. Purge/withdrawal can commit either
+  // before this transaction (and cancel delivery) or after handoff starts,
+  // never between the two.
+  let deliveryPromise: Promise<NotificationDeliveryResult> | undefined;
+  let cancellationCode: string | undefined;
+  try {
+    options.db.sqlite.exec("BEGIN IMMEDIATE");
+    checkedAtMs = clock();
+    row = readDeliveryRow();
+    if (!row || (claim.purpose !== "test" && (
+      row.purged_at_ms !== null || row.pii_envelope === null
+    ))) {
+      cancellationCode = "CONSULTATION_PURGED";
+    } else if (claim.purpose !== "test" && row.retention_expires_at_ms <= checkedAtMs) {
+      cancellationCode = "RETENTION_EXPIRED";
+    } else if (
+      claim.purpose === "marketing" &&
+      (row.marketing_accepted !== 1 || row.marketing_withdrawn_at_ms !== null)
+    ) {
+      cancellationCode = "MARKETING_WITHDRAWN";
+    } else if (row.channel_enabled !== 1) {
+      cancellationCode = "CHANNEL_DISABLED";
+    } else {
+      const isTest = claim.purpose === "test";
+      const metadata: NotificationMetadata = {
+        deliveryId: claim.deliveryId,
+        consultationId: isTest ? "notification-test" : claim.consultationId,
+        purpose: claim.purpose,
+        eventType: claim.eventType,
+        receiptId: isTest ? "TEST" : row.receipt_id,
+        category: isTest ? "system" : row.category,
+        locale: isTest ? "en" : row.locale,
+        status: isTest ? "test" : row.status,
+        receivedAt: new Date(isTest ? claimedAtMs : row.received_at_ms).toISOString(),
+        adminUrl: isTest
+          ? new URL("/admin/notifications", options.adminOrigin).href
+          : adminUrl,
+        piiEnvelope: isTest ? "notification-test-no-pii" : row.pii_envelope!,
+        ...(withdrawalUrl ? { withdrawalUrl } : {}),
+      };
+      const marked = options.db.sqlite.prepare(`
+        UPDATE notification_outbox
+        SET last_error_code = 'PROVIDER_HANDOFF_STARTED', updated_at_ms = ?
+        WHERE id = ? AND state = 'processing' AND locked_by = ?
+          AND delivery_cycle = ? AND attempt_count = ? AND lease_expires_at_ms > ?
+      `).run(
+        checkedAtMs,
+        claim.id,
+        claim.workerId,
+        claim.deliveryCycle,
+        claim.attemptNo,
+        checkedAtMs,
+      );
+      if (marked.changes !== 1) throw new Error("Notification handoff guard lost its claim");
+      // Production adapters perform PII decryption and hand the message to the
+      // provider synchronously before returning this completion promise.
+      deliveryPromise = preparedAdapter.deliver(metadata);
+    }
+    options.db.sqlite.exec("COMMIT");
+  } catch {
+    if (options.db.sqlite.inTransaction) options.db.sqlite.exec("ROLLBACK");
+    return fail("PROVIDER_HANDOFF_ERROR");
   }
-  if (
-    claim.purpose !== "test" &&
-    (row.purged_at_ms !== null || row.pii_envelope === null)
-  ) return cancel("CONSULTATION_PURGED");
-  if (claim.purpose !== "test" && row.retention_expires_at_ms <= checkedAtMs) {
-    return cancel("RETENTION_EXPIRED");
-  }
-  if (
-    claim.purpose === "marketing" &&
-    (row.marketing_accepted !== 1 || row.marketing_withdrawn_at_ms !== null)
-  ) {
-    return cancel("MARKETING_WITHDRAWN");
-  }
-  if (row.channel_enabled !== 1) return cancel("CHANNEL_DISABLED");
-  const isTest = claim.purpose === "test";
-  const metadata: NotificationMetadata = {
-    deliveryId: claim.deliveryId,
-    consultationId: isTest ? "notification-test" : claim.consultationId,
-    purpose: claim.purpose,
-    eventType: claim.eventType,
-    receiptId: isTest ? "TEST" : row.receipt_id,
-    category: isTest ? "system" : row.category,
-    locale: isTest ? "en" : row.locale,
-    status: isTest ? "test" : row.status,
-    receivedAt: new Date(isTest ? claimedAtMs : row.received_at_ms).toISOString(),
-    adminUrl: isTest
-      ? new URL("/admin/notifications", options.adminOrigin).href
-      : adminUrl,
-    piiEnvelope: isTest ? "notification-test-no-pii" : row.pii_envelope!,
-    ...(withdrawalUrl ? { withdrawalUrl } : {}),
-  };
+  if (cancellationCode !== undefined) return cancel(cancellationCode);
+  if (!deliveryPromise) return fail("PROVIDER_HANDOFF_ERROR");
   let delivered: NotificationDeliveryResult;
   try {
-    delivered = await preparedAdapter.deliver(metadata);
+    delivered = await deliveryPromise;
   } catch {
     return fail("PROVIDER_ERROR");
   }

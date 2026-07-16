@@ -196,6 +196,7 @@ interface LocaleText {
           success: string;
           failure: string;
           configurationFailure: string;
+          consentReady: string;
           consentUpdated: string;
           invalid: string;
         };
@@ -345,6 +346,7 @@ const localizedText = {
           success: "상담 요청이 접수되었습니다. 접수번호: {receiptId}",
           failure: "현재 상담 요청을 전송할 수 없습니다. 잠시 후 다시 시도해 주세요.",
           configurationFailure: "최신 동의 문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          consentReady: "최신 동의 문서를 불러왔습니다. 내용을 확인하고 동의해 주세요.",
           consentUpdated: "동의 문서가 변경되었습니다. 최신 내용을 확인한 뒤 다시 동의해 주세요.",
           invalid: "입력 내용을 다시 확인해 주세요.",
         },
@@ -403,7 +405,7 @@ const localizedText = {
       "safety-esg": {
         title: "안전·ESG",
         summary: "안전, 사회적 책임, 지속가능경영 관련 준비를 지원합니다.",
-        items: ["SH 인증", "SA 인증", "ESG", "산업안전보건계획서"],
+        items: ["SH평가", "SA평가", "ESG평가", "안전보건계획서 작성"],
       },
       "business-certification": {
         title: "기업 인증",
@@ -553,6 +555,7 @@ const localizedText = {
           success: "Your consultation request was received. Receipt: {receiptId}",
           failure: "We could not send your consultation request. Please try again shortly.",
           configurationFailure: "We could not load the current consent documents. Please try again shortly.",
+          consentReady: "The current consent documents are ready. Review them before giving consent.",
           consentUpdated: "The consent documents changed. Review the current text and consent again.",
           invalid: "Review the form fields and try again.",
         },
@@ -617,7 +620,12 @@ const localizedText = {
       "safety-esg": {
         title: "Safety & ESG",
         summary: "Preparation for safety, social responsibility, and sustainability requirements.",
-        items: ["SH certification", "SA certification", "ESG", "Occupational safety and health plan"],
+        items: [
+          "SH assessment",
+          "SA assessment",
+          "ESG assessment",
+          "Occupational safety and health plan preparation",
+        ],
       },
       "business-certification": {
         title: "Business Certification",
@@ -767,6 +775,7 @@ const localizedText = {
           success: "咨询申请已接收。受理编号：{receiptId}",
           failure: "暂时无法提交咨询申请，请稍后重试。",
           configurationFailure: "无法载入当前同意文件，请稍后重试。",
+          consentReady: "当前同意文件已载入，请查看内容后再表示同意。",
           consentUpdated: "同意文件已更新。请查看最新内容并重新同意。",
           invalid: "请检查输入内容后重试。",
         },
@@ -825,7 +834,7 @@ const localizedText = {
       "safety-esg": {
         title: "安全与ESG",
         summary: "协助准备安全、社会责任和可持续经营相关事项。",
-        items: ["SH认证", "SA认证", "ESG", "职业安全健康计划"],
+        items: ["SH评估", "SA评估", "ESG评估", "编制职业安全健康计划"],
       },
       "business-certification": {
         title: "企业认证",
@@ -975,6 +984,7 @@ const localizedText = {
           success: "諮詢申請已接收。受理編號：{receiptId}",
           failure: "暫時無法提交諮詢申請，請稍後重試。",
           configurationFailure: "無法載入目前同意文件，請稍後重試。",
+          consentReady: "目前同意文件已載入，請查看內容後再表示同意。",
           consentUpdated: "同意文件已更新。請查看最新內容並重新同意。",
           invalid: "請檢查輸入內容後重試。",
         },
@@ -1033,7 +1043,7 @@ const localizedText = {
       "safety-esg": {
         title: "安全與ESG",
         summary: "協助準備安全、社會責任及永續經營相關事項。",
-        items: ["SH認證", "SA認證", "ESG", "職業安全健康計畫"],
+        items: ["SH評估", "SA評估", "ESG評估", "編製職業安全衛生計畫"],
       },
       "business-certification": {
         title: "企業認證",

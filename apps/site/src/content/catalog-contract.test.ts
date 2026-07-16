@@ -50,4 +50,24 @@ describe("approved office and service catalog", () => {
       /수상|후기|성공률|성공 사례|순위|고객사/,
     );
   });
+
+  it("preserves the approved safety assessment and plan-preparation terminology in every locale", async () => {
+    const { siteContent } = await import("./site-content.js");
+    const expected = {
+      ko: ["SH평가", "SA평가", "ESG평가", "안전보건계획서 작성"],
+      en: [
+        "SH assessment",
+        "SA assessment",
+        "ESG assessment",
+        "Occupational safety and health plan preparation",
+      ],
+      "zh-Hans": ["SH评估", "SA评估", "ESG评估", "编制职业安全健康计划"],
+      "zh-Hant": ["SH評估", "SA評估", "ESG評估", "編製職業安全衛生計畫"],
+    } as const;
+
+    for (const locale of LOCALES) {
+      const safety = siteContent[locale].services.categories.find(({ slug }) => slug === "safety-esg");
+      expect(safety?.items).toEqual(expected[locale]);
+    }
+  });
 });

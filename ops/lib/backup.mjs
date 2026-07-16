@@ -6,7 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readdir,
+  opendir,
   rename,
   rm,
   writeFile,
@@ -19,6 +19,12 @@ import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
 
 const MAX_BACKUP_STATUS_BYTES = 16 * 1024;
 const MAX_BACKUP_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024;
+const BACKUP_RETENTION_HARD_LIMITS = Object.freeze({
+  maxDirectoryEntries: 4_096,
+  maxCandidates: 512,
+  maxDeletions: 8,
+  maxHashBytes: 128 * 1024 * 1024 * 1024,
+});
 
 function fail(code, message) {
   const error = new Error(message);
@@ -95,6 +101,39 @@ async function readBackupStatus(filePath, code) {
     maxBytes: MAX_BACKUP_STATUS_BYTES,
     requireProtected: true,
   })).toString("utf8"));
+}
+
+function retentionWorkLimits(overrides = {}) {
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) {
+    fail("BACKUP_RETENTION_INVALID", "Retention work limits are invalid");
+  }
+  const unknown = Object.keys(overrides).find((key) => !Object.hasOwn(BACKUP_RETENTION_HARD_LIMITS, key));
+  if (unknown !== undefined) fail("BACKUP_RETENTION_INVALID", "Retention work limits are invalid");
+  const limits = { ...BACKUP_RETENTION_HARD_LIMITS, ...overrides };
+  for (const [name, hardMaximum] of Object.entries(BACKUP_RETENTION_HARD_LIMITS)) {
+    if (!Number.isSafeInteger(limits[name]) || limits[name] < 1 || limits[name] > hardMaximum) {
+      fail("BACKUP_RETENTION_INVALID", "Retention work limits are invalid");
+    }
+  }
+  return limits;
+}
+
+async function boundedDirectoryNames(directoryPath, maximum) {
+  const names = [];
+  const directory = await opendir(directoryPath);
+  try {
+    for await (const entry of directory) {
+      if (names.length >= maximum) {
+        fail("BACKUP_RETENTION_LIMIT_EXCEEDED", "Backup retention directory exceeds its bounded inventory");
+      }
+      names.push(entry.name);
+    }
+  } finally {
+    await directory.close().catch((error) => {
+      if (error?.code !== "ERR_DIR_CLOSED") throw error;
+    });
+  }
+  return names;
 }
 
 async function syncFile(filePath) {
@@ -282,7 +321,7 @@ async function createOnlineBackupLocked(config, adapters) {
   }
 }
 
-export async function applyBackupRetention(backupRoot, limits) {
+export async function applyBackupRetention(backupRoot, limits, workLimitOverrides = {}) {
   if (!path.isAbsolute(backupRoot) || !Number.isInteger(limits.hourly) || limits.hourly < 1 || !Number.isInteger(limits.daily) || limits.daily < 1) {
     fail("BACKUP_RETENTION_INVALID", "Retention root and limits are invalid");
   }
@@ -290,8 +329,14 @@ export async function applyBackupRetention(backupRoot, limits) {
   if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
     fail("BACKUP_RETENTION_INVALID", "Retention root must be a real directory");
   }
+  const workLimits = retentionWorkLimits(workLimitOverrides);
+  const names = await boundedDirectoryNames(backupRoot, workLimits.maxDirectoryEntries);
+  const candidateNames = names.filter((name) => /^(?:hourly-\d{8}T\d{6}Z|daily-\d{8})\.json$/u.test(name));
+  if (candidateNames.length > workLimits.maxCandidates) {
+    fail("BACKUP_RETENTION_LIMIT_EXCEEDED", "Backup retention candidates exceed the bounded work limit");
+  }
   const records = { hourly: [], daily: [] };
-  for (const name of await readdir(backupRoot)) {
+  for (const name of candidateNames) {
     const match = /^(hourly-\d{8}T\d{6}Z|daily-\d{8})\.json$/u.exec(name);
     if (!match) continue;
     const statusPath = path.join(backupRoot, name);
@@ -308,31 +353,49 @@ export async function applyBackupRetention(backupRoot, limits) {
     if (!(await exists(artifactPath))) continue;
     const artifactMetadata = await lstat(artifactPath);
     if (!artifactMetadata.isFile() || artifactMetadata.isSymbolicLink()) fail("BACKUP_RETENTION_INVALID", "Backup artifact cannot be a symlink");
-    let artifactHash;
-    try {
-      artifactHash = await hashBackupFile(artifactPath, "BACKUP_RETENTION_INVALID");
-    } catch {
-      continue;
-    }
     if (
       artifactMetadata.size !== status.encryptedBytes ||
-      artifactHash.size !== status.encryptedBytes ||
-      artifactHash.sha256 !== status.encryptedSha256
+      !Number.isSafeInteger(status.encryptedBytes) || status.encryptedBytes < 0 ||
+      !/^[a-f0-9]{64}$/u.test(status.encryptedSha256 ?? "")
     ) continue;
-    records[status.kind].push({ statusPath, artifactPath, createdAt: Date.parse(status.createdAt) });
+    records[status.kind].push({
+      statusPath,
+      artifactPath,
+      artifactBytes: artifactMetadata.size,
+      encryptedSha256: status.encryptedSha256,
+      createdAt: Date.parse(status.createdAt),
+    });
   }
 
   let deletedArtifacts = 0;
+  const deletionCandidates = [];
   for (const kind of ["hourly", "daily"]) {
     records[kind].sort((left, right) => right.createdAt - left.createdAt);
-    for (const record of records[kind].slice(limits[kind])) {
-      if (!isInside(backupRoot, record.artifactPath) || !isInside(backupRoot, record.statusPath)) {
-        fail("BACKUP_RETENTION_INVALID", "Retention target escaped the backup root");
-      }
-      await rm(record.artifactPath);
-      await rm(record.statusPath);
-      deletedArtifacts++;
-    }
+    deletionCandidates.push(...records[kind].slice(limits[kind]).toReversed());
   }
-  return { deletedArtifacts };
+  const boundedCandidates = deletionCandidates.slice(0, workLimits.maxDeletions);
+  let deferredArtifacts = deletionCandidates.length - boundedCandidates.length;
+  let hashedBytes = 0;
+  for (let index = 0; index < boundedCandidates.length; index += 1) {
+    const record = boundedCandidates[index];
+    if (hashedBytes + record.artifactBytes > workLimits.maxHashBytes) {
+      deferredArtifacts += boundedCandidates.length - index;
+      break;
+    }
+    if (!isInside(backupRoot, record.artifactPath) || !isInside(backupRoot, record.statusPath)) {
+      fail("BACKUP_RETENTION_INVALID", "Retention target escaped the backup root");
+    }
+    hashedBytes += record.artifactBytes;
+    let artifactHash;
+    try {
+      artifactHash = await hashBackupFile(record.artifactPath, "BACKUP_RETENTION_INVALID");
+    } catch {
+      continue;
+    }
+    if (artifactHash.size !== record.artifactBytes || artifactHash.sha256 !== record.encryptedSha256) continue;
+    await rm(record.artifactPath);
+    await rm(record.statusPath);
+    deletedArtifacts++;
+  }
+  return { deletedArtifacts, deferredArtifacts, hashedBytes };
 }

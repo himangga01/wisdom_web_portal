@@ -338,6 +338,7 @@ export const REQUIRED_TRIGGERS = [
   "consent_events_document_snapshot_insert",
   "consent_events_immutable_update",
   "consent_events_immutable_delete",
+  "consent_events_replace_guard_insert",
   "article_revisions_immutable_update",
   "article_revisions_immutable_delete",
   "article_review_runs_immutable_update",
@@ -351,7 +352,7 @@ export const REQUIRED_TRIGGERS = [
   "releases_delete_retired_only",
 ] as const;
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const drizzleSchema = {
   schemaMigrations,

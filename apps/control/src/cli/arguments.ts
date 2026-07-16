@@ -39,11 +39,17 @@ export function parseActivateArguments(arguments_: readonly string[]): {
 export function parsePurgeArguments(arguments_: readonly string[]): {
   apply: boolean;
   batchSize: number;
+  maxBatches: number;
 } {
   const rawBatchSize = valueAfter(arguments_, "--batch-size");
   const batchSize = rawBatchSize === undefined ? 100 : Number(rawBatchSize);
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1_000) {
     throw new Error("--batch-size must be an integer between 1 and 1000");
   }
-  return { apply: arguments_.includes("--apply"), batchSize };
+  const rawMaxBatches = valueAfter(arguments_, "--max-batches");
+  const maxBatches = rawMaxBatches === undefined ? 10 : Number(rawMaxBatches);
+  if (!Number.isSafeInteger(maxBatches) || maxBatches < 1 || maxBatches > 100) {
+    throw new Error("--max-batches must be an integer between 1 and 100");
+  }
+  return { apply: arguments_.includes("--apply"), batchSize, maxBatches };
 }

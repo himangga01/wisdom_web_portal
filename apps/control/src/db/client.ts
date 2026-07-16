@@ -879,12 +879,30 @@ BEGIN
 END;
 `;
 
+const SIXTH_MIGRATION = `
+CREATE TRIGGER consent_events_replace_guard_insert
+BEFORE INSERT ON consent_events
+WHEN EXISTS (
+  SELECT 1 FROM consent_events existing
+  WHERE existing.id = NEW.id
+    OR (
+      existing.consultation_id = NEW.consultation_id
+      AND existing.kind = NEW.kind
+      AND existing.sequence = NEW.sequence
+    )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'consent event replacement is forbidden');
+END;
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
   { version: 3, name: "article-publication-pipeline", sql: THIRD_MIGRATION },
   { version: 4, name: "immutable-consent-bundles", sql: FOURTH_MIGRATION },
   { version: 5, name: "append-only-consent-events", sql: FIFTH_MIGRATION },
+  { version: 6, name: "consent-event-replace-guard", sql: SIXTH_MIGRATION },
 ] as const;
 
 export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
@@ -1018,6 +1036,24 @@ const REQUIRED_SCHEMA_DEFINITIONS = [
       BEFORE DELETE ON consent_events
       BEGIN
         SELECT RAISE(ABORT, 'consent events are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consent_events_replace_guard_insert",
+    sql: `CREATE TRIGGER consent_events_replace_guard_insert
+      BEFORE INSERT ON consent_events
+      WHEN EXISTS (
+        SELECT 1 FROM consent_events existing
+        WHERE existing.id = NEW.id
+          OR (
+            existing.consultation_id = NEW.consultation_id
+            AND existing.kind = NEW.kind
+            AND existing.sequence = NEW.sequence
+          )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'consent event replacement is forbidden');
       END`,
   },
   {
@@ -1169,6 +1205,7 @@ const REQUIRED_SCHEMA_FINGERPRINTS = REQUIRED_SCHEMA_DEFINITIONS.map((definition
 
 function applyPragmas(sqlite: Database.Database): void {
   sqlite.pragma("foreign_keys = ON");
+  sqlite.pragma("recursive_triggers = ON");
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("synchronous = FULL");
   sqlite.pragma("busy_timeout = 5000");
@@ -1343,6 +1380,7 @@ export function closeDatabase(db: ControlDatabase): void {
 
 export function isDatabaseReady(db: ControlDatabase): boolean {
   try {
+    if (Number(db.sqlite.pragma("recursive_triggers", { simple: true })) !== 1) return false;
     if (Number(db.sqlite.pragma("user_version", { simple: true })) !== SCHEMA_VERSION) return false;
     const history = db.sqlite.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",

@@ -318,12 +318,53 @@ export function withdrawMarketingConsent(
     );
     if (consultation.changes !== 1) throw new Error("Marketing withdrawal lost its consultation CAS");
     options.faultInjector?.("after-consultation");
-    const cancelled = db.sqlite.prepare(`
+    const cancelled = (db.sqlite.prepare(`
+      SELECT count(*) count
+      FROM notification_outbox
+      WHERE consultation_id = ? AND purpose = 'marketing'
+        AND state IN ('pending', 'processing', 'failed')
+        AND (state <> 'processing' OR last_error_code IS NOT 'PROVIDER_HANDOFF_STARTED')
+    `).get(row.consultation_id) as { count: number }).count;
+    db.sqlite.prepare(`
+      UPDATE notification_delivery_attempts
+      SET outcome_code = 'MARKETING_WITHDRAWN', finished_at_ms = ?
+      WHERE finished_at_ms IS NULL AND outbox_id IN (
+        SELECT id FROM notification_outbox
+        WHERE consultation_id = ? AND purpose = 'marketing'
+          AND state IN ('pending', 'processing', 'failed')
+          AND (state <> 'processing' OR last_error_code IS NOT 'PROVIDER_HANDOFF_STARTED')
+      )
+    `).run(input.nowMs, row.consultation_id);
+    db.sqlite.prepare(`
       UPDATE notification_outbox
-      SET state = 'cancelled', last_error_code = 'MARKETING_WITHDRAWN',
+      SET state = CASE
+            WHEN state = 'processing' AND last_error_code = 'PROVIDER_HANDOFF_STARTED'
+              THEN state
+            WHEN state IN ('pending', 'processing', 'failed') THEN 'cancelled'
+            ELSE state
+          END,
+          payload_json = NULL,
+          last_error_code = CASE
+            WHEN state = 'processing' AND last_error_code = 'PROVIDER_HANDOFF_STARTED'
+              THEN last_error_code
+            WHEN state IN ('pending', 'processing', 'failed') THEN 'MARKETING_WITHDRAWN'
+            ELSE last_error_code
+          END,
+          locked_at_ms = CASE
+            WHEN state = 'processing' AND last_error_code = 'PROVIDER_HANDOFF_STARTED'
+              THEN locked_at_ms ELSE NULL
+          END,
+          lease_expires_at_ms = CASE
+            WHEN state = 'processing' AND last_error_code = 'PROVIDER_HANDOFF_STARTED'
+              THEN lease_expires_at_ms ELSE NULL
+          END,
+          locked_by = CASE
+            WHEN state = 'processing' AND last_error_code = 'PROVIDER_HANDOFF_STARTED'
+              THEN locked_by ELSE NULL
+          END,
           updated_at_ms = ?
-      WHERE consultation_id = ? AND purpose = 'marketing' AND state = 'pending'
-    `).run(input.nowMs, row.consultation_id).changes;
+      WHERE consultation_id = ? AND purpose = 'marketing'
+    `).run(input.nowMs, row.consultation_id);
     options.faultInjector?.("after-cancellation");
     db.sqlite.prepare(`
       UPDATE marketing_withdrawal_capabilities
@@ -340,7 +381,7 @@ export function withdrawMarketingConsent(
       randomUUID(),
       row.consultation_id,
       input.requestId,
-      JSON.stringify({ cancelledPending: cancelled }),
+      JSON.stringify({ cancelledNotifications: cancelled }),
       input.nowMs,
     );
     options.faultInjector?.("after-audit");

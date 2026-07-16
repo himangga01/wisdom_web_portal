@@ -49,6 +49,7 @@ function configValue(overrides = {}) {
         queueStallMinutes: 15,
         retentionOverdueMaximum: 0,
         notificationFailureBacklogMaximum: 0,
+        translationFailureBacklogMaximum: 0,
         publicationFailureBacklogMaximum: 0,
         indexNowFailureBacklogMaximum: 0,
       },
@@ -79,6 +80,7 @@ function healthyAdapters(overrides = {}) {
     controlReady: async () => true,
     readBacklogs: async () => ({
       notificationFailures: 0,
+      translationFailures: 0,
       publicationFailures: 0,
       indexNowFailures: 0,
       notificationStalled: 0,
@@ -150,6 +152,7 @@ test("aged queue work and overdue retained PII make the monitor unhealthy", asyn
   }, healthyAdapters({
     readBacklogs: async () => ({
       notificationFailures: 0,
+      translationFailures: 5,
       publicationFailures: 0,
       indexNowFailures: 0,
       notificationStalled: 2,
@@ -163,6 +166,7 @@ test("aged queue work and overdue retained PII make the monitor unhealthy", asyn
   assert.deepEqual(
     report.checks.filter(({ state }) => state === "failed").map(({ id, code, value }) => ({ id, code, value })),
     [
+      { id: "translation-backlog", code: "TRANSLATION_FAILURE_BACKLOG", value: 5 },
       { id: "notification-stalled", code: "NOTIFICATION_QUEUE_STALLED", value: 2 },
       { id: "translation-stalled", code: "TRANSLATION_QUEUE_STALLED", value: 3 },
       { id: "indexnow-stalled", code: "INDEXNOW_QUEUE_STALLED", value: 4 },
@@ -470,7 +474,8 @@ test("system backlog reader opens only aggregate operational tables", async () =
     INSERT INTO publication_outbox VALUES
       ('failed', 0, NULL), ('sent', 0, NULL), ('pending', 89999, NULL), ('processing', 99999, 99999);
     INSERT INTO article_translation_jobs VALUES
-      ('queued', 89999, NULL), ('succeeded', 0, NULL), ('running', 99999, 99999);
+      ('queued', 89999, NULL), ('succeeded', 0, NULL), ('running', 99999, 99999),
+      ('failed', 0, NULL);
     INSERT INTO consultations VALUES (100000, NULL), (100000, 99999), (100001, NULL);
     INSERT INTO release_activations VALUES ('prepared'), ('committed');
     INSERT INTO releases VALUES ('active', 100), ('failed', 90), ('failed', 110);
@@ -484,6 +489,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
   });
   assert.deepEqual(result, {
     notificationFailures: 1,
+    translationFailures: 1,
     publicationFailures: 2,
     indexNowFailures: 1,
     notificationStalled: 2,

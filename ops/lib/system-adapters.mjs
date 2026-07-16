@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+const MAX_RESTORE_RETENTION_ROWS = 100_000;
+
 function fail(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -96,8 +98,12 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
 
 export function createSqliteAdapter({
   loadDatabase = async () => (await import("better-sqlite3")).default,
-  expectedSchemaVersion = 5,
+  expectedSchemaVersion = 6,
+  maxRetentionRows = MAX_RESTORE_RETENTION_ROWS,
 } = {}) {
+  if (!Number.isSafeInteger(maxRetentionRows) || maxRetentionRows < 1 || maxRetentionRows > MAX_RESTORE_RETENTION_ROWS) {
+    fail("RESTORE_RETENTION_INVALID", "Restore retention row bound is invalid");
+  }
   return {
     checkpoint: async (source) => {
       const Database = await loadDatabase();
@@ -143,7 +149,21 @@ export function createSqliteAdapter({
           fail("RESTORE_SCHEMA_INCOMPATIBLE", "Restore retention requires the current schema");
         }
         database.pragma("foreign_keys = ON");
+        database.pragma("secure_delete = ON");
+        if (Number(database.pragma("secure_delete", { simple: true })) !== 1) {
+          fail("RESTORE_RETENTION_UNSAFE", "Restore retention secure deletion is unavailable");
+        }
         database.pragma("journal_mode = DELETE");
+        const initialDueCount = Number(database.prepare(`
+          SELECT count(*) count FROM consultations
+          WHERE purged_at_ms IS NULL AND retention_expires_at_ms <= ?
+        `).get(nowMs).count);
+        if (!Number.isSafeInteger(initialDueCount) || initialDueCount < 0) {
+          fail("RESTORE_RETENTION_INVALID", "Restore retention due count is invalid");
+        }
+        if (initialDueCount > maxRetentionRows) {
+          fail("RESTORE_RETENTION_LIMIT_EXCEEDED", "Restore retention due set exceeds its fixed bound");
+        }
         const selectDue = database.prepare(`
           SELECT id, retention_expires_at_ms
           FROM consultations
@@ -163,6 +183,13 @@ export function createSqliteAdapter({
               row_version = row_version + 1
           WHERE id = ? AND purged_at_ms IS NULL
         `);
+        const finishDeliveryAttempts = database.prepare(`
+          UPDATE notification_delivery_attempts
+          SET outcome_code = 'RETENTION_PURGED', finished_at_ms = ?
+          WHERE finished_at_ms IS NULL AND outbox_id IN (
+            SELECT id FROM notification_outbox WHERE consultation_id = ?
+          )
+        `);
         const clearOutbox = database.prepare(`
           UPDATE notification_outbox
           SET state = CASE
@@ -170,6 +197,10 @@ export function createSqliteAdapter({
                 ELSE state
               END,
               payload_json = NULL,
+              last_error_code = CASE
+                WHEN state IN ('pending','processing','failed') THEN 'RETENTION_PURGED'
+                ELSE last_error_code
+              END,
               locked_at_ms = NULL,
               lease_expires_at_ms = NULL,
               locked_by = NULL,
@@ -187,6 +218,7 @@ export function createSqliteAdapter({
           for (const row of rows) {
             const changed = clearConsultation.run(nowMs, nowMs, row.id).changes;
             if (changed !== 1) continue;
+            finishDeliveryAttempts.run(nowMs, row.id);
             clearOutbox.run(nowMs, row.id);
             insertAudit.run(
               randomUUID(),
@@ -200,10 +232,23 @@ export function createSqliteAdapter({
           return purged;
         });
         let purgedCount = 0;
+        let batchCount = 0;
+        const maxBatchCount = Math.ceil(initialDueCount / 1_000);
         for (;;) {
           const rows = selectDue.all(nowMs);
           if (rows.length === 0) break;
-          purgedCount += purgeBatch(rows);
+          batchCount += 1;
+          if (batchCount > maxBatchCount) {
+            fail("RESTORE_RETENTION_LIMIT_EXCEEDED", "Restore retention exceeded its bounded batch count");
+          }
+          const changed = purgeBatch(rows);
+          if (changed !== rows.length || changed < 1) {
+            fail("RESTORE_RETENTION_NO_PROGRESS", "Restore retention batch did not make complete progress");
+          }
+          purgedCount += changed;
+          if (purgedCount > initialDueCount || purgedCount > maxRetentionRows) {
+            fail("RESTORE_RETENTION_LIMIT_EXCEEDED", "Restore retention exceeded its bounded row count");
+          }
         }
         database.transaction(() => {
           database.prepare("DELETE FROM idempotency_keys WHERE expires_at_ms <= ?").run(nowMs);
@@ -213,7 +258,7 @@ export function createSqliteAdapter({
           SELECT count(*) count FROM consultations
           WHERE purged_at_ms IS NULL AND retention_expires_at_ms <= ?
         `).get(nowMs).count);
-        if (remaining !== 0) {
+        if (remaining !== 0 || purgedCount !== initialDueCount) {
           fail("RESTORE_RETENTION_INCOMPLETE", "Restore retention did not clear every overdue record");
         }
         return { purgedCount };

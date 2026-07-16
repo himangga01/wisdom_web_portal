@@ -30,11 +30,16 @@ describe("control CLI arguments", () => {
   });
 
   it("keeps purge dry-run first and validates bounded batches", () => {
-    expect(parsePurgeArguments([])).toEqual({ apply: false, batchSize: 100 });
-    expect(parsePurgeArguments(["--apply", "--batch-size", "25"])).toEqual({
+    expect(parsePurgeArguments([])).toEqual({ apply: false, batchSize: 100, maxBatches: 10 });
+    expect(parsePurgeArguments([
+      "--apply", "--batch-size", "25", "--max-batches", "3",
+    ])).toEqual({
       apply: true,
       batchSize: 25,
+      maxBatches: 3,
     });
     expect(() => parsePurgeArguments(["--batch-size", "0"])).toThrow();
+    expect(() => parsePurgeArguments(["--max-batches", "0"])).toThrow();
+    expect(() => parsePurgeArguments(["--max-batches", "101"])).toThrow();
   });
 });

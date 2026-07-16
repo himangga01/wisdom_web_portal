@@ -364,7 +364,7 @@ describe("accountless marketing withdrawal", () => {
     ]);
     expect(testDatabase.db.sqlite.prepare(`
       SELECT action, metadata_json FROM audit_events WHERE action = 'marketing.withdrawn'
-    `).get()).toEqual({ action: "marketing.withdrawn", metadata_json: '{"cancelledPending":1}' });
+    `).get()).toEqual({ action: "marketing.withdrawn", metadata_json: '{"cancelledNotifications":1}' });
     expect(testDatabase.db.sqlite.prepare(`
       SELECT count(*) count FROM marketing_withdrawal_capabilities WHERE used_at_ms IS NOT NULL
     `).get()).toEqual({ count: 1 });
@@ -456,6 +456,87 @@ describe("accountless marketing withdrawal", () => {
       nowMs: nowMs + 3,
       apply: false,
     })).toEqual({ dueCount: 1, purgedCount: 0 });
+  });
+
+  it("cancels pre-handoff marketing work while preserving an in-flight provider handoff", () => {
+    const mint = requiredFunction<Mint>("mintMarketingWithdrawalCapability");
+    const open = requiredFunction<any>("openMarketingWithdrawalCapability") as any;
+    const confirmation = requiredFunction<any>("getMarketingWithdrawalConfirmation") as any;
+    const withdraw = requiredFunction<any>("withdrawMarketingConsent") as any;
+    testDatabase = createTestDatabase();
+    seedMarketingConsultation(testDatabase.db);
+    const minted = mint(testDatabase.db, withdrawalSecret, {
+      consultationId: "consultation-1",
+      publicOrigin: "https://www.example.test",
+      nowMs: 0,
+      expiresAtMs: 1_000_000,
+    });
+    const opened = open(testDatabase.db, withdrawalSecret, {
+      token: minted.token,
+      publicOrigin: "https://www.example.test",
+      nowMs: 1,
+    });
+    const confirm = confirmation(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      nowMs: 2,
+    });
+    testDatabase.db.sqlite.prepare(`
+      INSERT INTO notification_outbox (
+        id, consultation_id, channel, event_type, state, attempt_count,
+        available_at_ms, payload_json, purpose, delivery_cycle,
+        locked_at_ms, lease_expires_at_ms, locked_by, last_error_code,
+        created_at_ms, updated_at_ms
+      ) VALUES
+        ('pre-handoff', 'consultation-1', 'email', 'marketing.followup.pre',
+          'processing', 1, 0, '{"email":"expired@example.test"}', 'marketing', 1,
+          2, 1000, 'worker-pre', NULL, 0, 2),
+        ('provider-handoff', 'consultation-1', 'email', 'marketing.followup.handoff',
+          'processing', 1, 0, '{"email":"expired@example.test"}', 'marketing', 1,
+          2, 1000, 'worker-handoff', 'PROVIDER_HANDOFF_STARTED', 0, 2)
+    `).run();
+    testDatabase.db.sqlite.prepare(`
+      INSERT INTO notification_delivery_attempts (
+        id, outbox_id, delivery_cycle, attempt_no, worker_id, started_at_ms
+      ) VALUES
+        ('attempt-pre', 'pre-handoff', 1, 1, 'worker-pre', 2),
+        ('attempt-handoff', 'provider-handoff', 1, 1, 'worker-handoff', 2)
+    `).run();
+
+    expect(withdraw(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      confirmationValue: confirm.confirmationValue,
+      nowMs: 3,
+      requestId: "request-linearized-withdrawal",
+    })).toEqual({ kind: "withdrawn" });
+
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT id, state, payload_json, locked_by, lease_expires_at_ms, last_error_code
+      FROM notification_outbox ORDER BY id
+    `).all()).toEqual([
+      {
+        id: "pre-handoff",
+        state: "cancelled",
+        payload_json: null,
+        locked_by: null,
+        lease_expires_at_ms: null,
+        last_error_code: "MARKETING_WITHDRAWN",
+      },
+      {
+        id: "provider-handoff",
+        state: "processing",
+        payload_json: null,
+        locked_by: "worker-handoff",
+        lease_expires_at_ms: 1000,
+        last_error_code: "PROVIDER_HANDOFF_STARTED",
+      },
+    ]);
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT id, outcome_code, finished_at_ms
+      FROM notification_delivery_attempts ORDER BY id
+    `).all()).toEqual([
+      { id: "attempt-handoff", outcome_code: null, finished_at_ms: null },
+      { id: "attempt-pre", outcome_code: "MARKETING_WITHDRAWN", finished_at_ms: 3 },
+    ]);
   });
 
   it("rolls back consent, flags, cancellation, capability use, and audit on a late fault", () => {

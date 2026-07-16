@@ -18,6 +18,13 @@ const localizedConsultationCases: ReadonlyArray<{
   { locale: "zh-Hant", pathname: "/zh-hant/consultation", retryLabel: "重新載入同意文件" },
 ];
 
+const localizedConsentReadyCopy = {
+  ko: "최신 동의 문서를 불러왔습니다. 내용을 확인하고 동의해 주세요.",
+  en: "The current consent documents are ready. Review them before giving consent.",
+  "zh-Hans": "当前同意文件已载入，请查看内容后再表示同意。",
+  "zh-Hant": "目前同意文件已載入，請查看內容後再表示同意。",
+} as const;
+
 async function hangFirstRequestUntilTimeout(
   page: Page,
   endpoint: "consent" | "consultation",
@@ -387,10 +394,16 @@ test("recovers a timed-out initial consent load through an accessible localized 
     await expect(retry).toBeVisible();
     await expect(page.locator('[name="privacyConsent"]')).toBeDisabled();
 
-    await retry.click();
+    await retry.focus();
+    await expect(retry).toBeFocused();
+    await retry.press("Enter");
 
     await expect(retry).toBeHidden();
-    await expect(page.locator('[name="privacyConsent"]')).toBeEnabled();
+    const privacyConsent = page.locator('[name="privacyConsent"]');
+    await expect(privacyConsent).toBeEnabled();
+    await expect(privacyConsent).toBeFocused();
+    await expect(status).toHaveAttribute("role", "status");
+    await expect(status).toHaveText(localizedConsentReadyCopy[locale]);
     await expect(page.getByRole("button", { name: formContent.submit })).toBeEnabled();
   }
 });

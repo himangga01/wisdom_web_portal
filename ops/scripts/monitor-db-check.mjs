@@ -123,6 +123,7 @@ export async function queryDatabaseAggregates(databasePath, {
     const count = (sql) => Number(database.prepare(sql).get().count);
     const result = {
       notificationFailures: count("SELECT count(*) count FROM notification_outbox WHERE state = 'failed'"),
+      translationFailures: count("SELECT count(*) count FROM article_translation_jobs WHERE state = 'failed'"),
       publicationFailures: count(`
         SELECT
           (SELECT count(*) FROM release_activations WHERE state IN ('prepared','switched')) +

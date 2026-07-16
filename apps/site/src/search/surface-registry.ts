@@ -44,13 +44,9 @@ export const PRIVATE_SURFACE_REGISTRY = [
   {
     id: "withdrawal-token",
     robotsPaths: [
-      "/marketing/withdraw",
       "/marketing/withdraw/",
-      "/en/marketing/withdraw",
       "/en/marketing/withdraw/",
-      "/zh-hans/marketing/withdraw",
       "/zh-hans/marketing/withdraw/",
-      "/zh-hant/marketing/withdraw",
       "/zh-hant/marketing/withdraw/",
     ],
   },

@@ -339,6 +339,7 @@ test("retention enforcement runs on a fixed bounded cadence in apply mode", asyn
   assert.match(retention, /apps\/control\/dist\/cli\/purge\.js/);
   assert.match(retention, /<string>--apply<\/string>/);
   assert.match(retention, /<string>--batch-size<\/string><string>1000<\/string>/);
+  assert.match(retention, /<string>--max-batches<\/string><string>10<\/string>/);
   assert.match(retention, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/keychain-exec\.mjs/);
   assert.doesNotMatch(retention, /\/Users\/wisdom\/portal\/ops\/scripts/);
 });
@@ -358,6 +359,7 @@ test("monitoring template keeps external uptime separate from executable local c
   assert.equal(parsed.local.thresholds.queueStallMinutes, 15);
   assert.equal(parsed.local.thresholds.retentionOverdueMaximum, 0);
   assert.equal(parsed.local.thresholds.notificationFailureBacklogMaximum, 0);
+  assert.equal(parsed.local.thresholds.translationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.publicationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.indexNowFailureBacklogMaximum, 0);
   assert.equal(parsed.local.controlReadyUrl, "http://127.0.0.1:8787/health/ready");
@@ -389,6 +391,11 @@ test("operations runbooks document recovery limits and reversible host guidance"
   assert.match(deployment, /pmset[\s\S]*inspect[\s\S]*reversible/i);
   assert.match(deployment, /UPS[\s\S]*wired Ethernet[\s\S]*sleep/i);
   assert.match(recovery, /RPO[^\n]*60 minutes[\s\S]*RTO[^\n]*4 hours[\s\S]*non-guaranteed/i);
+  assert.match(deployment, /protected verified status[\s\S]*stable artifact size[\s\S]*full SHA-256[\s\S]*restore/i);
+  assert.match(deployment, /purge\.js --apply --batch-size 1000 --max-batches 10/i);
+  assert.match(recovery, /secure_delete[\s\S]*100,000[\s\S]*no-progress/i);
+  assert.match(recovery, /4,096[\s\S]*512[\s\S]*8[\s\S]*128 GiB/i);
+  assert.match(incidents, /TRANSLATION_FAILURE_BACKLOG[\s\S]*terminal failed/i);
   for (const scenario of ["disk full", "tunnel outage", "certificate", "database corruption", "key loss", "notification backlog", "rollback"]) {
     assert.match(incidents, new RegExp(scenario, "i"));
   }

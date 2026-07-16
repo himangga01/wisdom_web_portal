@@ -602,15 +602,20 @@ describe("notification adapters", () => {
 });
 
 describe("notification worker privacy rechecks", () => {
+  type TestNotificationAdapter = {
+    deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
+    prepare?(): Promise<{
+      deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
+    }>;
+  };
+
   type ProcessNext = (options: {
     db: TestDatabase["db"];
     workerId: string;
     adminOrigin: string;
     now: () => number;
     attemptId?: () => string;
-    adapters: Partial<Record<"email" | "hermes-telegram", {
-      deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
-    }>>;
+    adapters: Partial<Record<"email" | "hermes-telegram", TestNotificationAdapter>>;
     withdrawalSecret?: Uint8Array;
     publicOrigin?: string;
   }) => Promise<{ kind: string; outcomeCode?: string }>;
@@ -725,6 +730,9 @@ describe("notification worker privacy rechecks", () => {
 
   it("rechecks an authoritative purge after deferred SMTP DNS before decrypting or sending PII", async () => {
     const processNext = requiredFunction<ProcessNext>("processNextNotification");
+    const purge = requiredFunction<typeof controlModule.purgeExpiredConsultations>(
+      "purgeExpiredConsultations",
+    );
     const createAdapter = requiredFunction<(options: Record<string, unknown>) => {
       deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
     }>("createSmtpNotificationAdapter");
@@ -732,6 +740,12 @@ describe("notification worker privacy rechecks", () => {
     seedConsultation(testDatabase.db);
     enableEmail(testDatabase.db, "full-inquiry");
     enqueue(testDatabase.db, "delivery-purge-race", "consultation.purge-race");
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations SET retention_expires_at_ms = 11
+      WHERE id = 'consultation-1'
+    `).run();
+    const competing = openDatabase(testDatabase.path);
+    runMigrations(competing);
 
     let signalLookupStarted!: () => void;
     const lookupStarted = new Promise<void>((resolve) => { signalLookupStarted = resolve; });
@@ -769,21 +783,145 @@ describe("notification worker privacy rechecks", () => {
       attemptId: () => "attempt-purge-race",
       adapters: { email: adapter },
     });
-    await lookupStarted;
+    try {
+      await lookupStarted;
+      expect(purge(competing, { nowMs: 11, apply: true, batchSize: 100 })).toMatchObject({
+        purgedCount: 1,
+      });
+      releaseLookup([{ address: "93.184.216.34", family: 4 }]);
+
+      await expect(processing).resolves.toEqual({
+        kind: "cancelled", outcomeCode: "CONSULTATION_PURGED",
+      });
+      expect(decryptPii).not.toHaveBeenCalled();
+      expect(sendMail).not.toHaveBeenCalled();
+    } finally {
+      closeDatabase(competing);
+    }
+  });
+
+  it("treats a purge that wins during failed provider preparation as a completed cancellation", async () => {
+    const processNext = requiredFunction<ProcessNext>("processNextNotification");
+    const purge = requiredFunction<typeof controlModule.purgeExpiredConsultations>(
+      "purgeExpiredConsultations",
+    );
+    testDatabase = createTestDatabase();
+    seedConsultation(testDatabase.db);
+    enableEmail(testDatabase.db);
+    enqueue(testDatabase.db, "delivery-prepare-purge", "consultation.prepare-purge");
     testDatabase.db.sqlite.prepare(`
-      UPDATE consultations
-      SET pii_envelope = NULL, pii_key_id = NULL,
-          phone_blind_index = NULL, email_blind_index = NULL,
-          blind_index_key_id = NULL, purged_at_ms = 20, updated_at_ms = 20
+      UPDATE consultations SET retention_expires_at_ms = 11
       WHERE id = 'consultation-1'
     `).run();
-    releaseLookup([{ address: "93.184.216.34", family: 4 }]);
+    const competing = openDatabase(testDatabase.path);
+    runMigrations(competing);
+    let signalPreparation!: () => void;
+    const preparationStarted = new Promise<void>((resolve) => { signalPreparation = resolve; });
+    let releasePreparation!: () => void;
+    const preparationReleased = new Promise<void>((resolve) => { releasePreparation = resolve; });
+    const deliver = vi.fn(async () => ({ providerMessageId: "must-not-send" }));
+    const adapter: TestNotificationAdapter = {
+      deliver,
+      async prepare() {
+        signalPreparation();
+        await preparationReleased;
+        throw new Error("provider preparation failed after purge");
+      },
+    };
 
-    await expect(processing).resolves.toEqual({
-      kind: "cancelled", outcomeCode: "CONSULTATION_PURGED",
+    const processing = processNext({
+      db: testDatabase.db,
+      workerId: "worker-prepare-purge",
+      adminOrigin: "https://admin.example.test",
+      now: () => 10,
+      attemptId: () => "attempt-prepare-purge",
+      adapters: { email: adapter },
     });
-    expect(decryptPii).not.toHaveBeenCalled();
-    expect(sendMail).not.toHaveBeenCalled();
+    try {
+      await preparationStarted;
+      expect(purge(competing, { nowMs: 11, apply: true, batchSize: 100 })).toMatchObject({
+        purgedCount: 1,
+      });
+      releasePreparation();
+      await expect(processing).resolves.toEqual({
+        kind: "cancelled",
+        outcomeCode: "RETENTION_PURGED",
+      });
+      expect(deliver).not.toHaveBeenCalled();
+    } finally {
+      releasePreparation();
+      closeDatabase(competing);
+    }
+  });
+
+  it("linearizes final authorization and provider handoff against a cross-connection purge", async () => {
+    const processNext = requiredFunction<ProcessNext>("processNextNotification");
+    const purge = requiredFunction<typeof controlModule.purgeExpiredConsultations>(
+      "purgeExpiredConsultations",
+    );
+    const createAdapter = requiredFunction<(options: Record<string, unknown>) => {
+      deliver(input: Record<string, unknown>): Promise<{ providerMessageId: string }>;
+    }>("createSmtpNotificationAdapter");
+    testDatabase = createTestDatabase();
+    seedConsultation(testDatabase.db);
+    enableEmail(testDatabase.db, "full-inquiry");
+    enqueue(testDatabase.db, "delivery-purge-linearized", "consultation.purge-linearized");
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations SET retention_expires_at_ms = 11
+      WHERE id = 'consultation-1'
+    `).run();
+    const competing = openDatabase(testDatabase.path);
+    runMigrations(competing);
+    competing.sqlite.pragma("busy_timeout = 1");
+    let purgeCommittedBeforeHandoff = false;
+    let purgeBlockedByHandoffGuard = false;
+    const decryptPii = vi.fn(() => {
+      try {
+        purge(competing, { nowMs: 11, apply: true, batchSize: 100 });
+        purgeCommittedBeforeHandoff = true;
+      } catch (error) {
+        purgeBlockedByHandoffGuard = (error as { code?: unknown }).code === "SQLITE_BUSY";
+      }
+      return {
+        name: "authorized-before-purge",
+        phone: "010-0000-0000",
+        email: "private@example.test",
+        message: "linearized provider handoff",
+      };
+    });
+    const sendMail = vi.fn(async () => ({ messageId: "smtp-linearized" }));
+    const adapter = createAdapter({
+      payloadMode: "full-inquiry",
+      fullInquiryApproved: true,
+      smtp: {
+        host: "smtp.example.com", port: 465, secure: true,
+        from: "office@example.test", to: "owner@example.test",
+      },
+      decryptPii,
+      sendMail,
+      lookup: publicSmtpLookup,
+    });
+
+    try {
+      await expect(processNext({
+        db: testDatabase.db,
+        workerId: "worker-purge-linearized",
+        adminOrigin: "https://admin.example.test",
+        now: () => 10,
+        attemptId: () => "attempt-purge-linearized",
+        adapters: { email: adapter },
+      })).resolves.toEqual({ kind: "sent", outcomeCode: "SENT" });
+
+      expect(purgeCommittedBeforeHandoff).toBe(false);
+      expect(purgeBlockedByHandoffGuard).toBe(true);
+      expect(decryptPii).toHaveBeenCalledTimes(1);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      expect(purge(competing, { nowMs: 11, apply: true, batchSize: 100 })).toMatchObject({
+        purgedCount: 1,
+      });
+    } finally {
+      closeDatabase(competing);
+    }
   });
 
   it("turns a non-public SMTP DNS answer into a channel-local retry without network or PII access", async () => {

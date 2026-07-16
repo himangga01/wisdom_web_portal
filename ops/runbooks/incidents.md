@@ -1,5 +1,9 @@
 # 장애 대응 체크리스트
 
+`TRANSLATION_FAILURE_BACKLOG` means one or more translation jobs reached terminal failed state;
+inspect only the bounded error code and job metadata, then retry or replace the job through the
+approved workflow. Never copy translation input, consultation data, or credentials into alerts.
+
 각 절차에서 request body, 연락처, capability token, Keychain 값은 출력하지 않는다. 변경 전 active release, DB 상태, 시각, 안전한 오류 코드만 기록한다.
 
 ## disk full

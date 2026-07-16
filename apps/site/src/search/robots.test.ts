@@ -33,19 +33,19 @@ describe("robots policy", () => {
     expect(document.toLowerCase()).not.toContain("nosourceinfo");
   });
 
-  it("derives exact and localized sensitive boundaries from the typed private registry", () => {
+  it("lets crawlers read noindex on public withdrawal landings while blocking capability subpaths", () => {
     expect(ROBOTS_SENSITIVE_PATHS).toEqual(
       PRIVATE_SURFACE_REGISTRY.flatMap(({ robotsPaths }) => robotsPaths),
     );
-    expect(ROBOTS_SENSITIVE_PATHS).toEqual(expect.arrayContaining([
-      "/admin",
-      "/admin/",
-      "/health/ready",
+    for (const landing of [
       "/marketing/withdraw",
       "/en/marketing/withdraw",
       "/zh-hans/marketing/withdraw",
       "/zh-hant/marketing/withdraw",
-    ]));
+    ]) {
+      expect(ROBOTS_SENSITIVE_PATHS).not.toContain(landing);
+      expect(ROBOTS_SENSITIVE_PATHS).toContain(`${landing}/`);
+    }
   });
 
   it("treats OAI-SearchBot, GPTBot, and ChatGPT-User as separate controls", () => {

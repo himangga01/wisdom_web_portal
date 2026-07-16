@@ -10,7 +10,6 @@ import {
   assertSecureRealDirectory,
   assertSecureRegularFile,
   clearProtectedIncidentState,
-  hashSecureRegularFile,
   loadProtectedIncidentState,
   readProtectedConfigFile,
   readSecureRegularFile,
@@ -110,13 +109,14 @@ function validateConfig(value) {
   if (!exactKeys(thresholds, [
     "backupFreshnessMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
     "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum", "queueStallMinutes",
-    "retentionOverdueMaximum",
+    "retentionOverdueMaximum", "translationFailureBacklogMaximum",
   ]) ||
     !integer(thresholds.backupFreshnessMinutes, 1, 1_440) ||
     !integer(thresholds.diskFreePercentMinimum, 1, 99) ||
     !integer(thresholds.queueStallMinutes, 1, 1_440) ||
     !integer(thresholds.retentionOverdueMaximum, 0, 1_000_000) ||
     !integer(thresholds.notificationFailureBacklogMaximum, 0, 1_000_000) ||
+    !integer(thresholds.translationFailureBacklogMaximum, 0, 1_000_000) ||
     !integer(thresholds.publicationFailureBacklogMaximum, 0, 1_000_000) ||
     !integer(thresholds.indexNowFailureBacklogMaximum, 0, 1_000_000)
   ) fail("MONITOR_CONFIG_INVALID", "Monitoring thresholds are invalid");
@@ -202,17 +202,18 @@ export async function loadNewestBackupStatus(backupRoot, {
           ? new Date(createdAtMs).toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z")
           : "";
         const artifactPath = path.join(backupRoot, name.replace(/\.json$/u, ".age"));
-        const artifact = await hashSecureRegularFile(artifactPath, {
+        if (signal?.aborted) fail("MONITOR_BACKUP_INVALID", "Backup metadata check was interrupted");
+        const artifact = await assertSecureRegularFile(artifactPath, {
           code: "MONITOR_BACKUP_INVALID",
           maxBytes: maxArtifactBytes,
-          signal,
           requireProtected: true,
         });
+        if (signal?.aborted) fail("MONITOR_BACKUP_INVALID", "Backup metadata check was interrupted");
         if (
           value.verified === true && value.integrity === "ok" && value.kind === "hourly" &&
           name === `hourly-${timestamp}.json` &&
           /^[a-f0-9]{64}$/u.test(value.encryptedSha256 ?? "") &&
-          value.encryptedBytes === artifact.size && value.encryptedSha256 === artifact.sha256
+          value.encryptedBytes === artifact.size
         ) return value;
       } catch (error) {
         if (signal?.aborted) throw error;
@@ -390,6 +391,7 @@ export async function runLocalMonitor({
         staleBeforeMs: nowMs - local.thresholds.queueStallMinutes * 60_000,
       });
       const notification = boundedCount(values?.notificationFailures);
+      const translation = boundedCount(values?.translationFailures);
       const publication = boundedCount(values?.publicationFailures);
       const indexNow = boundedCount(values?.indexNowFailures);
       const notificationStalled = boundedCount(values?.notificationStalled);
@@ -398,6 +400,7 @@ export async function runLocalMonitor({
       const retentionOverdue = boundedCount(values?.retentionOverdue);
       if ([
         notification,
+        translation,
         publication,
         indexNow,
         notificationStalled,
@@ -409,6 +412,9 @@ export async function runLocalMonitor({
         notification > local.thresholds.notificationFailureBacklogMaximum
           ? failed("notification-backlog", "NOTIFICATION_FAILURE_BACKLOG", notification)
           : healthy("notification-backlog", notification),
+        translation > local.thresholds.translationFailureBacklogMaximum
+          ? failed("translation-backlog", "TRANSLATION_FAILURE_BACKLOG", translation)
+          : healthy("translation-backlog", translation),
         publication > local.thresholds.publicationFailureBacklogMaximum
           ? failed("publication-backlog", "PUBLICATION_FAILURE_BACKLOG", publication)
           : healthy("publication-backlog", publication),
@@ -635,6 +641,7 @@ export function createSystemMonitoringAdapters({
         "notificationStalled",
         "publicationFailures",
         "retentionOverdue",
+        "translationFailures",
         "translationStalled",
       ]) ||
         !Object.values(result).every((value) => boundedCount(value) !== undefined)) {

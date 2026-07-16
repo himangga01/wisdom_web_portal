@@ -1,5 +1,15 @@
 # 백업·복구 훈련
 
+## Bounded restore and retention work
+
+Restore-time expiry enforcement enables SQLite `secure_delete` before changing staged data.
+It rejects an initial due set above 100,000 rows before mutation and fails closed on any
+no-progress or excess-batch condition. The unchanged production database remains recoverable.
+
+Backup retention scans at most 4,096 directory entries and 512 candidate status files per run.
+It deletes at most 8 verified pairs and reserves at most 128 GiB of artifact hash work; excess
+eligible pairs are deferred to a later scheduled run instead of creating unbounded work.
+
 ## 목표와 한계
 
 - 초기 RPO target은 건강한 hourly backup 기준 60 minutes이다.

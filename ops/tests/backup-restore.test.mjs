@@ -63,6 +63,12 @@ test("backup and restore verification never read an entire file into memory", as
   }
 });
 
+test("backup retention inventories directory entries incrementally under its hard bound", async () => {
+  const source = await readFile(new URL("../lib/backup.mjs", import.meta.url), "utf8");
+  assert.match(source, /\bopendir\s*\(/u);
+  assert.doesNotMatch(source, /\breaddir\s*\(\s*backupRoot\s*\)/u);
+});
+
 test("online backup is consistent, encrypted, verified, and leaves no plaintext", async () => {
   const root = await fixtureDirectory("backup");
   const sourceDb = path.join(root, "portal.sqlite");
@@ -391,6 +397,61 @@ test("retention ignores oversized status files without reading or deleting their
   assert.ok(names.includes(`${oversizedBase}.json`));
 });
 
+test("retention rejects directory and candidate inventories above explicit work bounds before deletion", async () => {
+  const directoryRoot = await fixtureDirectory("retention-directory-bound");
+  await writeFile(path.join(directoryRoot, "one.txt"), "1");
+  await writeFile(path.join(directoryRoot, "two.txt"), "2");
+  await writeFile(path.join(directoryRoot, "three.txt"), "3");
+  await assert.rejects(applyBackupRetention(directoryRoot, { hourly: 1, daily: 1 }, {
+    maxDirectoryEntries: 2,
+  }), { code: "BACKUP_RETENTION_LIMIT_EXCEEDED" });
+  assert.deepEqual((await readdir(directoryRoot)).toSorted(), ["one.txt", "three.txt", "two.txt"]);
+
+  const candidateRoot = await fixtureDirectory("retention-candidate-bound");
+  for (const stamp of ["20260716T010000Z", "20260716T020000Z"]) {
+    await writeFile(path.join(candidateRoot, `hourly-${stamp}.json`), "{}");
+  }
+  await assert.rejects(applyBackupRetention(candidateRoot, { hourly: 1, daily: 1 }, {
+    maxCandidates: 1,
+  }), { code: "BACKUP_RETENTION_LIMIT_EXCEEDED" });
+  assert.equal((await readdir(candidateRoot)).length, 2);
+});
+
+test("retention bounds deletion count and total artifact hash bytes per run", async () => {
+  const backupRoot = await fixtureDirectory("retention-work-bound");
+  const encrypted = "ciphertext";
+  const encryptedSha256 = createHash("sha256").update(encrypted).digest("hex");
+  for (const [index, stamp] of ["20260716T010000Z", "20260716T020000Z", "20260716T030000Z"].entries()) {
+    const base = `hourly-${stamp}`;
+    await writeFile(path.join(backupRoot, `${base}.age`), encrypted);
+    await writeFile(path.join(backupRoot, `${base}.json`), JSON.stringify({
+      verified: true,
+      kind: "hourly",
+      createdAt: `2026-07-16T0${index + 1}:00:00.000Z`,
+      encryptedSha256,
+      encryptedBytes: Buffer.byteLength(encrypted),
+    }));
+  }
+
+  const first = await applyBackupRetention(backupRoot, { hourly: 1, daily: 1 }, {
+    maxDeletions: 1,
+    maxHashBytes: 1_024,
+  });
+  assert.deepEqual(first, {
+    deletedArtifacts: 1,
+    deferredArtifacts: 1,
+    hashedBytes: Buffer.byteLength(encrypted),
+  });
+  assert.equal((await readdir(backupRoot)).filter((name) => name.endsWith(".age")).length, 2);
+
+  const second = await applyBackupRetention(backupRoot, { hourly: 1, daily: 1 }, {
+    maxDeletions: 1,
+    maxHashBytes: Buffer.byteLength(encrypted) - 1,
+  });
+  assert.deepEqual(second, { deletedArtifacts: 0, deferredArtifacts: 1, hashedBytes: 0 });
+  assert.equal((await readdir(backupRoot)).filter((name) => name.endsWith(".age")).length, 2);
+});
+
 test("backup freshness alerts after 90 minutes", async () => {
   const backupRoot = await fixtureDirectory("freshness");
   const artifact = path.join(backupRoot, "hourly-20260716T010000Z.age");
@@ -411,6 +472,28 @@ test("backup freshness alerts after 90 minutes", async () => {
 
   await writeFile(artifact, "tampered");
   assert.equal(await loadNewestBackupStatus(backupRoot), undefined);
+});
+
+test("frequent freshness checks use protected status and stable artifact size without rehashing bytes", async () => {
+  const backupRoot = await fixtureDirectory("freshness-lightweight");
+  const artifact = path.join(backupRoot, "hourly-20260716T010000Z.age");
+  const original = "verified-ciphertext";
+  const sameSizeReplacement = "tampered-ciphertext";
+  assert.equal(Buffer.byteLength(sameSizeReplacement), Buffer.byteLength(original));
+  await writeFile(artifact, original);
+  await writeFile(path.join(backupRoot, "hourly-20260716T010000Z.json"), JSON.stringify({
+    verified: true,
+    integrity: "ok",
+    kind: "hourly",
+    createdAt: "2026-07-16T01:00:00.000Z",
+    encryptedSha256: createHash("sha256").update(original).digest("hex"),
+    encryptedBytes: Buffer.byteLength(original),
+  }));
+  await writeFile(artifact, sameSizeReplacement);
+
+  const status = await loadNewestBackupStatus(backupRoot);
+  assert.equal(status?.verified, true);
+  assert.equal(status?.encryptedBytes, Buffer.byteLength(sameSizeReplacement));
 });
 
 test("restore is dry-run by default and apply requires exact absolute target confirmation", async () => {
@@ -891,7 +974,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
     assert.equal(restored.pragma("integrity_check", { simple: true }), "ok");
-    assert.equal(restored.pragma("user_version", { simple: true }), 5);
+    assert.equal(restored.pragma("user_version", { simple: true }), 6);
   } finally {
     restored.close();
   }

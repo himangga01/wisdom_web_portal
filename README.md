@@ -95,13 +95,15 @@ npm.cmd run db:migrate --workspace @wisdom/control
 npm.cmd run consent:seed --workspace @wisdom/control -- --file .\consent-bundle.json
 npm.cmd run consent:activate --workspace @wisdom/control -- --bundle bundle-2026-01 --confirm-sha <seed-output-sha>
 npm.cmd run retention:purge --workspace @wisdom/control
-npm.cmd run retention:purge --workspace @wisdom/control -- --apply --batch-size 100
+npm.cmd run retention:purge --workspace @wisdom/control -- --apply --batch-size 100 --max-batches 10
 npm.cmd run admin:bootstrap --workspace @wisdom/control -- --username owner --display-name "Primary Owner" --output .\owner-enrollment.json
 npm.cmd run admin:password-reset --workspace @wisdom/control -- --username owner
 npm.cmd run admin:mfa-replace --workspace @wisdom/control -- --username owner --output .\owner-mfa-replacement.json
 npm.cmd run notifications:worker --workspace @wisdom/control
 npm.cmd run dev --workspace @wisdom/control
 ```
+
+`retention:purge --apply`는 한 번에 `batch-size × max-batches`까지만 파기합니다. 남은 만료 건이 있으면 `retention.incomplete`를 출력하고 종료 코드 1을 반환하므로, 운영 알림을 무시하지 말고 다음 실행 전 적체 원인을 확인합니다.
 
 동의 bundle의 `consent:activate`는 다음 발행 후보를 선택하는 단계입니다. 현재 공개
 홈페이지와 상담 API는 기존의 검증된 public release를 계속 사용합니다. 활성화 직후

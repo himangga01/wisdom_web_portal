@@ -13,6 +13,7 @@
     <string>--secret</string><string>WITHDRAWAL_TOKEN_SECRET=com.jihye.portal.withdrawal-token</string>
     <string>--</string><string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/apps/control/dist/cli/purge.js</string>
     <string>--apply</string><string>--batch-size</string><string>1000</string>
+    <string>--max-batches</string><string>10</string>
   </array>
   <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
   <key>RunAtLoad</key><true/>

@@ -62,6 +62,7 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
         queueStallMinutes: 15,
         retentionOverdueMaximum: 0,
         notificationFailureBacklogMaximum: 0,
+        translationFailureBacklogMaximum: 0,
         publicationFailureBacklogMaximum: 0,
         indexNowFailureBacklogMaximum: 0,
       },
