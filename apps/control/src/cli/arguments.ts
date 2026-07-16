@@ -6,6 +6,23 @@ function valueAfter(arguments_: readonly string[], flag: string): string | undef
   return value;
 }
 
+export function parseMigrateArguments(arguments_: readonly string[]): {
+  requireRollbackCompatible: boolean;
+} {
+  const supported = new Set([
+    "--require-rollback-compatible",
+    "--allow-incompatible-maintenance",
+  ]);
+  const unknown = arguments_.find((argument) => !supported.has(argument));
+  if (unknown !== undefined) throw new Error(`Unknown db:migrate argument: ${unknown}`);
+  const requireRollbackCompatible = arguments_.includes("--require-rollback-compatible");
+  const allowIncompatibleMaintenance = arguments_.includes("--allow-incompatible-maintenance");
+  if (requireRollbackCompatible && allowIncompatibleMaintenance) {
+    throw new Error("Migration safety flags are mutually exclusive");
+  }
+  return { requireRollbackCompatible: !allowIncompatibleMaintenance };
+}
+
 export function parseSeedArguments(arguments_: readonly string[]): { file: string } {
   const file = valueAfter(arguments_, "--file");
   if (!file) throw new Error("consent:seed requires --file <path>");

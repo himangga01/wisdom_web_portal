@@ -50,6 +50,60 @@ test("post-restart service verification requires every launch agent to remain ru
   await assert.rejects(adapter.assertRunning(), { code: "SERVICE_NOT_RUNNING" });
 });
 
+test("service stop waits until every launch agent is confirmed stopped", async () => {
+  let inspections = 0;
+  let delays = 0;
+  let bootedOut = false;
+  const adapter = createMacServiceAdapter({
+    labels: ["com.example.control"],
+    userId: 501,
+    stopAttempts: 3,
+    stopDelayMs: 1,
+    delay: async () => { delays++; },
+    execute: async (_file, args) => {
+      if (args[0] === "bootout") {
+        bootedOut = true;
+        return { stdout: "", stderr: "" };
+      }
+      inspections++;
+      return {
+        stdout: !bootedOut || inspections === 2 ? "state = running\n" : "state = exited\n",
+        stderr: "",
+      };
+    },
+  });
+
+  await adapter.stop();
+  assert.equal(inspections, 3);
+  assert.equal(delays, 1);
+});
+
+test("service start bootstraps an unloaded launch agent before kickstart", async () => {
+  const calls = [];
+  const root = path.join(path.parse(process.cwd()).root, "Users", "fixture", "Library", "LaunchAgents");
+  const adapter = createMacServiceAdapter({
+    labels: ["com.example.control"],
+    launchAgentRoot: root,
+    userId: 501,
+    execute: async (_file, args) => {
+      calls.push(args);
+      if (args[0] === "print") {
+        throw Object.assign(new Error("missing"), {
+          stderr: 'Could not find service "com.example.control" in domain for user gui: 501\n',
+        });
+      }
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  await adapter.start();
+  assert.deepEqual(calls, [
+    ["print", "gui/501/com.example.control"],
+    ["bootstrap", "gui/501", path.join(root, "com.example.control.plist")],
+    ["kickstart", "-k", "gui/501/com.example.control"],
+  ]);
+});
+
 test("canary shutdown escalates a stuck SIGTERM to bounded SIGKILL", async () => {
   const child = new EventEmitter();
   child.exitCode = null;

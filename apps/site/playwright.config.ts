@@ -1,4 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+const publishedContentDirectory = process.env.WISDOM_PUBLISHED_CONTENT_DIR ?? fileURLToPath(
+  new URL("./src/content/__fixtures__/published-content", import.meta.url),
+);
+process.env.WISDOM_PUBLISHED_CONTENT_DIR = publishedContentDirectory;
 
 export default defineConfig({
   testDir: "./tests",
@@ -26,6 +32,7 @@ export default defineConfig({
     env: {
       ...process.env,
       PUBLIC_ORIGIN: process.env.PUBLIC_ORIGIN ?? "https://www.jihye-office.kr",
+      WISDOM_PUBLISHED_CONTENT_DIR: publishedContentDirectory,
     },
     url: "http://127.0.0.1:4321",
     reuseExistingServer: !process.env.CI,

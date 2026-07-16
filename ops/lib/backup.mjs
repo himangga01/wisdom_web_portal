@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
 import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
 
 function fail(code, message) {
@@ -155,6 +156,15 @@ export async function createOnlineBackup(config, adapters) {
   await chmod(config.backupRoot, 0o700);
   await chmod(config.tempRoot, 0o700);
 
+  const releaseMaintenanceLock = await acquireDatabaseMaintenanceLock(config.sourceDb);
+  try {
+    return await createOnlineBackupLocked(config, adapters);
+  } finally {
+    await releaseMaintenanceLock();
+  }
+}
+
+async function createOnlineBackupLocked(config, adapters) {
   const hourlyBase = `hourly-${timestamp(config.now)}`;
   const hourlyArtifact = path.join(config.backupRoot, `${hourlyBase}.age`);
   const hourlyStatus = path.join(config.backupRoot, `${hourlyBase}.json`);

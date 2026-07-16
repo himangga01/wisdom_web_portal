@@ -178,6 +178,10 @@ interface LocaleText {
         sensitiveIdWarning: string;
           noAttachments: string;
           noJavaScript: string;
+          consentVersion: string;
+          consentEffectiveAt: string;
+          consentRetention: string;
+          consentMonths: string;
       };
       errors: {
         required: string;
@@ -191,6 +195,7 @@ interface LocaleText {
           success: string;
           failure: string;
           configurationFailure: string;
+          consentUpdated: string;
           invalid: string;
         };
         submit: string;
@@ -323,6 +328,10 @@ const localizedText = {
           sensitiveIdWarning: "주민등록번호, 여권번호, 외국인등록번호 등 민감한 식별정보는 입력하지 마세요.",
           noAttachments: "이 단계에서는 첨부파일을 받지 않습니다.",
           noJavaScript: "온라인 접수에는 JavaScript가 필요합니다. 사용할 수 없다면 전화 또는 이메일로 문의해 주세요.",
+          consentVersion: "문서 버전",
+          consentEffectiveAt: "시행일",
+          consentRetention: "보유기간",
+          consentMonths: "개월",
         },
         errors: {
           required: "필수 항목을 입력해 주세요.",
@@ -336,6 +345,7 @@ const localizedText = {
           success: "상담 요청이 접수되었습니다. 접수번호: {receiptId}",
           failure: "현재 상담 요청을 전송할 수 없습니다. 잠시 후 다시 시도해 주세요.",
           configurationFailure: "최신 동의 문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          consentUpdated: "동의 문서가 변경되었습니다. 최신 내용을 확인한 뒤 다시 동의해 주세요.",
           invalid: "입력 내용을 다시 확인해 주세요.",
         },
         submit: "상담 요청 보내기",
@@ -527,6 +537,10 @@ const localizedText = {
           sensitiveIdWarning: "Do not enter resident, passport, or foreign registration numbers or other sensitive identifiers.",
           noAttachments: "Attachments are not accepted at this stage.",
           noJavaScript: "JavaScript is required for secure online submission. If it is unavailable, contact the office by phone or email.",
+          consentVersion: "Document version",
+          consentEffectiveAt: "Effective date",
+          consentRetention: "Retention period",
+          consentMonths: "months",
         },
         errors: {
           required: "Complete this required field.",
@@ -540,6 +554,7 @@ const localizedText = {
           success: "Your consultation request was received. Receipt: {receiptId}",
           failure: "We could not send your consultation request. Please try again shortly.",
           configurationFailure: "We could not load the current consent documents. Please try again shortly.",
+          consentUpdated: "The consent documents changed. Review the current text and consent again.",
           invalid: "Review the form fields and try again.",
         },
         submit: "Send consultation request",
@@ -737,6 +752,10 @@ const localizedText = {
           sensitiveIdWarning: "请勿填写居民登记号、护照号、外国人登记号等敏感识别信息。",
           noAttachments: "此阶段不接收附件。",
           noJavaScript: "安全在线提交需要JavaScript。如无法使用，请通过电话或电子邮件联系。",
+          consentVersion: "文件版本",
+          consentEffectiveAt: "生效日期",
+          consentRetention: "保存期限",
+          consentMonths: "个月",
         },
         errors: {
           required: "请填写必填项目。",
@@ -750,6 +769,7 @@ const localizedText = {
           success: "咨询申请已接收。受理编号：{receiptId}",
           failure: "暂时无法提交咨询申请，请稍后重试。",
           configurationFailure: "无法载入当前同意文件，请稍后重试。",
+          consentUpdated: "同意文件已更新。请查看最新内容并重新同意。",
           invalid: "请检查输入内容后重试。",
         },
         submit: "提交咨询申请",
@@ -941,6 +961,10 @@ const localizedText = {
           sensitiveIdWarning: "請勿填寫居民登記號、護照號、外國人登記號等敏感識別資料。",
           noAttachments: "此階段不接收附件。",
           noJavaScript: "安全線上提交需要JavaScript。如無法使用，請透過電話或電子郵件聯絡。",
+          consentVersion: "文件版本",
+          consentEffectiveAt: "生效日期",
+          consentRetention: "保存期限",
+          consentMonths: "個月",
         },
         errors: {
           required: "請填寫必填項目。",
@@ -954,6 +978,7 @@ const localizedText = {
           success: "諮詢申請已接收。受理編號：{receiptId}",
           failure: "暫時無法提交諮詢申請，請稍後重試。",
           configurationFailure: "無法載入目前同意文件，請稍後重試。",
+          consentUpdated: "同意文件已更新。請查看最新內容並重新同意。",
           invalid: "請檢查輸入內容後重試。",
         },
         submit: "提交諮詢申請",

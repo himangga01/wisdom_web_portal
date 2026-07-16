@@ -85,6 +85,15 @@ export async function deployRelease(input, adapter) {
   const plan = planRelease(input);
   if (plan.dryRun) return plan;
   await adapter.validatePaths({ ...input, destination: plan.destination });
+  const releaseOperationLock = await adapter.acquireOperationLock(input.releaseRoot);
+  try {
+    return await deployReleaseLocked(input, adapter, plan);
+  } finally {
+    await releaseOperationLock();
+  }
+}
+
+async function deployReleaseLocked(input, adapter, plan) {
   if (await adapter.exists(plan.destination)) {
     fail("RELEASE_ALREADY_EXISTS", "Release destination already exists");
   }
@@ -169,6 +178,15 @@ export async function rollbackRelease(input, adapter) {
   };
   if (plan.dryRun) return plan;
   await adapter.validatePaths({ ...input, destination, rollback: true });
+  const releaseOperationLock = await adapter.acquireOperationLock(input.releaseRoot);
+  try {
+    return await rollbackReleaseLocked(input, adapter, plan, destination);
+  } finally {
+    await releaseOperationLock();
+  }
+}
+
+async function rollbackReleaseLocked(input, adapter, plan, destination) {
   if (!(await adapter.exists(destination))) {
     fail("RELEASE_NOT_RETAINED", "Rollback release is not retained");
   }

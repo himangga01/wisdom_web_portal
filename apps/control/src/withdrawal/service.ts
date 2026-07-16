@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
+import { addMonthsClamped } from "../consultations/service.js";
 import type { ControlDatabase } from "../db/client.js";
 
 const LANDING_TTL_MS = 10 * 60 * 1_000;
@@ -84,10 +85,10 @@ export function mintMarketingWithdrawalCapability(
 
 function cleanWithdrawalPath(locale: AcceptedMarketingRow["locale"]): string {
   switch (locale) {
-    case "ko": return "/marketing/withdraw";
-    case "en": return "/en/marketing/withdraw";
-    case "zh-Hans": return "/zh-hans/marketing/withdraw";
-    case "zh-Hant": return "/zh-hant/marketing/withdraw";
+    case "ko": return "/marketing/withdraw/confirm";
+    case "en": return "/en/marketing/withdraw/confirm";
+    case "zh-Hans": return "/zh-hans/marketing/withdraw/confirm";
+    case "zh-Hant": return "/zh-hant/marketing/withdraw/confirm";
   }
 }
 
@@ -188,6 +189,9 @@ interface WithdrawalRow {
   document_id: string;
   document_version: string;
   document_sha256: Buffer;
+  received_at_ms: number;
+  retention_expires_at_ms: number;
+  privacy_retention_months: number | null;
 }
 
 export type WithdrawalFaultPoint =
@@ -218,7 +222,19 @@ export function withdrawMarketingConsent(
     const row = db.sqlite.prepare(`
       SELECT w.consultation_id, w.consent_event_id, w.used_at_ms,
              c.marketing_withdrawn_at_ms, e.document_id,
-             e.document_version, e.document_sha256
+             e.document_version, e.document_sha256,
+             c.received_at_ms, c.retention_expires_at_ms,
+             (
+               SELECT d.retention_months
+               FROM consent_events privacy_event
+               JOIN consent_documents d ON d.id = privacy_event.document_id
+               WHERE privacy_event.consultation_id = c.id
+                 AND privacy_event.kind = 'privacy'
+                 AND privacy_event.decision = 'accepted'
+                 AND d.kind = 'privacy'
+               ORDER BY privacy_event.sequence DESC
+               LIMIT 1
+             ) privacy_retention_months
       FROM marketing_withdrawal_capabilities w
       JOIN consultations c ON c.id = w.consultation_id
       JOIN consent_events e ON e.id = w.consent_event_id
@@ -233,6 +249,23 @@ export function withdrawMarketingConsent(
       db.sqlite.exec("COMMIT");
       return { kind: "already-withdrawn" };
     }
+    if (
+      !Number.isSafeInteger(row.received_at_ms) ||
+      !Number.isSafeInteger(row.retention_expires_at_ms) ||
+      row.privacy_retention_months === null ||
+      !Number.isSafeInteger(row.privacy_retention_months) ||
+      row.privacy_retention_months < 1
+    ) {
+      throw new Error("Accepted privacy consent retention is unavailable");
+    }
+    const privacyRetentionExpiresAtMs = addMonthsClamped(
+      row.received_at_ms,
+      row.privacy_retention_months,
+    );
+    const retentionExpiresAtMs = Math.min(
+      row.retention_expires_at_ms,
+      privacyRetentionExpiresAtMs,
+    );
     const sequence = (db.sqlite.prepare(`
       SELECT COALESCE(max(sequence), 0) + 1 sequence
       FROM consent_events WHERE consultation_id = ? AND kind = 'marketing'
@@ -257,9 +290,17 @@ export function withdrawMarketingConsent(
     options.faultInjector?.("after-consent-event");
     const consultation = db.sqlite.prepare(`
       UPDATE consultations
-      SET marketing_withdrawn_at_ms = ?, updated_at_ms = ?, row_version = row_version + 1
+      SET marketing_withdrawn_at_ms = ?, retention_expires_at_ms = ?,
+          updated_at_ms = ?, row_version = row_version + 1
       WHERE id = ? AND marketing_accepted = 1 AND marketing_withdrawn_at_ms IS NULL
-    `).run(input.nowMs, input.nowMs, row.consultation_id);
+        AND retention_expires_at_ms = ?
+    `).run(
+      input.nowMs,
+      retentionExpiresAtMs,
+      input.nowMs,
+      row.consultation_id,
+      row.retention_expires_at_ms,
+    );
     if (consultation.changes !== 1) throw new Error("Marketing withdrawal lost its consultation CAS");
     options.faultInjector?.("after-consultation");
     const cancelled = db.sqlite.prepare(`

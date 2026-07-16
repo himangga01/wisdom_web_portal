@@ -94,12 +94,12 @@ test("Caddy exposes only the exact IndexNow key path with private response polic
 test("public withdrawal capability routes are proxied with private response policy", async () => {
   const caddy = await render("caddy/Caddyfile.template");
 
-  assert.match(
-    caddy,
-    /@withdraw path \/marketing\/withdraw\* \/en\/marketing\/withdraw\* \/zh-hans\/marketing\/withdraw\* \/zh-hant\/marketing\/withdraw\*/,
-  );
+  assert.ok(caddy.includes(
+    "@withdraw path_regexp withdraw ^/(?:marketing/withdraw/(?:[A-Za-z0-9_-]{43}|confirm)|(?:en|zh-hans|zh-hant)/marketing/withdraw/confirm)/?$",
+  ));
   assert.match(caddy, /handle @withdraw \{[\s\S]*header \{[\s\S]*Cache-Control "no-store"[\s\S]*X-Robots-Tag "noindex, nofollow, noarchive"[\s\S]*Referrer-Policy "no-referrer"[\s\S]*\}[\s\S]*reverse_proxy 127\.0\.0\.1:8787[\s\S]*\}/);
   assert.doesNotMatch(caddy, /@public_private path[^\n]*withdraw/);
+  assert.doesNotMatch(caddy, /@withdraw path[^\n]*\/marketing\/withdraw\*/);
 });
 
 test("public dynamic and static routes are mutually exclusive in literal policy order", async () => {
@@ -142,7 +142,10 @@ test("static misses retain an actual 404 and every Astro build asset is immutabl
 
   assert.match(caddy, /@immutable path \/_astro\/\*/);
   assert.match(caddy, /try_files \{path\} \{path\}\/index\.html =404/);
-  assert.match(caddy, /handle_errors \{[\s\S]*rewrite \* \/404\.html[\s\S]*file_server[\s\S]*\}/);
+  assert.match(caddy, /handle_errors \{[\s\S]*@en_404 path \/en\/\*[\s\S]*rewrite \* \/en\/404\/index\.html/);
+  assert.match(caddy, /@zh_hans_404 path \/zh-hans\/\*[\s\S]*rewrite \* \/zh-hans\/404\/index\.html/);
+  assert.match(caddy, /@zh_hant_404 path \/zh-hant\/\*[\s\S]*rewrite \* \/zh-hant\/404\/index\.html/);
+  assert.match(caddy, /handle_errors \{[\s\S]*handle \{[\s\S]*rewrite \* \/404\.html[\s\S]*file_server[\s\S]*\}/);
   assert.doesNotMatch(caddy, /try_files[^\n]*\/404\.html/);
 });
 

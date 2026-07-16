@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { applyBackupRetention, createOnlineBackup } from "../lib/backup.mjs";
+import {
+  acquireDatabaseMaintenanceLock,
+  databaseMaintenanceLockPath,
+} from "../lib/database-maintenance-lock.mjs";
 import { backupFreshness, loadNewestBackupStatus } from "../lib/monitoring.mjs";
 import { planRestore, restoreBackup } from "../lib/restore.mjs";
 import { createSqliteAdapter } from "../lib/system-adapters.mjs";
@@ -109,6 +113,83 @@ test("backup failure removes pending ciphertext and plaintext work directories",
 
   assert.deepEqual(await readdir(tempRoot), []);
   assert.deepEqual((await readdir(backupRoot)).filter((name) => name.includes("pending")), []);
+});
+
+test("backup and restore serialize on one exclusive database maintenance lock", async () => {
+  const root = await fixtureDirectory("database-maintenance-lock");
+  const sourceDb = path.join(root, "data", "portal.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const tempRoot = path.join(root, "temp");
+  await mkdir(path.dirname(sourceDb), { recursive: true });
+  await writeFile(sourceDb, "database-fixture");
+
+  const releaseLock = await acquireDatabaseMaintenanceLock(sourceDb);
+  try {
+    await assert.rejects(createOnlineBackup({
+      sourceDb,
+      backupRoot,
+      tempRoot,
+      ageRecipient: "age1fixtureoperatorrecipient",
+      ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+      now: new Date("2026-07-16T02:00:00.000Z"),
+    }, fakeAdapters()), { code: "DATABASE_MAINTENANCE_LOCKED" });
+
+    await assert.rejects(restoreBackup({
+      backupRoot,
+      backup: path.join(backupRoot, "hourly-20260716T010203Z.age"),
+      target: sourceDb,
+      tempRoot: path.join(root, "restore-temp"),
+      ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+      confirmDestroy: path.resolve(sourceDb),
+      dryRun: false,
+    }, {
+      ...fakeAdapters(),
+      services: { assertStopped: async () => assert.fail("lock must be acquired first") },
+    }), { code: "DATABASE_MAINTENANCE_LOCKED" });
+  } finally {
+    await releaseLock();
+  }
+
+  const result = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot,
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T02:00:00.000Z"),
+  }, fakeAdapters());
+  assert.equal(result.verified, true);
+});
+
+test("database maintenance lock recovers a confirmed stale owner and verifies release ownership", async () => {
+  const root = await fixtureDirectory("database-maintenance-lock-owner");
+  const database = path.join(root, "portal.sqlite");
+  const lockPath = databaseMaintenanceLockPath(database);
+  await writeFile(database, "fixture");
+  await mkdir(lockPath);
+  await writeFile(path.join(lockPath, "owner.json"), JSON.stringify({
+    formatVersion: 1,
+    kind: "backup or restore",
+    pid: 999_999_999,
+    hostname: os.hostname(),
+    token: "00000000-0000-4000-8000-000000000000",
+    createdAt: "2026-07-16T00:00:00.000Z",
+  }));
+
+  const releaseRecovered = await acquireDatabaseMaintenanceLock(database, {
+    processIsAlive: async () => false,
+  });
+  await releaseRecovered();
+
+  const releaseOwned = await acquireDatabaseMaintenanceLock(database);
+  const ownerPath = path.join(lockPath, "owner.json");
+  const owner = JSON.parse(await readFile(ownerPath, "utf8"));
+  await writeFile(ownerPath, JSON.stringify({
+    ...owner,
+    token: "11111111-1111-4111-8111-111111111111",
+  }));
+  await assert.rejects(releaseOwned(), { code: "DATABASE_MAINTENANCE_LOCK_OWNERSHIP_LOST" });
+  await rm(lockPath, { recursive: true, force: true });
 });
 
 test("hourly status publication failure rolls back the renamed artifact", async () => {
@@ -337,8 +418,53 @@ test("guarded restore verifies encrypted metadata and preserves the old DB in qu
 
   assert.equal(await readFile(target, "utf8"), original);
   assert.equal(await readFile(result.quarantinePath, "utf8"), "old-production-database");
-  assert.deepEqual(serviceCalls, ["stopped", "start", "ready"]);
+  assert.deepEqual(serviceCalls, ["stopped", "stopped", "start", "ready"]);
   assert.deepEqual(await readdir(restoreTemp), []);
+});
+
+test("restore rechecks service quiescence immediately before replacing the database", async () => {
+  const root = await fixtureDirectory("restore-final-quiescence");
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "old-production-db");
+  let stopChecks = 0;
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters(),
+    services: {
+      assertStopped: async () => {
+        stopChecks++;
+        if (stopChecks === 2) {
+          throw Object.assign(new Error("service restarted"), { code: "SERVICES_RUNNING" });
+        }
+      },
+      start: async () => undefined,
+      checkReady: async () => undefined,
+    },
+  }), { code: "SERVICES_RUNNING" });
+
+  assert.equal(stopChecks, 2);
+  assert.equal(await readFile(target, "utf8"), "old-production-db");
+  assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".quarantine-")), false);
 });
 
 test("restore rejects wrong keys, corrupt data, schema mismatch, and running services", async (t) => {
@@ -427,16 +553,20 @@ test("restore independently rejects wrong age identity, corrupt plaintext, and s
   }
 });
 
-test("real SQLite WAL snapshot survives fake-age backup and guarded restore", async () => {
+test("a database created by runMigrations survives WAL backup and guarded restore", async () => {
   const { default: Database } = await import("better-sqlite3");
+  const { tsImport } = await import("tsx/esm/api");
+  const { closeDatabase, openDatabase, runMigrations } = await tsImport(
+    "../../apps/control/src/db/client.ts",
+    import.meta.url,
+  );
   const root = await fixtureDirectory("sqlite-wal-drill");
   const sourceDb = path.join(root, "source.sqlite");
   const target = path.join(root, "restore", "portal.sqlite");
-  const writer = new Database(sourceDb);
-  writer.pragma("journal_mode = WAL");
-  writer.pragma("user_version = 3");
-  writer.exec("CREATE TABLE consultations (receipt TEXT PRIMARY KEY, ciphertext TEXT NOT NULL)");
-  const insert = writer.prepare("INSERT INTO consultations (receipt, ciphertext) VALUES (?, ?)");
+  const writer = openDatabase(sourceDb);
+  runMigrations(writer, Date.parse("2026-07-16T00:00:00.000Z"));
+  writer.sqlite.exec("CREATE TABLE backup_probe (receipt TEXT PRIMARY KEY, ciphertext TEXT NOT NULL)");
+  const insert = writer.sqlite.prepare("INSERT INTO backup_probe (receipt, ciphertext) VALUES (?, ?)");
   insert.run("receipt-before", "opaque-ciphertext-before");
   insert.run("receipt-in-wal", "opaque-ciphertext-in-wal");
 
@@ -450,11 +580,10 @@ test("real SQLite WAL snapshot survives fake-age backup and guarded restore", as
     ageIdentity: "AGE-SECRET-KEY-FIXTURE",
     now: new Date("2026-07-16T01:02:03.000Z"),
   }, { sqlite, age });
-  writer.close();
+  closeDatabase(writer);
 
   await mkdir(path.dirname(target), { recursive: true });
   const old = new Database(target);
-  old.pragma("user_version = 3");
   old.exec("CREATE TABLE old_data (value TEXT)");
   old.close();
   await restoreBackup({
@@ -477,7 +606,7 @@ test("real SQLite WAL snapshot survives fake-age backup and guarded restore", as
 
   const restored = new Database(target, { readonly: true });
   try {
-    assert.deepEqual(restored.prepare("SELECT receipt, ciphertext FROM consultations ORDER BY receipt").all(), [
+    assert.deepEqual(restored.prepare("SELECT receipt, ciphertext FROM backup_probe ORDER BY receipt").all(), [
       { receipt: "receipt-before", ciphertext: "opaque-ciphertext-before" },
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
@@ -564,6 +693,62 @@ test("readiness failure restores the previous database and services", async () =
   }), { code: "RESTORED_SERVICE_NOT_READY" });
 
   assert.equal(await readFile(target, "utf8"), "old-production-db");
-  assert.deepEqual(calls, ["stopped", "start", "ready", "stop", "start", "ready"]);
+  assert.deepEqual(calls, [
+    "stopped", "stop", "stopped", "stopped", "start", "ready",
+    "stop", "stopped", "start", "ready",
+  ]);
   assert.ok((await readdir(path.dirname(target))).some((name) => name.includes(".failed-20260716T030405Z")));
+});
+
+test("restore surfaces a distinct error when readiness rollback also fails", async () => {
+  const root = await fixtureDirectory("restore-rollback-failure");
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "old-production-db");
+  let stops = 0;
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+    now: new Date("2026-07-16T03:04:05.000Z"),
+  }, {
+    ...fakeAdapters(),
+    services: {
+      assertStopped: async () => undefined,
+      start: async () => undefined,
+      stop: async () => {
+        stops++;
+        if (stops === 2) {
+          throw Object.assign(new Error("services remained running"), { code: "SERVICE_STOP_TIMEOUT" });
+        }
+      },
+      checkReady: async () => {
+        throw Object.assign(new Error("new DB not ready"), { code: "RESTORED_SERVICE_NOT_READY" });
+      },
+    },
+  }), (error) => {
+    assert.equal(error.code, "RESTORE_ROLLBACK_FAILED");
+    assert.equal(error.cause?.code, "RESTORED_SERVICE_NOT_READY");
+    assert.equal(error.recoveryCause?.code, "SERVICE_STOP_TIMEOUT");
+    return true;
+  });
+
+  assert.equal(await readFile(target, "utf8"), JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
+  assert.equal(await readFile(`${target}.quarantine-20260716T030405Z`, "utf8"), "old-production-db");
 });

@@ -30,7 +30,7 @@ http://{{PUBLIC_HOST}}:{{CADDY_PORT}} {
 	# Access logs intentionally disabled so capability URLs and URL parameters are never recorded.
 
 	@public_private path /admin* /health/ready /internal/*
-	@withdraw path /marketing/withdraw* /en/marketing/withdraw* /zh-hans/marketing/withdraw* /zh-hant/marketing/withdraw*
+	@withdraw path_regexp withdraw ^/(?:marketing/withdraw/(?:[A-Za-z0-9_-]{43}|confirm)|(?:en|zh-hans|zh-hant)/marketing/withdraw/confirm)/?$
 	@public_api path /api/v1/*
 	@public_live path /health/live
 	@indexnow_key path /indexnow-key.txt
@@ -82,8 +82,25 @@ http://{{PUBLIC_HOST}}:{{CADDY_PORT}} {
 	}
 	handle_errors {
 		root * {{PUBLIC_CURRENT_RELEASE}}
-		rewrite * /404.html
-		file_server
+		@en_404 path /en/*
+		@zh_hans_404 path /zh-hans/*
+		@zh_hant_404 path /zh-hant/*
+		handle @en_404 {
+			rewrite * /en/404/index.html
+			file_server
+		}
+		handle @zh_hans_404 {
+			rewrite * /zh-hans/404/index.html
+			file_server
+		}
+		handle @zh_hant_404 {
+			rewrite * /zh-hant/404/index.html
+			file_server
+		}
+		handle {
+			rewrite * /404.html
+			file_server
+		}
 	}
 }
 

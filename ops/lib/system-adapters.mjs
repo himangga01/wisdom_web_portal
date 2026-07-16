@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmod, rm, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 function fail(code, message) {
@@ -11,25 +10,56 @@ function fail(code, message) {
 
 function defaultRun(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const { stdin, ...spawnOptions } = options;
     const child = spawn(executable, args, {
-      ...options,
+      ...spawnOptions,
       shell: false,
-      stdio: options.stdio ?? ["ignore", "ignore", "ignore"],
+      stdio: spawnOptions.stdio ?? ["ignore", "ignore", "ignore"],
     });
-    child.once("error", reject);
+    let settled = false;
+    const finish = (action, value) => {
+      if (settled) return;
+      settled = true;
+      action(value);
+    };
+    child.once("error", (error) => finish(reject, error));
     child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(Object.assign(new Error("External command failed"), {
+      if (code === 0) finish(resolve);
+      else finish(reject, Object.assign(new Error("External command failed"), {
         code: "EXTERNAL_COMMAND_FAILED",
         exitCode: code,
         signal,
       }));
     });
+    if (stdin !== undefined) {
+      if (!(stdin instanceof Uint8Array) || child.stdin === null) {
+        finish(reject, Object.assign(new Error("External command stdin is unavailable"), {
+          code: "EXTERNAL_COMMAND_STDIN_UNAVAILABLE",
+        }));
+        return;
+      }
+      child.stdin.once("error", (error) => {
+        if (error?.code !== "EPIPE") finish(reject, error);
+      });
+      child.stdin.end(stdin);
+    }
   });
 }
 
 function validatePath(candidate) {
   return typeof candidate === "string" && path.isAbsolute(candidate) && !/[\0\r\n]/u.test(candidate);
+}
+
+async function assertNoIdentityResidue(output) {
+  let entries;
+  try {
+    entries = await readdir(path.dirname(output), { withFileTypes: true });
+  } catch {
+    fail("AGE_ADAPTER_INPUT_INVALID", "age output directory is unavailable");
+  }
+  if (entries.some((entry) => entry.name.includes(".identity-"))) {
+    fail("AGE_IDENTITY_RESIDUE_DETECTED", "legacy age identity residue requires operator cleanup");
+  }
 }
 
 export function createAgeAdapter({ executable, run = defaultRun }) {
@@ -48,16 +78,16 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
       if (!validatePath(input) || !validatePath(output) || typeof identity !== "string" || identity.length < 16 || /[\0\r\n]/u.test(identity)) {
         fail("AGE_ADAPTER_INPUT_INVALID", "age decryption input is invalid");
       }
-      const identityPath = `${output}.identity-${randomUUID()}`;
+      await assertNoIdentityResidue(output);
+      const identityBytes = Buffer.from(`${identity}\n`, "utf8");
       try {
-        await writeFile(identityPath, `${identity}\n`, { mode: 0o600, flag: "wx" });
-        await chmod(identityPath, 0o600);
-        await run(executable, ["--decrypt", "--identity", identityPath, "--output", output, input], {
+        await run(executable, ["--decrypt", "--identity", "-", "--output", output, input], {
           shell: false,
-          stdio: ["ignore", "ignore", "ignore"],
+          stdio: ["pipe", "ignore", "ignore"],
+          stdin: identityBytes,
         });
       } finally {
-        await rm(identityPath, { force: true });
+        identityBytes.fill(0);
       }
     },
   };

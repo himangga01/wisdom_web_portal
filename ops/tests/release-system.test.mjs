@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { acquireReleaseOperationLock } from "../lib/release-operation-lock.mjs";
 import {
   atomicSwitchRelease,
   copyReleaseSource,
@@ -25,6 +26,17 @@ async function releaseFixture() {
   await mkdir(releaseRoot, { recursive: true });
   return { appRoot, sourceRoot, releaseRoot, currentLink, releaseId, destination };
 }
+
+test("release operation lock serializes deploy, rollback, and retention", async () => {
+  const fixture = await releaseFixture();
+  const release = await acquireReleaseOperationLock(fixture.releaseRoot);
+  await assert.rejects(acquireReleaseOperationLock(fixture.releaseRoot), {
+    code: "RELEASE_OPERATION_LOCKED",
+  });
+  await release();
+  const reacquired = await acquireReleaseOperationLock(fixture.releaseRoot);
+  await reacquired();
+});
 
 const minimalRuntimeFiles = [
   "package.json",
@@ -195,6 +207,38 @@ test("retention removes only old validated release directories and never active"
   assert.ok(names.includes(releases[1]));
   assert.ok(names.includes("operator-notes"));
   assert.ok(names.includes(invalidRelease));
+});
+
+test("retention counts only verified retired releases and preserves newer invalid releases", async () => {
+  const fixture = await releaseFixture();
+  const verifiedRetired = [
+    "20260711T010203Z-1111111",
+    "20260712T010203Z-2222222",
+    "20260713T010203Z-3333333",
+  ];
+  const invalidRetired = [
+    "20260715T010203Z-5555555",
+    "20260714T010203Z-4444444",
+  ];
+  const active = "20260716T010203Z-6666666";
+  for (const release of [...verifiedRetired, active]) {
+    await populateRelease(path.join(fixture.releaseRoot, release), release);
+  }
+  for (const release of invalidRetired) await mkdir(path.join(fixture.releaseRoot, release));
+
+  const result = await pruneRetainedReleases(fixture.releaseRoot, {
+    active: path.join(fixture.releaseRoot, active),
+    keepRetired: 2,
+  });
+
+  const names = await readdir(fixture.releaseRoot);
+  assert.deepEqual(result.deleted, [verifiedRetired[0]]);
+  assert.deepEqual(result.skippedInvalid, invalidRetired);
+  assert.ok(names.includes(active));
+  assert.ok(names.includes(verifiedRetired[2]));
+  assert.ok(names.includes(verifiedRetired[1]));
+  assert.ok(!names.includes(verifiedRetired[0]));
+  for (const release of invalidRetired) assert.ok(names.includes(release));
 });
 
 test("incomplete cleanup refuses the active pointer target", async (t) => {

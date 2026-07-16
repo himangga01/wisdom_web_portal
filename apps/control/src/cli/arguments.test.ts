@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { parseActivateArguments, parsePurgeArguments, parseSeedArguments } from "./arguments.js";
+import {
+  parseActivateArguments,
+  parseMigrateArguments,
+  parsePurgeArguments,
+  parseSeedArguments,
+} from "./arguments.js";
 
 describe("control CLI arguments", () => {
+  it("requires an explicit rollback compatibility gate for deployment migrations", () => {
+    expect(parseMigrateArguments([])).toEqual({ requireRollbackCompatible: true });
+    expect(parseMigrateArguments(["--require-rollback-compatible"])).toEqual({
+      requireRollbackCompatible: true,
+    });
+    expect(parseMigrateArguments(["--allow-incompatible-maintenance"])).toEqual({
+      requireRollbackCompatible: false,
+    });
+    expect(() => parseMigrateArguments([
+      "--require-rollback-compatible",
+      "--allow-incompatible-maintenance",
+    ])).toThrow(/mutually exclusive/i);
+    expect(() => parseMigrateArguments(["--unknown"])).toThrow(/unknown/i);
+  });
+
   it("requires explicit seed and activation inputs", () => {
     expect(parseSeedArguments(["--file", "consent.json"])).toEqual({ file: "consent.json" });
     expect(() => parseSeedArguments([])).toThrow();

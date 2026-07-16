@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
 import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
 
 function fail(code, message) {
@@ -108,13 +109,26 @@ export function planRestore(input) {
 export async function restoreBackup(input, adapters) {
   const plan = planRestore(input);
   if (plan.dryRun) return plan;
+  await ensureRealDirectory(path.dirname(plan.target), "RESTORE_TARGET_UNSAFE");
+  const releaseMaintenanceLock = await acquireDatabaseMaintenanceLock(plan.target);
+  try {
+    return await restoreBackupLocked(input, plan, adapters);
+  } finally {
+    await releaseMaintenanceLock();
+  }
+}
+
+async function restoreBackupLocked(input, plan, adapters) {
   await adapters.services.assertStopped();
+  if (adapters.services.stop) {
+    await adapters.services.stop();
+    await adapters.services.assertStopped();
+  }
 
   await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
   await assertNoSymlinkPath(plan.backup, "RESTORE_INPUT_INVALID");
   await assertNoSymlinkPath(plan.status, "RESTORE_INPUT_INVALID");
   await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
-  await ensureRealDirectory(path.dirname(plan.target), "RESTORE_TARGET_UNSAFE");
   if (await exists(plan.target)) await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
   for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
     if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
@@ -155,6 +169,7 @@ export async function restoreBackup(input, adapters) {
     await chmod(staged, 0o600);
     await syncFile(staged);
 
+    await adapters.services.assertStopped();
     if (await exists(plan.target)) {
       const targetMetadata = await lstat(plan.target);
       if (!targetMetadata.isFile() || targetMetadata.isSymbolicLink()) {
@@ -172,9 +187,11 @@ export async function restoreBackup(input, adapters) {
     await adapters.services.checkReady();
     return { ...plan, dryRun: false, quarantinePath: quarantined ? quarantinePath : undefined };
   } catch (error) {
+    let recoveryCause;
     if (replaced) {
       try {
         if (adapters.services.stop) await adapters.services.stop();
+        await adapters.services.assertStopped();
         await copyFile(plan.target, failedPath, constants.COPYFILE_EXCL);
         await chmod(failedPath, 0o600);
         await syncFile(failedPath);
@@ -186,9 +203,18 @@ export async function restoreBackup(input, adapters) {
         await syncDirectory(path.dirname(plan.target));
         await adapters.services.start();
         await adapters.services.checkReady();
-      } catch {
-        // Never hide the original validation/readiness failure.
+      } catch (recoveryError) {
+        recoveryCause = recoveryError;
       }
+    }
+    if (recoveryCause !== undefined) {
+      const rollbackFailure = new Error(
+        "Restored database failed readiness and the previous database could not be recovered",
+        { cause: error },
+      );
+      rollbackFailure.code = "RESTORE_ROLLBACK_FAILED";
+      rollbackFailure.recoveryCause = recoveryCause;
+      throw rollbackFailure;
     }
     throw error;
   } finally {

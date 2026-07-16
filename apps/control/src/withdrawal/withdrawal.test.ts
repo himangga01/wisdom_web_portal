@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { closeDatabase, openDatabase, runMigrations } from "../db/client.js";
+import { purgeExpiredConsultations } from "../retention/purge.js";
 import * as controlModule from "../index.js";
 
 const control = controlModule as unknown as Record<string, unknown>;
@@ -18,7 +19,13 @@ function requiredFunction<T>(name: string): T {
   return control[name] as T;
 }
 
-function seedMarketingConsultation(database: TestDatabase["db"], marketingAccepted = 1): void {
+function seedMarketingConsultation(
+  database: TestDatabase["db"],
+  marketingAccepted = 1,
+  options: { receivedAtMs?: number; retentionExpiresAtMs?: number } = {},
+): void {
+  const receivedAtMs = options.receivedAtMs ?? 0;
+  const retentionExpiresAtMs = options.retentionExpiresAtMs ?? 10_000_000;
   database.sqlite.prepare(`
     INSERT INTO consultations (
       id, receipt_id, status, locale, category, preferred_contact,
@@ -26,8 +33,21 @@ function seedMarketingConsultation(database: TestDatabase["db"], marketingAccept
       marketing_accepted, received_at_ms, updated_at_ms,
       retention_expires_at_ms, row_version
     ) VALUES ('consultation-1', 'receipt-1', 'received', 'ko', 'procurement', 'email',
-      'opaque-envelope', 'pii-v1', ?, 'pii-v1', ?, 0, 0, 10000000, 1)
-  `).run(Buffer.alloc(32, 1), marketingAccepted);
+      'opaque-envelope', 'pii-v1', ?, 'pii-v1', ?, ?, ?, ?, 1)
+  `).run(
+    Buffer.alloc(32, 1),
+    marketingAccepted,
+    receivedAtMs,
+    receivedAtMs,
+    retentionExpiresAtMs,
+  );
+  database.sqlite.prepare(`
+    INSERT INTO consent_documents (
+      id, bundle_id, kind, locale, version, title, body_markdown,
+      content_sha256, retention_months, state, created_at_ms
+    ) VALUES ('privacy-document', 'bundle', 'privacy', 'ko', 'privacy-v1',
+      'Privacy', 'Privacy terms', ?, 12, 'active', 0)
+  `).run(Buffer.alloc(32, 3));
   database.sqlite.prepare(`
     INSERT INTO consent_documents (
       id, bundle_id, kind, locale, version, title, body_markdown,
@@ -35,6 +55,13 @@ function seedMarketingConsultation(database: TestDatabase["db"], marketingAccept
     ) VALUES ('marketing-document', 'bundle', 'marketing', 'ko', 'marketing-v1',
       'Marketing', 'Marketing terms', ?, 24, 'active', 0)
   `).run(Buffer.alloc(32, 2));
+  database.sqlite.prepare(`
+    INSERT INTO consent_events (
+      id, consultation_id, document_id, kind, decision, sequence,
+      document_version, document_sha256, actor_type, request_id, occurred_at_ms
+    ) VALUES ('privacy-accepted', 'consultation-1', 'privacy-document',
+      'privacy', 'accepted', 1, 'privacy-v1', ?, 'visitor', 'request-intake', ?)
+  `).run(Buffer.alloc(32, 3), receivedAtMs);
   database.sqlite.prepare(`
     INSERT INTO consent_events (
       id, consultation_id, document_id, kind, decision, sequence,
@@ -134,7 +161,7 @@ describe("accountless marketing withdrawal", () => {
       nowMs: 1,
       randomBytes: () => Buffer.alloc(32, 22),
     });
-    expect(opened).toMatchObject({ kind: "redirect", location: "https://www.example.test/marketing/withdraw" });
+    expect(opened).toMatchObject({ kind: "redirect", location: "https://www.example.test/marketing/withdraw/confirm" });
     if (opened.kind !== "redirect") throw new Error("expected redirect");
     expect(opened.cookie).toBe(
       `__Host-wisdom-marketing-withdraw=${opened.landingToken}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=600`,
@@ -272,6 +299,90 @@ describe("accountless marketing withdrawal", () => {
     })).toEqual({ kind: "invalid" });
   });
 
+  it("shortens retention to the accepted privacy document period in the withdrawal transaction", () => {
+    const mint = requiredFunction<Mint>("mintMarketingWithdrawalCapability");
+    const open = requiredFunction<any>("openMarketingWithdrawalCapability") as any;
+    const confirmation = requiredFunction<any>("getMarketingWithdrawalConfirmation") as any;
+    const withdraw = requiredFunction<any>("withdrawMarketingConsent") as any;
+    testDatabase = createTestDatabase();
+    const receivedAtMs = Date.UTC(2024, 0, 31, 12);
+    const marketingExpiryMs = Date.UTC(2026, 0, 31, 12);
+    const expectedPrivacyExpiryMs = Date.UTC(2025, 0, 31, 12);
+    seedMarketingConsultation(testDatabase.db, 1, {
+      receivedAtMs,
+      retentionExpiresAtMs: marketingExpiryMs,
+    });
+    const minted = mint(testDatabase.db, withdrawalSecret, {
+      consultationId: "consultation-1",
+      publicOrigin: "https://www.example.test",
+      nowMs: receivedAtMs + 1,
+      expiresAtMs: receivedAtMs + 100_000,
+    });
+    const opened = open(testDatabase.db, withdrawalSecret, {
+      token: minted.token,
+      publicOrigin: "https://www.example.test",
+      nowMs: receivedAtMs + 2,
+    });
+    const confirm = confirmation(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      nowMs: receivedAtMs + 3,
+    });
+
+    expect(withdraw(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      confirmationValue: confirm.confirmationValue,
+      nowMs: receivedAtMs + 4,
+      requestId: "request-retention-shortening",
+    })).toEqual({ kind: "withdrawn" });
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT retention_expires_at_ms FROM consultations WHERE id = 'consultation-1'
+    `).get()).toEqual({ retention_expires_at_ms: expectedPrivacyExpiryMs });
+  });
+
+  it("makes a missed privacy expiry immediately eligible for the retention purge", () => {
+    const mint = requiredFunction<Mint>("mintMarketingWithdrawalCapability");
+    const open = requiredFunction<any>("openMarketingWithdrawalCapability") as any;
+    const confirmation = requiredFunction<any>("getMarketingWithdrawalConfirmation") as any;
+    const withdraw = requiredFunction<any>("withdrawMarketingConsent") as any;
+    testDatabase = createTestDatabase();
+    const receivedAtMs = Date.UTC(2022, 0, 1);
+    const nowMs = Date.UTC(2024, 6, 1);
+    const expectedPrivacyExpiryMs = Date.UTC(2023, 0, 1);
+    seedMarketingConsultation(testDatabase.db, 1, {
+      receivedAtMs,
+      retentionExpiresAtMs: Date.UTC(2025, 0, 1),
+    });
+    const minted = mint(testDatabase.db, withdrawalSecret, {
+      consultationId: "consultation-1",
+      publicOrigin: "https://www.example.test",
+      nowMs,
+      expiresAtMs: nowMs + 100_000,
+    });
+    const opened = open(testDatabase.db, withdrawalSecret, {
+      token: minted.token,
+      publicOrigin: "https://www.example.test",
+      nowMs: nowMs + 1,
+    });
+    const confirm = confirmation(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      nowMs: nowMs + 2,
+    });
+
+    expect(withdraw(testDatabase.db, withdrawalSecret, {
+      landingToken: opened.landingToken,
+      confirmationValue: confirm.confirmationValue,
+      nowMs: nowMs + 3,
+      requestId: "request-expired-retention",
+    })).toEqual({ kind: "withdrawn" });
+    expect(testDatabase.db.sqlite.prepare(`
+      SELECT retention_expires_at_ms FROM consultations WHERE id = 'consultation-1'
+    `).get()).toEqual({ retention_expires_at_ms: expectedPrivacyExpiryMs });
+    expect(purgeExpiredConsultations(testDatabase.db, {
+      nowMs: nowMs + 3,
+      apply: false,
+    })).toEqual({ dueCount: 1, purgedCount: 0 });
+  });
+
   it("rolls back consent, flags, cancellation, capability use, and audit on a late fault", () => {
     const mint = requiredFunction<Mint>("mintMarketingWithdrawalCapability");
     const open = requiredFunction<any>("openMarketingWithdrawalCapability") as any;
@@ -308,8 +419,13 @@ describe("accountless marketing withdrawal", () => {
       },
     })).toThrow(/injected/);
     expect(testDatabase.db.sqlite.prepare(`
-      SELECT marketing_withdrawn_at_ms, row_version FROM consultations WHERE id = 'consultation-1'
-    `).get()).toEqual({ marketing_withdrawn_at_ms: null, row_version: 1 });
+      SELECT marketing_withdrawn_at_ms, retention_expires_at_ms, row_version
+      FROM consultations WHERE id = 'consultation-1'
+    `).get()).toEqual({
+      marketing_withdrawn_at_ms: null,
+      retention_expires_at_ms: 10_000_000,
+      row_version: 1,
+    });
     expect(testDatabase.db.sqlite.prepare(`
       SELECT count(*) count FROM consent_events WHERE decision = 'withdrawn'
     `).get()).toEqual({ count: 0 });

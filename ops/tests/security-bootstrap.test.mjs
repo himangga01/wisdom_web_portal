@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   importAgeIdentity,
@@ -11,7 +15,10 @@ import {
   loadKeychainEnvironment,
   parseKeychainExecArgs,
 } from "../lib/keychain.mjs";
+import * as macReleaseAdapter from "../lib/mac-release-adapter.mjs";
 import { runPreflight } from "../lib/preflight.mjs";
+
+const execute = promisify(execFileCallback);
 
 const secretDefinitions = [
   { environment: "CONTROL_HMAC_SECRET", service: "com.jihye.portal.control-hmac", bytes: 32 },
@@ -284,7 +291,10 @@ function successfulPreflightAdapter(overrides = {}) {
     arch: "arm64",
     nodeVersion: "24.18.0",
     ensureWritable: async () => undefined,
-    inspectBinary: async (name) => `${name} fixture`,
+    canonicalDeploymentPaths: async (paths) => paths,
+    inspectBinary: async (name) => name === "age"
+      ? { stdout: "age 1.3.1\n", stderr: "" }
+      : { stdout: `${name} fixture`, stderr: "" },
     loadNativeModule: async () => undefined,
     sqliteVersion: async () => "3.53.2",
     verifyPublicCurrent: async () => ({ manifestVerified: true, indexVerified: true }),
@@ -295,6 +305,7 @@ function successfulPreflightAdapter(overrides = {}) {
 const root = path.parse(process.cwd()).root;
 const preflightConfig = {
   releaseRoot: path.join(root, "fixture", "portal", "releases"),
+  currentLink: path.join(root, "fixture", "portal", "current"),
   dataRoot: path.join(root, "fixture", "portal-data"),
   binaries: {
     caddy: path.join(root, "opt", "bin", "caddy"),
@@ -302,6 +313,7 @@ const preflightConfig = {
     age: path.join(root, "opt", "bin", "age"),
   },
   sqliteMinimum: "3.51.3",
+  ageVersion: "1.3.1",
   publicReleaseRoot: path.join(root, "fixture", "portal", "public-releases"),
   publicCurrentLink: path.join(root, "fixture", "portal", "public-current"),
 };
@@ -313,8 +325,17 @@ test("preflight accepts Apple silicon, Node 24, native SQLite and required binar
   assert.equal(report.architecture, "arm64");
   assert.equal(report.nodeVersion, "24.18.0");
   assert.equal(report.sqliteVersion, "3.53.2");
+  assert.equal(report.ageVersion, "1.3.1");
   assert.deepEqual(report.checkedBinaries.sort(), ["age", "caddy", "cloudflared"]);
   assert.deepEqual(report.publicSite, { manifestVerified: true, indexVerified: true });
+});
+
+test("preflight rejects an age binary that does not match the pinned version", async () => {
+  await assert.rejects(runPreflight(preflightConfig, successfulPreflightAdapter({
+    inspectBinary: async (name) => name === "age"
+      ? { stdout: "age 1.3.0\n", stderr: "" }
+      : { stdout: `${name} fixture`, stderr: "" },
+  })), { code: "UNSUPPORTED_AGE_VERSION" });
 });
 
 test("preflight blocks tunnel launch until public-current index and manifest are verified", async () => {
@@ -348,4 +369,112 @@ test("preflight rejects non-absolute binaries and overlapping data/release roots
     runPreflight({ ...preflightConfig, dataRoot: path.join(preflightConfig.releaseRoot, "data") }, successfulPreflightAdapter()),
     { code: "PREFLIGHT_PATH_INVALID" },
   );
+  await assert.rejects(
+    runPreflight({ ...preflightConfig, dataRoot: preflightConfig.publicReleaseRoot }, successfulPreflightAdapter()),
+    { code: "PREFLIGHT_PATH_INVALID" },
+  );
+});
+
+test("preflight rejects identical or nested application and public deployment paths", async (t) => {
+  const cases = [
+    ["identical current pointers", { publicCurrentLink: preflightConfig.currentLink }],
+    ["application current inside application releases", { currentLink: path.join(preflightConfig.releaseRoot, "current") }],
+    ["application current inside public releases", { currentLink: path.join(preflightConfig.publicReleaseRoot, "current") }],
+    ["public current inside application releases", { publicCurrentLink: path.join(preflightConfig.releaseRoot, "current") }],
+    ["public current inside public releases", { publicCurrentLink: path.join(preflightConfig.publicReleaseRoot, "current") }],
+    ["public releases inside application releases", { publicReleaseRoot: path.join(preflightConfig.releaseRoot, "public") }],
+    ["application releases inside public releases", { releaseRoot: path.join(preflightConfig.publicReleaseRoot, "application") }],
+    ["public current inside application current", { publicCurrentLink: path.join(preflightConfig.currentLink, "public") }],
+    ["application current inside public current", { currentLink: path.join(preflightConfig.publicCurrentLink, "application") }],
+  ];
+
+  for (const [name, overrides] of cases) {
+    await t.test(name, async () => {
+      await assert.rejects(
+        runPreflight({ ...preflightConfig, ...overrides }, successfulPreflightAdapter()),
+        { code: "PREFLIGHT_PATH_INVALID" },
+      );
+    });
+  }
+});
+
+test("preflight rejects case-folded and canonical filesystem aliases", async () => {
+  await assert.rejects(runPreflight({
+    ...preflightConfig,
+    publicReleaseRoot: preflightConfig.releaseRoot.toUpperCase(),
+  }, successfulPreflightAdapter()), { code: "PREFLIGHT_PATH_INVALID" });
+
+  await assert.rejects(runPreflight(preflightConfig, successfulPreflightAdapter({
+    canonicalDeploymentPaths: async (paths) => ({
+      ...paths,
+      publicCurrentLink: paths.currentLink,
+    }),
+  })), { code: "PREFLIGHT_PATH_INVALID" });
+});
+
+test("mac release preflight forwards the application current pointer", async () => {
+  const tempRoot = path.join(path.parse(process.cwd()).root, "fixture", "preflight-adapter");
+  const currentLink = path.join(tempRoot, "portal", "current");
+  assert.equal(typeof macReleaseAdapter.buildMacPreflightArguments, "function");
+  const args = macReleaseAdapter.buildMacPreflightArguments({
+    opsRoot: path.join(tempRoot, "ops"),
+    nodeBinary: process.execPath,
+    releaseRoot: path.join(tempRoot, "portal", "releases"),
+    currentLink,
+    dataRoot: path.join(tempRoot, "data"),
+    caddyBinary: process.execPath,
+    cloudflaredBinary: process.execPath,
+    ageBinary: process.execPath,
+    publicReleaseRoot: path.join(tempRoot, "portal", "public-releases"),
+    publicCurrentLink: path.join(tempRoot, "portal", "public-current"),
+  });
+
+  assert.equal(args[args.indexOf("--current") + 1], currentLink);
+});
+
+test("mac release migration requires the rollback compatibility gate", () => {
+  const fixtureRoot = path.join(path.parse(process.cwd()).root, "fixture", "migration-adapter");
+  const npmBinary = path.join(fixtureRoot, "bin", "npm");
+  assert.equal(typeof macReleaseAdapter.buildMacMigrationArguments, "function");
+
+  const args = macReleaseAdapter.buildMacMigrationArguments({
+    opsRoot: path.join(fixtureRoot, "ops"),
+    keychainAccount: "fixture-account",
+    runtimeConfig: path.join(fixtureRoot, "runtime.env"),
+    npmBinary,
+  }, path.join(fixtureRoot, "releases", "20260716T010203Z-abcdef1"));
+
+  assert.deepEqual(args.slice(-8), [
+    "--",
+    npmBinary,
+    "run",
+    "db:migrate",
+    "--workspace",
+    "@wisdom/control",
+    "--",
+    "--require-rollback-compatible",
+  ]);
+});
+
+test("preflight CLI maps --current into path validation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "wisdom-preflight-cli-"));
+  const releaseRoot = path.join(tempRoot, "portal", "releases");
+  const dataRoot = path.join(tempRoot, "data");
+  await mkdir(releaseRoot, { recursive: true });
+  await mkdir(dataRoot, { recursive: true });
+
+  await assert.rejects(execute(process.execPath, [
+    path.resolve(import.meta.dirname, "../scripts/preflight.mjs"),
+    "--release-root", releaseRoot,
+    "--current", path.join(tempRoot, "portal", "current"),
+    "--data-root", dataRoot,
+    "--caddy", process.execPath,
+    "--cloudflared", process.execPath,
+    "--age", process.execPath,
+    "--public-release-root", path.join(tempRoot, "portal", "public-releases"),
+    "--public-current", path.join(tempRoot, "portal", "public-current"),
+  ], { timeout: 10_000, windowsHide: true }), (error) => {
+    assert.doesNotMatch(error.stderr, /PREFLIGHT_PATH_INVALID/u);
+    return true;
+  });
 });

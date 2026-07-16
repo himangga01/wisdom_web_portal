@@ -7,6 +7,23 @@ import { siteContent } from "../src/content/site-content.js";
 
 const publicOrigin = "https://www.jihye-office.kr";
 
+function consentResponse(locale: string, versionDate = "2026-07-16") {
+  const document = (kind: "privacy" | "marketing") => ({
+    version: `${kind}-${locale}-${versionDate}`,
+    title: `${kind === "privacy" ? "Privacy collection" : "Marketing communications"} (${locale})`,
+    bodyMarkdown: `${kind === "privacy" ? "Required consultation privacy terms" : "Optional marketing terms"} for ${locale}.`,
+    contentSha256: (kind === "privacy" ? "a" : "b").repeat(64),
+    effectiveAt: `${versionDate}T00:00:00.000Z`,
+    retentionMonths: kind === "privacy" ? 12 : 24,
+    required: kind === "privacy",
+  });
+  return {
+    locale,
+    documents: { privacy: document("privacy"), marketing: document("marketing") },
+    formToken: `signed-form-token-${locale.toLowerCase()}`,
+  };
+}
+
 function physicalViewportSize(browserName: string, width: number, height: number) {
   const windowsWebKitScale = browserName === "webkit" && process.platform === "win32" ? 1.25 : 1;
   return {
@@ -267,14 +284,7 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        locale: "en",
-        documents: {
-          privacy: { version: "privacy-2026-07-16" },
-          marketing: { version: "marketing-2026-07-16" },
-        },
-        formToken: "signed-form-token-en",
-      }),
+      body: JSON.stringify(consentResponse("en")),
     });
   });
   await page.route("**/api/v1/consultations", async (route) => {
@@ -291,6 +301,13 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
     });
   });
   await page.goto("/en/consultation");
+  await expect(page.locator('[data-consent-document="privacy"] summary'))
+    .toHaveText("Privacy collection (en)");
+  await expect(page.locator('[data-consent-document="privacy"] [data-consent-version]'))
+    .toHaveText("privacy-en-2026-07-16");
+  await page.locator('[data-consent-document="privacy"] summary').click();
+  await expect(page.getByText("Required consultation privacy terms for en.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send consultation request" })).toBeEnabled();
   await page.selectOption('[name="category"]', "procurement");
   await page.fill('[name="name"]', "Hong Gildong");
   await page.fill('[name="phone"]', "+82 (10) 1234-5678");
@@ -310,10 +327,68 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
   };
   expect(consultationRequestSchema.parse(envelope.consultation)).toMatchObject({
     phone: "+821012345678",
-    privacyConsent: { version: "privacy-2026-07-16", accepted: true },
-    marketingConsent: { version: "marketing-2026-07-16", accepted: false },
+    privacyConsent: { version: "privacy-en-2026-07-16", accepted: true },
+    marketingConsent: { version: "marketing-en-2026-07-16", accepted: false },
   });
   expect(envelope.antiAbuse).toEqual({ formToken: "signed-form-token-en", website: "" });
+});
+
+test("reloads stale consent, clears choices, and requires a fresh explicit agreement", async ({ page }) => {
+  let consentLoads = 0;
+  let submissions = 0;
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    consentLoads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(consentResponse("en", consentLoads === 1 ? "2026-07-16" : "2026-07-17")),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    submissions += 1;
+    if (submissions === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "CONSENT_VERSION_STALE",
+          message: "Consent version changed",
+          requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        receiptId: "receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        receivedAt: "2026-07-17T02:00:00.000Z",
+        status: "received",
+      }),
+    });
+  });
+
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "Hong Gildong");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+  await page.check('[name="privacyConsent"]');
+  const submit = page.getByRole("button", { name: "Send consultation request" });
+  await submit.click();
+
+  await expect(page.locator("[data-form-status]")).toContainText("consent documents changed");
+  await expect(page.locator('[name="privacyConsent"]')).not.toBeChecked();
+  await expect(page.locator('[name="marketingConsent"]')).not.toBeChecked();
+  await expect(page.locator('[data-consent-document="privacy"] [data-consent-version]'))
+    .toHaveText("privacy-en-2026-07-17");
+  expect(submissions).toBe(1);
+
+  await page.check('[name="privacyConsent"]');
+  await submit.click();
+  await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
+  expect(submissions).toBe(2);
 });
 
 test("reuses an idempotency key for retries and rotates it when the submission changes", async ({ page }) => {
@@ -322,14 +397,7 @@ test("reuses an idempotency key for retries and rotates it when the submission c
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        locale: "en",
-        documents: {
-          privacy: { version: "privacy-2026-07-16" },
-          marketing: { version: "marketing-2026-07-16" },
-        },
-        formToken: "signed-form-token-en",
-      }),
+      body: JSON.stringify(consentResponse("en")),
     });
   });
   await page.route("**/api/v1/consultations", async (route) => {
@@ -384,34 +452,27 @@ test("reuses an idempotency key for retries and rotates it when the submission c
   expect(idempotencyKeys[2]).not.toBe(idempotencyKeys[1]);
 });
 
-test("keeps the submitted locale and consent bundle atomic during a delayed locale change", async ({ page }) => {
-  let releaseEnglishConsent!: () => void;
-  let markEnglishConsentStarted!: () => void;
-  const englishConsentStarted = new Promise<void>((resolve) => {
-    markEnglishConsentStarted = resolve;
+test("clears consent and blocks submission until the changed locale bundle is visible", async ({ page }) => {
+  let releaseChineseConsent!: () => void;
+  let markChineseConsentStarted!: () => void;
+  const chineseConsentStarted = new Promise<void>((resolve) => {
+    markChineseConsentStarted = resolve;
   });
-  const englishConsentRelease = new Promise<void>((resolve) => {
-    releaseEnglishConsent = resolve;
+  const chineseConsentRelease = new Promise<void>((resolve) => {
+    releaseChineseConsent = resolve;
   });
   let capturedBody: unknown;
 
   await page.route("**/api/v1/consent-documents**", async (route) => {
     const locale = new URL(route.request().url()).searchParams.get("locale");
-    if (locale === "en") {
-      markEnglishConsentStarted();
-      await englishConsentRelease;
+    if (locale === "zh-Hans") {
+      markChineseConsentStarted();
+      await chineseConsentRelease;
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        locale,
-        documents: {
-          privacy: { version: `privacy-${locale}-2026-07-16` },
-          marketing: { version: `marketing-${locale}-2026-07-16` },
-        },
-        formToken: `signed-form-token-${locale}`,
-      }),
+      body: JSON.stringify(consentResponse(locale ?? "en")),
     });
   });
   await page.route("**/api/v1/consultations", async (route) => {
@@ -428,7 +489,7 @@ test("keeps the submitted locale and consent bundle atomic during a delayed loca
   });
 
   await page.goto("/en/consultation");
-  await englishConsentStarted;
+  await expect(page.locator('[name="privacyConsent"]')).toBeEnabled();
   await page.selectOption('[name="category"]', "procurement");
   await page.fill('[name="name"]', "Hong Gildong");
   await page.fill('[name="phone"]', "+82 (10) 1234-5678");
@@ -436,10 +497,19 @@ test("keeps the submitted locale and consent bundle atomic during a delayed loca
   await page.check('[name="privacyConsent"]');
   const submit = page.locator('button[type="submit"]');
 
-  await submit.click();
-  await expect(submit).toBeDisabled();
   await page.selectOption('[name="locale"]', "zh-Hans");
-  releaseEnglishConsent();
+  await chineseConsentStarted;
+  await expect(page.locator('[name="privacyConsent"]')).not.toBeChecked();
+  await expect(page.locator('[name="privacyConsent"]')).toBeDisabled();
+  await expect(submit).toBeDisabled();
+  expect(capturedBody).toBeUndefined();
+  releaseChineseConsent();
+
+  await expect(page.locator('[name="privacyConsent"]')).toBeEnabled();
+  await expect(page.locator('[data-consent-document="privacy"] [data-consent-version]'))
+    .toHaveText("privacy-zh-Hans-2026-07-16");
+  await page.check('[name="privacyConsent"]');
+  await submit.click();
 
   await expect(page.locator("[data-form-status]"))
     .toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
@@ -452,11 +522,11 @@ test("keeps the submitted locale and consent bundle atomic during a delayed loca
     antiAbuse: { formToken: string };
   };
   expect(envelope.consultation).toMatchObject({
-    locale: "en",
-    privacyConsent: { version: "privacy-en-2026-07-16" },
-    marketingConsent: { version: "marketing-en-2026-07-16" },
+    locale: "zh-Hans",
+    privacyConsent: { version: "privacy-zh-Hans-2026-07-16" },
+    marketingConsent: { version: "marketing-zh-Hans-2026-07-16" },
   });
-  expect(envelope.antiAbuse.formToken).toBe("signed-form-token-en");
+  expect(envelope.antiAbuse.formToken).toBe("signed-form-token-zh-hans");
 });
 
 test("submits checked marketing consent and shows localized API failure", async ({ page }) => {
@@ -465,14 +535,7 @@ test("submits checked marketing consent and shows localized API failure", async 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        locale: "zh-Hans",
-        documents: {
-          privacy: { version: "privacy-zh-2026-07-16" },
-          marketing: { version: "marketing-zh-2026-07-16" },
-        },
-        formToken: "signed-form-token-zh-hans",
-      }),
+      body: JSON.stringify(consentResponse("zh-Hans")),
     });
   });
   await page.route("**/api/v1/consultations", async (route) => {
@@ -505,7 +568,7 @@ test("submits checked marketing consent and shows localized API failure", async 
   };
   expect(consultationRequestSchema.parse(envelope.consultation)).toMatchObject({
     email: "client@example.com",
-    marketingConsent: { version: "marketing-zh-2026-07-16", accepted: true },
+    marketingConsent: { version: "marketing-zh-Hans-2026-07-16", accepted: true },
   });
   expect(envelope.antiAbuse).toEqual({
     formToken: "signed-form-token-zh-hans",
@@ -548,14 +611,26 @@ test("localizes direct locale-prefixed misses while preserving HTTP 404", async 
   expect((await request.get("/en/404")).status()).toBe(200);
 });
 
-test("keeps the Korean 404 fallback when JavaScript is disabled", async ({ browser }) => {
+test("serves the locale-specific 404 document when JavaScript is disabled", async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
-  const response = await page.goto("http://127.0.0.1:4321/en/missing-without-javascript");
+  const response = await page.goto("http://127.0.0.1:4321/en/404");
 
-  expect(response?.status()).toBe(404);
-  await expect(page.locator("html")).toHaveAttribute("lang", "ko");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(siteContent.ko.headings.notFound);
+  expect(response?.status()).toBe(200);
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(siteContent.en.headings.notFound);
+  await context.close();
+});
+
+test("replaces the unusable no-JavaScript consultation form with direct contact links", async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto("http://127.0.0.1:4321/en/consultation");
+
+  await expect(page.locator("[data-consultation-form] .form-grid")).toBeHidden();
+  await expect(page.locator("[data-consultation-form] .form-submit")).toBeHidden();
+  await expect(page.locator('.no-script-note a[href^="tel:"]')).toBeVisible();
+  await expect(page.locator('.no-script-note a[href^="mailto:"]')).toBeVisible();
   await context.close();
 });
 

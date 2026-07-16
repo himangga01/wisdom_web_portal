@@ -19,6 +19,8 @@ const languageNames: Record<Locale, string> = {
   "zh-Hans": "简体中文",
   "zh-Hant": "繁體中文",
 };
+const phoneHref = `tel:${content.office.phone.replace(/[^+\d]/g, "")}`;
+const emailHref = `mailto:${content.office.email}`;
 ---
 
 <form
@@ -31,7 +33,12 @@ const languageNames: Record<Locale, string> = {
   data-status-success={form.status.success}
   data-status-failure={form.status.failure}
   data-status-configuration-failure={form.status.configurationFailure}
+  data-status-consent-updated={form.status.consentUpdated}
   data-status-invalid={form.status.invalid}
+  data-consent-version-label={form.help.consentVersion}
+  data-consent-effective-label={form.help.consentEffectiveAt}
+  data-consent-retention-label={form.help.consentRetention}
+  data-consent-months-label={form.help.consentMonths}
 >
   <div class="honeypot-field" aria-hidden="true">
     <label for="consultation-website">{form.labels.website}</label>
@@ -95,19 +102,46 @@ const languageNames: Record<Locale, string> = {
       <p class="warning" id="attachment-warning">{form.help.noAttachments}</p>
     </div>
 
-    <fieldset class="field full-field consent-group">
+    <fieldset class="field full-field consent-group" data-consent-fieldset aria-busy="true">
       <legend>{form.labels.consent}</legend>
       <label class="choice-control consent-control">
-        <input name="privacyConsent" type="checkbox" value="accepted" required data-error-required={form.errors.privacyRequired} />
+        <input name="privacyConsent" type="checkbox" value="accepted" required disabled data-error-required={form.errors.privacyRequired} />
         <span><strong>{form.labels.privacyConsent}</strong><small>{form.help.privacyConsent}</small></span>
       </label>
+      <details class="consent-document" data-consent-document="privacy" hidden>
+        <summary data-consent-title></summary>
+        <dl class="consent-document-meta">
+          <div><dt>{form.help.consentVersion}</dt><dd data-consent-version></dd></div>
+          <div><dt>{form.help.consentEffectiveAt}</dt><dd><time data-consent-effective></time></dd></div>
+          <div><dt>{form.help.consentRetention}</dt><dd><span data-consent-retention></span> {form.help.consentMonths}</dd></div>
+        </dl>
+        <div class="consent-document-body" data-consent-body></div>
+      </details>
       <label class="choice-control consent-control">
-        <input name="marketingConsent" type="checkbox" value="accepted" />
+        <input name="marketingConsent" type="checkbox" value="accepted" disabled />
         <span><strong>{form.labels.marketingConsent}</strong><small>{form.help.marketingConsent}</small></span>
       </label>
+      <details class="consent-document" data-consent-document="marketing" hidden>
+        <summary data-consent-title></summary>
+        <dl class="consent-document-meta">
+          <div><dt>{form.help.consentVersion}</dt><dd data-consent-version></dd></div>
+          <div><dt>{form.help.consentEffectiveAt}</dt><dd><time data-consent-effective></time></dd></div>
+          <div><dt>{form.help.consentRetention}</dt><dd><span data-consent-retention></span> {form.help.consentMonths}</dd></div>
+        </dl>
+        <div class="consent-document-body" data-consent-body></div>
+      </details>
     </fieldset>
   </div>
-  <button class="button button-primary form-submit" type="submit">{form.submit}</button>
+  <button class="button button-primary form-submit" type="submit" disabled>{form.submit}</button>
   <div class="form-status" data-form-status role="status" aria-live="polite" hidden></div>
-  <noscript><p class="warning no-script-note">{form.help.noJavaScript}</p></noscript>
+  <noscript>
+    <style>
+      [data-consultation-form] .form-grid,
+      [data-consultation-form] .form-submit { display: none !important; }
+    </style>
+    <div class="warning no-script-note">
+      <p>{form.help.noJavaScript}</p>
+      <p><a href={phoneHref}>{content.office.phone}</a> · <a href={emailHref}>{content.office.email}</a></p>
+    </div>
+  </noscript>
 </form>

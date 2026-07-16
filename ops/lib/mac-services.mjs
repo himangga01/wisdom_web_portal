@@ -1,4 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -14,8 +16,22 @@ export function createMacServiceAdapter({
   execute = execFile,
   fetchImpl = globalThis.fetch,
   readyUrl = `http://127.0.0.1:${process.env.CONTROL_PORT ?? "8787"}/health/ready`,
+  launchAgentRoot = path.join(os.homedir(), "Library", "LaunchAgents"),
+  stopAttempts = 20,
+  stopDelayMs = 250,
+  delay = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs)),
 } = {}) {
   if (!Number.isInteger(userId)) throw Object.assign(new Error("A macOS user id is required"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
+  if (
+    !Array.isArray(labels) || labels.length === 0 ||
+    labels.some((label) => typeof label !== "string" || !/^[A-Za-z0-9.-]+$/u.test(label)) ||
+    typeof launchAgentRoot !== "string" || !path.isAbsolute(launchAgentRoot) || /[\0\r\n]/u.test(launchAgentRoot)
+  ) {
+    throw Object.assign(new Error("Launch agent configuration is invalid"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
+  }
+  if (!Number.isInteger(stopAttempts) || stopAttempts < 1 || !Number.isInteger(stopDelayMs) || stopDelayMs < 0) {
+    throw Object.assign(new Error("Service stop bounds are invalid"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
+  }
   const domain = `gui/${userId}`;
   const assertRunning = async () => {
     for (const label of labels) {
@@ -33,36 +49,75 @@ export function createMacServiceAdapter({
       }
     }
   };
-  return {
-    assertStopped: async () => {
-      for (const label of labels) {
-        try {
-          const { stdout } = await execute("/bin/launchctl", ["print", `${domain}/${label}`], { encoding: "utf8", maxBuffer: 128 * 1024 });
-          if (/\bstate\s*=\s*running\b/u.test(stdout)) {
-            throw Object.assign(new Error(`${label} is running`), { code: "SERVICES_RUNNING" });
-          }
-        } catch (error) {
-          if (error.code === "SERVICES_RUNNING") throw error;
-          if (!isKnownMissingService(error)) {
-            throw Object.assign(new Error(`Unable to inspect ${label}`, { cause: error }), { code: "SERVICE_INSPECTION_FAILED" });
-          }
+  const assertStopped = async () => {
+    for (const label of labels) {
+      try {
+        const { stdout } = await execute("/bin/launchctl", ["print", `${domain}/${label}`], { encoding: "utf8", maxBuffer: 128 * 1024 });
+        if (/\bstate\s*=\s*running\b/u.test(stdout)) {
+          throw Object.assign(new Error(`${label} is running`), { code: "SERVICES_RUNNING" });
+        }
+      } catch (error) {
+        if (error.code === "SERVICES_RUNNING") throw error;
+        if (!isKnownMissingService(error)) {
+          throw Object.assign(new Error(`Unable to inspect ${label}`, { cause: error }), { code: "SERVICE_INSPECTION_FAILED" });
         }
       }
-    },
+    }
+  };
+  return {
+    assertStopped,
     assertRunning,
     stop: async () => {
       for (const label of labels) {
+        const service = `${domain}/${label}`;
         try {
-          await execute("/bin/launchctl", ["kill", "SIGTERM", `${domain}/${label}`]);
+          await execute("/bin/launchctl", ["print", service], { encoding: "utf8", maxBuffer: 128 * 1024 });
+        } catch (error) {
+          if (isKnownMissingService(error)) continue;
+          throw Object.assign(new Error(`Unable to inspect ${label}`, { cause: error }), { code: "SERVICE_INSPECTION_FAILED" });
+        }
+        try {
+          await execute("/bin/launchctl", ["bootout", service]);
         } catch (error) {
           if (!isKnownMissingService(error)) {
             throw Object.assign(new Error(`Unable to stop ${label}`, { cause: error }), { code: "SERVICE_STOP_FAILED" });
           }
         }
       }
+      let lastError;
+      for (let attempt = 0; attempt < stopAttempts; attempt++) {
+        try {
+          await assertStopped();
+          return;
+        } catch (error) {
+          if (error.code !== "SERVICES_RUNNING") throw error;
+          lastError = error;
+        }
+        if (attempt + 1 < stopAttempts) await delay(stopDelayMs);
+      }
+      throw Object.assign(new Error("Services did not stop within the bounded wait", { cause: lastError }), {
+        code: "SERVICE_STOP_TIMEOUT",
+      });
     },
     start: async () => {
-      for (const label of labels) await execute("/bin/launchctl", ["kickstart", "-k", `${domain}/${label}`]);
+      for (const label of labels) {
+        const service = `${domain}/${label}`;
+        let loaded = true;
+        try {
+          await execute("/bin/launchctl", ["print", service], { encoding: "utf8", maxBuffer: 128 * 1024 });
+        } catch (error) {
+          if (isKnownMissingService(error)) loaded = false;
+          else throw Object.assign(new Error(`Unable to inspect ${label}`, { cause: error }), { code: "SERVICE_INSPECTION_FAILED" });
+        }
+        try {
+          if (!loaded) {
+            await execute("/bin/launchctl", ["bootstrap", domain, path.join(launchAgentRoot, `${label}.plist`)]);
+          }
+          await execute("/bin/launchctl", ["kickstart", "-k", service]);
+        } catch (error) {
+          throw Object.assign(new Error(`Unable to start ${label}`, { cause: error }), { code: "SERVICE_START_FAILED" });
+        }
+      }
     },
     checkReady: async () => {
       await assertRunning();

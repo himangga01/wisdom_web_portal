@@ -955,6 +955,92 @@ export function openDatabase(path: string): ControlDatabase {
   return { sqlite, orm: drizzle(sqlite, { schema: drizzleSchema }) };
 }
 
+type MigrationHistoryRow = { version: number; name: string };
+
+function validateMigrationHistory(appliedRows: readonly MigrationHistoryRow[]): void {
+  if (
+    appliedRows.length > MIGRATIONS.length ||
+    appliedRows.some((row, index) => {
+      const expected = MIGRATIONS[index];
+      return expected === undefined || row.version !== expected.version || row.name !== expected.name;
+    })
+  ) {
+    throw new Error("Database migration history is not an exact contiguous known prefix");
+  }
+}
+
+function readMigrationHistory(sqlite: Database.Database): MigrationHistoryRow[] {
+  const table = sqlite.prepare(`
+    SELECT 1 present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'
+  `).get();
+  if (table === undefined) return [];
+  const appliedRows = sqlite.prepare(
+    "SELECT version, name FROM schema_migrations ORDER BY version",
+  ).all() as MigrationHistoryRow[];
+  validateMigrationHistory(appliedRows);
+  return appliedRows;
+}
+
+function migrationHistoryVersion(appliedRows: readonly MigrationHistoryRow[]): number {
+  return appliedRows.at(-1)?.version ?? 0;
+}
+
+function assertUserVersionMatchesHistory(
+  sqlite: Database.Database,
+  historyVersion: number,
+): void {
+  const userVersion = Number(sqlite.pragma("user_version", { simple: true }));
+  if (userVersion === historyVersion) return;
+  throw new Error(
+    `SQLite user_version ${userVersion} does not match migration history ${historyVersion}`,
+  );
+}
+
+function inImmediateTransaction<T>(sqlite: Database.Database, operation: () => T): T {
+  sqlite.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    sqlite.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function synchronizeMigrationMetadata(sqlite: Database.Database): MigrationHistoryRow[] {
+  return inImmediateTransaction(sqlite, () => {
+    const history = readMigrationHistory(sqlite);
+    const historyVersion = migrationHistoryVersion(history);
+    const userVersion = Number(sqlite.pragma("user_version", { simple: true }));
+    if (userVersion === 0 && historyVersion > 0) {
+      sqlite.pragma(`user_version = ${historyVersion}`);
+    } else {
+      assertUserVersionMatchesHistory(sqlite, historyVersion);
+    }
+    return history;
+  });
+}
+
+export function assertRollbackCompatibleMigration(
+  db: ControlDatabase,
+  targetVersion = SCHEMA_VERSION,
+): void {
+  if (!Number.isSafeInteger(targetVersion) || targetVersion < 1 || targetVersion > SCHEMA_VERSION) {
+    throw new Error("Unsupported schema migration target");
+  }
+  const history = synchronizeMigrationMetadata(db.sqlite);
+  const currentVersion = migrationHistoryVersion(history);
+  if (currentVersion === 0 || currentVersion === targetVersion) return;
+  if (currentVersion > targetVersion) {
+    throw new Error("Database schema is newer than the requested migration target");
+  }
+  const nextMigration = MIGRATIONS.find((migration) => migration.version > currentVersion);
+  throw Object.assign(new Error(
+    `Migration ${nextMigration?.version ?? targetVersion} (${nextMigration?.name ?? "unknown"}) requires a maintenance deployment because retained releases require the exact previous schema`,
+  ), { code: "DATABASE_MIGRATION_ROLLBACK_INCOMPATIBLE" });
+}
+
 export function runMigrations(
   db: ControlDatabase,
   nowMs = Date.now(),
@@ -971,34 +1057,20 @@ export function runMigrations(
       applied_at_ms INTEGER NOT NULL
     );
   `);
-  const appliedRows = sqlite.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all() as Array<{
-    version: number;
-    name: string;
-  }>;
-  if (
-    appliedRows.length > MIGRATIONS.length ||
-    appliedRows.some((row, index) => {
-      const expected = MIGRATIONS[index];
-      return expected === undefined || row.version !== expected.version || row.name !== expected.name;
-    })
-  ) {
-    throw new Error("Database migration history is not an exact contiguous known prefix");
-  }
-  const applied = new Set(appliedRows.map((row) => row.version));
-  for (const migration of MIGRATIONS) {
-    if (migration.version > targetVersion || applied.has(migration.version)) continue;
-    sqlite.exec("BEGIN IMMEDIATE");
-    try {
+  synchronizeMigrationMetadata(sqlite);
+  inImmediateTransaction(sqlite, () => {
+    const appliedRows = readMigrationHistory(sqlite);
+    assertUserVersionMatchesHistory(sqlite, migrationHistoryVersion(appliedRows));
+    const applied = new Set(appliedRows.map((row) => row.version));
+    for (const migration of MIGRATIONS) {
+      if (migration.version > targetVersion || applied.has(migration.version)) continue;
       sqlite.exec(migration.sql);
       sqlite.prepare(
         "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",
       ).run(migration.version, migration.name, nowMs);
-      sqlite.exec("COMMIT");
-    } catch (error) {
-      if (sqlite.inTransaction) sqlite.exec("ROLLBACK");
-      throw error;
+      sqlite.pragma(`user_version = ${migration.version}`);
     }
-  }
+  });
 }
 
 export function closeDatabase(db: ControlDatabase): void {
@@ -1007,6 +1079,7 @@ export function closeDatabase(db: ControlDatabase): void {
 
 export function isDatabaseReady(db: ControlDatabase): boolean {
   try {
+    if (Number(db.sqlite.pragma("user_version", { simple: true })) !== SCHEMA_VERSION) return false;
     const history = db.sqlite.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     ).all() as Array<{ version: number; name: string }>;

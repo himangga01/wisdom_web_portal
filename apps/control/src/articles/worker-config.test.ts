@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
-import { blindIndex, createStaticKeyProvider } from "../crypto/index.js";
+import { blindIndex, createStaticKeyProvider, encryptPii } from "../crypto/index.js";
 import {
   assertArticleCodexCliContract,
   createArticleCodexExecutorOptions,
@@ -129,6 +129,7 @@ describe("article worker startup configuration", () => {
     const execute = vi.fn(() => [
       "Run Codex non-interactively",
       "Usage: codex exec [OPTIONS] [PROMPT]",
+      "--disable <FEATURE>",
       "--ignore-user-config",
       "--ignore-rules",
       "--output-schema <FILE>",
@@ -137,12 +138,15 @@ describe("article worker startup configuration", () => {
     expect(execute).toHaveBeenCalledWith(
       config.codexBinary,
       [
-        "--ask-for-approval", "never", "exec",
+        "--ask-for-approval", "never", "--disable", "shell_tool", "exec",
         "-C", config.temporaryRoot,
         "--model", config.model,
         "--sandbox", "read-only",
         "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config",
         "-c", 'web_search="disabled"',
+        "-c", 'shell_environment_policy.inherit="none"',
+        "-c", 'shell_environment_policy.set={ PATH = "/usr/bin:/bin" }',
+        "-c", "allow_login_shell=false",
         "--output-schema", join(config.temporaryRoot, "contract-output-schema.json"),
         "-o", join(config.temporaryRoot, "contract-result.json"),
         "--help",
@@ -160,7 +164,7 @@ describe("article worker startup configuration", () => {
     })).toThrow("Configured Codex CLI contract is unsupported");
   });
 
-  it("builds a minimal executor environment and rejects retained consultation PII without decrypting", async () => {
+  it("builds a minimal executor environment and rejects retained consultation PII", async () => {
     const source = validEnvironment();
     const config = parseArticleWorkerConfig(source);
     const database: TestDatabase = createTestDatabase();
@@ -173,8 +177,15 @@ describe("article worker startup configuration", () => {
         blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
         retention_expires_at_ms, row_version
       ) VALUES ('private-row', 'private-receipt', 'received', 'ko', 'procurement',
-        'email', 'not-decryptable', 'pii-v1', ?, ?, 'pii-v1', 0, 0, 0, 999999, 1)
+        'email', ?, 'pii-v1', ?, ?, 'pii-v1', 0, 0, 0, 999999, 1)
     `).run(
+      encryptPii(provider, "private-row", {
+        name: "Private Customer",
+        phone: "+821012345678",
+        email: "private@example.com",
+        company: "Private Company",
+        message: "This private consultation message is long enough for encryption.",
+      }),
       blindIndex(provider, "phone", "+821012345678"),
       blindIndex(provider, "email", "private@example.com"),
     );

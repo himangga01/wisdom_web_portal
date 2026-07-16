@@ -65,11 +65,17 @@ const ALLOWED_NEXT_STATUSES: Record<
   spam: [],
 };
 
+export function allowedNextConsultationStatuses(
+  status: ConsultationStatus,
+): readonly ConsultationStatus[] {
+  return ALLOWED_NEXT_STATUSES[status];
+}
+
 function isAllowedTransition(
   fromStatus: ConsultationStatus,
   toStatus: ConsultationStatus,
 ): boolean {
-  return ALLOWED_NEXT_STATUSES[fromStatus].includes(toStatus);
+  return allowedNextConsultationStatuses(fromStatus).includes(toStatus);
 }
 
 export function changeConsultationStatus(

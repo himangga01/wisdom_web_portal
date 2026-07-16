@@ -2,6 +2,8 @@ import { randomUUID as nodeRandomUUID } from "node:crypto";
 
 import type { ControlDatabase } from "../db/client.js";
 
+const WAL_CHECKPOINT_ATTEMPTS = 3;
+
 export type PurgeFaultPoint =
   | "after-consultations"
   | "after-outbox"
@@ -14,6 +16,7 @@ export interface PurgeOptions {
   batchSize?: number;
   randomUUID?: () => string;
   faultInjector?: (point: PurgeFaultPoint) => void;
+  checkpointWal?: () => unknown;
 }
 
 export interface PurgeResult {
@@ -24,6 +27,12 @@ export interface PurgeResult {
 interface DueRow {
   id: string;
   retention_expires_at_ms: number;
+}
+
+interface WalCheckpointRow {
+  busy: number;
+  log: number;
+  checkpointed: number;
 }
 
 function assertBatchSize(value: number): void {
@@ -40,6 +49,60 @@ function selectDue(db: ControlDatabase, nowMs: number, batchSize: number): DueRo
     ORDER BY retention_expires_at_ms, id
     LIMIT ?
   `).all(nowMs, batchSize) as DueRow[];
+}
+
+function parseWalCheckpointResult(value: unknown): WalCheckpointRow {
+  if (!Array.isArray(value) || value.length !== 1) {
+    throw Object.assign(new Error("Retention WAL checkpoint returned an invalid result"), {
+      code: "RETENTION_WAL_CHECKPOINT_FAILED",
+    });
+  }
+  const row = value[0] as Partial<WalCheckpointRow> | undefined;
+  const busy = row?.busy;
+  const log = row?.log;
+  const checkpointed = row?.checkpointed;
+  if (
+    !Number.isSafeInteger(busy) || Number(busy) < 0 ||
+    !Number.isSafeInteger(log) || Number(log) < 0 ||
+    !Number.isSafeInteger(checkpointed) || Number(checkpointed) < 0
+  ) {
+    throw Object.assign(new Error("Retention WAL checkpoint returned an invalid result"), {
+      code: "RETENTION_WAL_CHECKPOINT_FAILED",
+    });
+  }
+  return { busy: Number(busy), log: Number(log), checkpointed: Number(checkpointed) };
+}
+
+function truncateWalAfterPurge(checkpoint: () => unknown): void {
+  for (let attempt = 1; attempt <= WAL_CHECKPOINT_ATTEMPTS; attempt += 1) {
+    let row: WalCheckpointRow;
+    try {
+      row = parseWalCheckpointResult(checkpoint());
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+        if (attempt < WAL_CHECKPOINT_ATTEMPTS) continue;
+        throw Object.assign(new Error("Retention WAL checkpoint remained busy after bounded retries"), {
+          code: "RETENTION_WAL_CHECKPOINT_BUSY",
+          cause: error,
+        });
+      }
+      if (code === "RETENTION_WAL_CHECKPOINT_FAILED") throw error;
+      throw Object.assign(new Error("Retention WAL checkpoint failed after the purge commit"), {
+        code: "RETENTION_WAL_CHECKPOINT_FAILED",
+        cause: error,
+      });
+    }
+    if (row.busy === 0) {
+      if (row.log === 0 && row.checkpointed === 0) return;
+      throw Object.assign(new Error("Retention WAL checkpoint did not truncate the WAL"), {
+        code: "RETENTION_WAL_CHECKPOINT_FAILED",
+      });
+    }
+  }
+  throw Object.assign(new Error("Retention WAL checkpoint remained busy after bounded retries"), {
+    code: "RETENTION_WAL_CHECKPOINT_BUSY",
+  });
 }
 
 export function purgeExpiredConsultations(
@@ -110,6 +173,9 @@ export function purgeExpiredConsultations(
     }
     options.faultInjector?.("after-audit");
     db.sqlite.exec("COMMIT");
+    truncateWalAfterPurge(
+      options.checkpointWal ?? (() => db.sqlite.pragma("wal_checkpoint(TRUNCATE)")),
+    );
     return { dueCount: due.length, purgedCount };
   } catch (error) {
     if (db.sqlite.inTransaction) db.sqlite.exec("ROLLBACK");

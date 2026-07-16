@@ -4,6 +4,7 @@ import {
   localeSchema,
   consultationStatusSchema,
   type ArticleState,
+  type ConsultationStatus,
   type Locale,
   type NotificationChannel,
 } from "@wisdom/shared";
@@ -24,7 +25,10 @@ import {
   type ResolvedAdminSession,
 } from "../auth/session.js";
 import { getActiveConsentBundle } from "../consent/service.js";
-import { changeConsultationStatus } from "../consultations/workflow.js";
+import {
+  allowedNextConsultationStatuses,
+  changeConsultationStatus,
+} from "../consultations/workflow.js";
 import {
   changeArticleLocaleState,
   changeArticleLocaleSlug,
@@ -303,7 +307,7 @@ function consultationDetail(
   `).get(id) as {
     id: string;
     receipt_id: string;
-    status: string;
+    status: ConsultationStatus;
     locale: string;
     category: string;
     preferred_contact: string;
@@ -318,7 +322,11 @@ function consultationDetail(
   const piiMarkup = pii
     ? `<dl><dt>Name</dt><dd>${escapeHtml(pii.name)}</dd><dt>Phone</dt><dd>${escapeHtml(pii.phone)}</dd><dt>Email</dt><dd>${escapeHtml(pii.email ?? "")}</dd><dt>Company</dt><dd>${escapeHtml(pii.company ?? "")}</dd><dt>Message</dt><dd>${escapeHtml(pii.message)}</dd></dl>`
     : "<p>Personal data has been purged.</p>";
-  return `<h1>Consultation detail</h1><dl><dt>Receipt</dt><dd>${escapeHtml(row.receipt_id)}</dd><dt>Status</dt><dd>${escapeHtml(row.status)}</dd><dt>Locale</dt><dd>${escapeHtml(row.locale)}</dd><dt>Category</dt><dd>${escapeHtml(row.category)}</dd><dt>Received</dt><dd>${escapeHtml(new Date(row.received_at_ms).toISOString())}</dd></dl>${piiMarkup}<form method="post" action="/admin/consultations/${encodeURIComponent(row.id)}/status"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><input type="hidden" name="rowVersion" value="${row.row_version}"><select name="status"><option>received</option><option>acknowledged</option><option>in_progress</option><option>closed</option><option>spam</option></select><label><input type="checkbox" name="email" value="1"> Email notification</label><label><input type="checkbox" name="hermes" value="1"> Hermes notification</label><button type="submit">Update status</button></form>`;
+  const nextStatuses = allowedNextConsultationStatuses(row.status);
+  const statusForm = nextStatuses.length === 0
+    ? "<p>This consultation is in a terminal state.</p>"
+    : `<form method="post" action="/admin/consultations/${encodeURIComponent(row.id)}/status"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><input type="hidden" name="rowVersion" value="${row.row_version}"><label for="consultation-status">Next status</label><select id="consultation-status" name="status" required><option value="" selected disabled>Choose a valid next status</option>${nextStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join("")}</select><label><input type="checkbox" name="email" value="1"> Email notification</label><label><input type="checkbox" name="hermes" value="1"> Hermes notification</label><button type="submit">Update status</button></form>`;
+  return `<h1>Consultation detail</h1><dl><dt>Receipt</dt><dd>${escapeHtml(row.receipt_id)}</dd><dt>Status</dt><dd>${escapeHtml(row.status)}</dd><dt>Locale</dt><dd>${escapeHtml(row.locale)}</dd><dt>Category</dt><dd>${escapeHtml(row.category)}</dd><dt>Received</dt><dd>${escapeHtml(new Date(row.received_at_ms).toISOString())}</dd></dl>${piiMarkup}${statusForm}`;
 }
 
 function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
@@ -653,11 +661,20 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (!dependencies.articlePublication) {
       return context.html(page("Publishing unavailable", "<h1>Publishing is not configured</h1>"), 503);
     }
-    await dependencies.articlePublication.publish({
-      actorAdminId: auth.session.adminId,
-      requestId: context.get("requestId"),
-      nowMs: dependencies.now(),
-    });
+    try {
+      await dependencies.articlePublication.publish({
+        actorAdminId: auth.session.adminId,
+        requestId: context.get("requestId"),
+        nowMs: dependencies.now(),
+      });
+    } catch {
+      return context.html(page(
+        "Publication failed",
+        '<h1>Publication was not changed</h1><p><code>PUBLICATION_FAILED</code></p><p>The verified public release pointer remains unchanged. Review the release health and retry from the publication preview.</p><p><a href="/admin/publish/preview">Return to publication preview</a> · <a href="/admin/releases">View releases</a></p>',
+        "en",
+        auth.session.csrfToken,
+      ), 503);
+    }
     return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
   });
 
@@ -690,12 +707,21 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (!dependencies.articlePublication) {
       return context.html(page("Rollback unavailable", "<h1>Rollback is not configured</h1>"), 503);
     }
-    await dependencies.articlePublication.rollback({
-      releaseId: context.req.param("id"),
-      actorAdminId: auth.session.adminId,
-      requestId: context.get("requestId"),
-      nowMs: dependencies.now(),
-    });
+    try {
+      await dependencies.articlePublication.rollback({
+        releaseId: context.req.param("id"),
+        actorAdminId: auth.session.adminId,
+        requestId: context.get("requestId"),
+        nowMs: dependencies.now(),
+      });
+    } catch {
+      return context.html(page(
+        "Rollback failed",
+        '<h1>Publication was not changed</h1><p><code>ROLLBACK_FAILED</code></p><p>The current verified public release pointer remains unchanged. Recheck the retained release before retrying.</p><p><a href="/admin/releases">Return to releases</a></p>',
+        "en",
+        auth.session.csrfToken,
+      ), 503);
+    }
     return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
   });
 
@@ -1006,22 +1032,11 @@ function withdrawalLocaleForRoute(route: string): WithdrawalLocale {
 }
 
 function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
-  app.get("/marketing/withdraw/:token", (context) => {
-    const result = openMarketingWithdrawalCapability(dependencies.db, dependencies.withdrawalSecret, {
-      token: context.req.param("token"),
-      publicOrigin: dependencies.publicOrigin,
-      nowMs: dependencies.now(),
-    });
-    if (result.kind === "invalid") return context.html(page("Invalid link", "<h1>This withdrawal link is invalid or expired.</h1>"), 404);
-    context.header("Set-Cookie", result.cookie);
-    return context.redirect(result.location, 303);
-  });
-
   const cleanRoutes = [
-    "/marketing/withdraw",
-    "/en/marketing/withdraw",
-    "/zh-hans/marketing/withdraw",
-    "/zh-hant/marketing/withdraw",
+    "/marketing/withdraw/confirm",
+    "/en/marketing/withdraw/confirm",
+    "/zh-hans/marketing/withdraw/confirm",
+    "/zh-hant/marketing/withdraw/confirm",
   ];
   for (const route of cleanRoutes) {
     app.get(localeRoute(route), (context) => {
@@ -1065,6 +1080,17 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       return context.html(page(copy.successTitle, `<h1>${copy.successTitle}</h1><p>${copy.success}</p>`, locale));
     });
   }
+
+  app.get("/marketing/withdraw/:token", (context) => {
+    const result = openMarketingWithdrawalCapability(dependencies.db, dependencies.withdrawalSecret, {
+      token: context.req.param("token"),
+      publicOrigin: dependencies.publicOrigin,
+      nowMs: dependencies.now(),
+    });
+    if (result.kind === "invalid") return context.html(page("Invalid link", "<h1>This withdrawal link is invalid or expired.</h1>"), 404);
+    context.header("Set-Cookie", result.cookie);
+    return context.redirect(result.location, 303);
+  });
 }
 
 export function registerTask4Routes(

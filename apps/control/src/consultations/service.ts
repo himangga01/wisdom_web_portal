@@ -99,7 +99,7 @@ function canonicalRequest(request: ConsultationRequest): string {
   });
 }
 
-function addMonthsClamped(timestampMs: number, months: number): number {
+export function addMonthsClamped(timestampMs: number, months: number): number {
   const source = new Date(timestampMs);
   const targetYear = source.getUTCFullYear() + Math.floor((source.getUTCMonth() + months) / 12);
   const targetMonth = (source.getUTCMonth() + months) % 12;

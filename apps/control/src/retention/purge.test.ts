@@ -137,4 +137,92 @@ describe("retention purge", () => {
       "SELECT count(*) count FROM audit_events WHERE action = 'consultation.purged'",
     ).get()).toEqual({ count: 0 });
   });
+
+  it("retries a busy WAL truncate checkpoint and succeeds within the bounded attempt limit", () => {
+    database = createTestDatabase();
+    seedConsentDocuments(database.db, consentBundle(), 1_000);
+    activateConsentBundle(database.db, "bundle-2026-07-16", 2_000);
+    const receivedAtMs = Date.UTC(2026, 0, 1);
+    createIntake(false, 4, receivedAtMs);
+    const expiry = (database.db.sqlite.prepare(
+      "SELECT retention_expires_at_ms value FROM consultations",
+    ).get() as { value: number }).value;
+    let attempts = 0;
+
+    expect(purgeExpiredConsultations(database.db, {
+      nowMs: expiry,
+      apply: true,
+      checkpointWal() {
+        attempts += 1;
+        return [{ busy: attempts === 1 ? 1 : 0, log: 0, checkpointed: 0 }];
+      },
+    })).toEqual({ dueCount: 1, purgedCount: 1 });
+    expect(attempts).toBe(2);
+  });
+
+  it("fails closed after three busy WAL truncate checkpoints without undoing the committed purge", () => {
+    database = createTestDatabase();
+    seedConsentDocuments(database.db, consentBundle(), 1_000);
+    activateConsentBundle(database.db, "bundle-2026-07-16", 2_000);
+    const receivedAtMs = Date.UTC(2026, 0, 1);
+    createIntake(false, 5, receivedAtMs);
+    const expiry = (database.db.sqlite.prepare(
+      "SELECT retention_expires_at_ms value FROM consultations",
+    ).get() as { value: number }).value;
+    let attempts = 0;
+    let failure: unknown;
+
+    try {
+      purgeExpiredConsultations(database.db, {
+        nowMs: expiry,
+        apply: true,
+        checkpointWal() {
+          attempts += 1;
+          return [{ busy: 1, log: 1, checkpointed: 0 }];
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "RETENTION_WAL_CHECKPOINT_BUSY" });
+    expect(attempts).toBe(3);
+    expect(database.db.sqlite.prepare(`
+      SELECT purged_at_ms, pii_envelope FROM consultations
+    `).get()).toEqual({ purged_at_ms: expiry, pii_envelope: null });
+  });
+
+  it("rejects a checkpoint result that reports success without a truncated WAL", () => {
+    database = createTestDatabase();
+    let failure: unknown;
+    try {
+      purgeExpiredConsultations(database.db, {
+        nowMs: 1,
+        apply: true,
+        checkpointWal: () => [{ busy: 0, log: 1, checkpointed: 1 }],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "RETENTION_WAL_CHECKPOINT_FAILED" });
+  });
+
+  it("reports bounded SQLite busy exceptions as an explicit WAL busy failure", () => {
+    database = createTestDatabase();
+    let attempts = 0;
+    let failure: unknown;
+    try {
+      purgeExpiredConsultations(database.db, {
+        nowMs: 1,
+        apply: true,
+        checkpointWal() {
+          attempts += 1;
+          throw Object.assign(new Error("database is busy"), { code: "SQLITE_BUSY" });
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "RETENTION_WAL_CHECKPOINT_BUSY" });
+    expect(attempts).toBe(3);
+  });
 });

@@ -17,6 +17,20 @@ export interface ConsentConfiguration {
   privacyVersion: string;
   marketingVersion: string;
   formToken: string;
+  documents: {
+    privacy: ConsentDocument;
+    marketing: ConsentDocument;
+  };
+}
+
+export interface ConsentDocument {
+  version: string;
+  title: string;
+  bodyMarkdown: string;
+  contentSha256: string;
+  effectiveAt: string;
+  retentionMonths: number;
+  required: boolean;
 }
 
 export interface ConsultationSubmission {
@@ -61,6 +75,42 @@ function nonEmptyString(value: unknown, path: string): string {
   return value;
 }
 
+function parseConsentDocument(
+  value: unknown,
+  path: string,
+  expectedRequired: boolean,
+): ConsentDocument {
+  const document = record(value, path);
+  const contentSha256 = nonEmptyString(document.contentSha256, `${path}.contentSha256`);
+  if (!/^[0-9a-f]{64}$/.test(contentSha256)) {
+    throw new Error(`Invalid consent response: ${path}.contentSha256`);
+  }
+  const effectiveAt = nonEmptyString(document.effectiveAt, `${path}.effectiveAt`);
+  const date = new Date(effectiveAt);
+  if (!Number.isFinite(date.valueOf()) || date.toISOString() !== effectiveAt) {
+    throw new Error(`Invalid consent response: ${path}.effectiveAt`);
+  }
+  if (
+    !Number.isSafeInteger(document.retentionMonths)
+    || (document.retentionMonths as number) < 1
+    || (document.retentionMonths as number) > 1_200
+  ) {
+    throw new Error(`Invalid consent response: ${path}.retentionMonths`);
+  }
+  if (document.required !== expectedRequired) {
+    throw new Error(`Invalid consent response: ${path}.required`);
+  }
+  return {
+    version: nonEmptyString(document.version, `${path}.version`),
+    title: nonEmptyString(document.title, `${path}.title`),
+    bodyMarkdown: nonEmptyString(document.bodyMarkdown, `${path}.bodyMarkdown`),
+    contentSha256,
+    effectiveAt,
+    retentionMonths: document.retentionMonths as number,
+    required: expectedRequired,
+  };
+}
+
 function formValue(data: FormData, name: string): string {
   const value = data.get(name);
   return typeof value === "string" ? value : "";
@@ -70,13 +120,14 @@ export function parseConsentConfiguration(value: unknown, locale: Locale): Conse
   const response = record(value, "response");
   if (response.locale !== locale) throw new Error("Invalid consent response: locale");
   const documents = record(response.documents, "documents");
-  const privacy = record(documents.privacy, "documents.privacy");
-  const marketing = record(documents.marketing, "documents.marketing");
+  const privacy = parseConsentDocument(documents.privacy, "documents.privacy", true);
+  const marketing = parseConsentDocument(documents.marketing, "documents.marketing", false);
 
   return {
-    privacyVersion: nonEmptyString(privacy.version, "documents.privacy.version"),
-    marketingVersion: nonEmptyString(marketing.version, "documents.marketing.version"),
+    privacyVersion: privacy.version,
+    marketingVersion: marketing.version,
     formToken: nonEmptyString(response.formToken, "formToken"),
+    documents: { privacy, marketing },
   };
 }
 

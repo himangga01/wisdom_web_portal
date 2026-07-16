@@ -281,9 +281,9 @@ export async function pruneRetainedReleases(releaseRoot, { active, keepRetired }
     retired.push(entry.name);
   }
   retired.sort().reverse();
-  const deleted = [];
+  const verifiedRetired = [];
   const skippedInvalid = [];
-  for (const releaseId of retired.slice(keepRetired)) {
+  for (const releaseId of retired) {
     const candidate = path.join(rootReal, releaseId);
     assertDirectRelease(rootReal, candidate);
     try {
@@ -295,6 +295,11 @@ export async function pruneRetainedReleases(releaseRoot, { active, keepRetired }
       }
       throw error;
     }
+    verifiedRetired.push(releaseId);
+  }
+  const deleted = [];
+  for (const releaseId of verifiedRetired.slice(keepRetired)) {
+    const candidate = path.join(rootReal, releaseId);
     await rm(candidate, { recursive: true });
     deleted.push(releaseId);
   }

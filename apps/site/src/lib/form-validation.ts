@@ -6,6 +6,7 @@ import {
   loadConsentConfiguration,
   postConsultation,
   type ConsentConfiguration,
+  type ConsentDocument,
 } from "./consultation-adapter.js";
 
 const FORM_SELECTOR = "[data-consultation-form]";
@@ -31,8 +32,10 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     const email = form.elements.namedItem("email");
     const marketing = form.elements.namedItem("marketingConsent");
+    const privacy = form.elements.namedItem("privacyConsent");
     const localeControl = form.elements.namedItem("locale");
     const contactMethods = Array.from(form.querySelectorAll<HTMLInputElement>('[name="preferredContact"]'));
+    const consentFieldset = form.querySelector<HTMLFieldSetElement>("[data-consent-fieldset]");
     const status = form.querySelector<HTMLElement>("[data-form-status]");
     const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
     const idempotencyKeyFor = createConsultationIdempotencyKeyCache();
@@ -42,17 +45,10 @@ export function initializeConsultationForms(documentRef: Document = document): v
       return supportedLocale(localeControl.value);
     };
 
-    let consentLocale = selectedLocale();
-    let consentRequest: Promise<ConsentConfiguration | undefined> = consentLocale
-      ? loadConsentConfiguration(consentLocale).catch(() => undefined)
-      : Promise.resolve(undefined);
-
-    const refreshConsent = (locale: Locale | undefined = selectedLocale()): void => {
-      consentLocale = locale;
-      consentRequest = consentLocale
-        ? loadConsentConfiguration(consentLocale).catch(() => undefined)
-        : Promise.resolve(undefined);
-    };
+    let consentLocale: Locale | undefined;
+    let activeConsent: ConsentConfiguration | undefined;
+    let consentLoadGeneration = 0;
+    let submitting = false;
 
     const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
       if (!status) return;
@@ -60,6 +56,76 @@ export function initializeConsultationForms(documentRef: Document = document): v
       status.dataset.state = state;
       status.setAttribute("role", state === "error" ? "alert" : "status");
       status.textContent = message;
+    };
+
+    const syncSubmitAvailability = (): void => {
+      if (submit) submit.disabled = submitting || activeConsent === undefined;
+    };
+
+    const resetConsentDisplay = (): void => {
+      activeConsent = undefined;
+      for (const control of [privacy, marketing]) {
+        if (control instanceof HTMLInputElement) {
+          control.checked = false;
+          control.disabled = true;
+        }
+      }
+      consentFieldset?.setAttribute("aria-busy", "true");
+      form.querySelectorAll<HTMLElement>("[data-consent-document]").forEach((document) => {
+        document.hidden = true;
+      });
+      syncSubmitAvailability();
+    };
+
+    const renderConsentDocument = (kind: "privacy" | "marketing", document: ConsentDocument): void => {
+      const container = form.querySelector<HTMLElement>(`[data-consent-document="${kind}"]`);
+      if (!container) throw new Error(`Missing ${kind} consent container`);
+      const title = container.querySelector<HTMLElement>("[data-consent-title]");
+      const version = container.querySelector<HTMLElement>("[data-consent-version]");
+      const effective = container.querySelector<HTMLTimeElement>("[data-consent-effective]");
+      const retention = container.querySelector<HTMLElement>("[data-consent-retention]");
+      const body = container.querySelector<HTMLElement>("[data-consent-body]");
+      if (!title || !version || !effective || !retention || !body) {
+        throw new Error(`Incomplete ${kind} consent container`);
+      }
+      title.textContent = document.title;
+      version.textContent = document.version;
+      effective.dateTime = document.effectiveAt;
+      effective.textContent = document.effectiveAt.slice(0, 10);
+      retention.textContent = String(document.retentionMonths);
+      body.textContent = document.bodyMarkdown;
+      container.hidden = false;
+    };
+
+    const refreshConsent = async (
+      locale: Locale | undefined = selectedLocale(),
+    ): Promise<ConsentConfiguration | undefined> => {
+      const generation = ++consentLoadGeneration;
+      consentLocale = locale;
+      resetConsentDisplay();
+      if (!locale) return undefined;
+      const loaded = await loadConsentConfiguration(locale).catch(() => undefined);
+      if (generation !== consentLoadGeneration || selectedLocale() !== locale) return loaded;
+      if (!loaded) {
+        consentFieldset?.setAttribute("aria-busy", "false");
+        showStatus("error", form.dataset.statusConfigurationFailure ?? "");
+        return undefined;
+      }
+      try {
+        renderConsentDocument("privacy", loaded.documents.privacy);
+        renderConsentDocument("marketing", loaded.documents.marketing);
+      } catch {
+        consentFieldset?.setAttribute("aria-busy", "false");
+        showStatus("error", form.dataset.statusConfigurationFailure ?? "");
+        return undefined;
+      }
+      activeConsent = loaded;
+      for (const control of [privacy, marketing]) {
+        if (control instanceof HTMLInputElement) control.disabled = false;
+      }
+      consentFieldset?.setAttribute("aria-busy", "false");
+      syncSubmitAvailability();
+      return loaded;
     };
 
     const updateEmailConstraint = (): void => {
@@ -94,7 +160,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     });
     form.addEventListener("change", (event) => {
       updateEmailConstraint();
-      if (event.target === localeControl) refreshConsent();
+      if (event.target === localeControl) void refreshConsent();
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -103,36 +169,28 @@ export function initializeConsultationForms(documentRef: Document = document): v
         return;
       }
 
+      const submissionData = new FormData(form);
+      const submissionLocale = supportedLocale(submissionData.get("locale"));
+      const consentAtSubmit = activeConsent;
+      if (!submissionLocale || submissionLocale !== consentLocale || !consentAtSubmit) {
+        showStatus("error", form.dataset.statusConfigurationFailure ?? "");
+        return;
+      }
+
       void (async () => {
-        const submissionData = new FormData(form);
-        const submissionLocale = supportedLocale(submissionData.get("locale"));
         const originalSubmitLabel = submit?.textContent ?? "";
+        submitting = true;
         form.setAttribute("aria-busy", "true");
         if (submit) {
-          submit.disabled = true;
           submit.textContent = form.dataset.statusSubmitting ?? originalSubmitLabel;
         }
+        syncSubmitAvailability();
         showStatus("submitting", form.dataset.statusSubmitting ?? "");
 
         try {
-          if (!submissionLocale) {
-            showStatus("error", form.dataset.statusInvalid ?? "");
-            return;
-          }
-          if (submissionLocale !== consentLocale) refreshConsent(submissionLocale);
-          let consent = await consentRequest;
-          if (!consent) {
-            refreshConsent(submissionLocale);
-            consent = await consentRequest;
-          }
-          if (!consent) {
-            showStatus("error", form.dataset.statusConfigurationFailure ?? "");
-            return;
-          }
-
           let submission;
           try {
-            submission = buildConsultationSubmission(submissionData, consent);
+            submission = buildConsultationSubmission(submissionData, consentAtSubmit);
           } catch {
             showStatus("error", form.dataset.statusInvalid ?? "");
             return;
@@ -144,6 +202,13 @@ export function initializeConsultationForms(documentRef: Document = document): v
               idempotencyKey: idempotencyKeyFor(submission),
             });
             if (!result.ok) {
+              if (result.status === 409 && result.error?.code === "CONSENT_VERSION_STALE") {
+                if (selectedLocale() === submissionLocale) {
+                  await refreshConsent(submissionLocale);
+                }
+                showStatus("error", form.dataset.statusConsentUpdated ?? "");
+                return;
+              }
               showStatus("error", form.dataset.statusFailure ?? "");
               return;
             }
@@ -156,14 +221,17 @@ export function initializeConsultationForms(documentRef: Document = document): v
             showStatus("error", form.dataset.statusFailure ?? "");
           }
         } finally {
+          submitting = false;
           form.removeAttribute("aria-busy");
           if (submit) {
-            submit.disabled = false;
             submit.textContent = originalSubmitLabel;
           }
+          syncSubmitAvailability();
         }
       })();
     });
     updateEmailConstraint();
+    resetConsentDisplay();
+    void refreshConsent();
   });
 }

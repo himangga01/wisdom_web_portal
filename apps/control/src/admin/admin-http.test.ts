@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { computePublishedArticleContentSha256 } from "@wisdom/shared";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
@@ -258,6 +258,49 @@ describe("administrator article review and explicit translation routes", () => {
   });
 });
 
+describe("administrator publication failure recovery", () => {
+  it("returns sanitized HTML and preserves the public pointer when publish or rollback fails", async () => {
+    const publication = {
+      publish: vi.fn(async () => { throw new Error("secret /Users/wisdom/private-release"); }),
+      rollback: vi.fn(async () => { throw new Error("secret rollback storage path"); }),
+    };
+    const current = await fixture("127.0.0.1", { articlePublication: publication });
+    const session = await login(current);
+    const headers = {
+      origin: ADMIN_ORIGIN,
+      cookie: session.cookie,
+      "content-type": "application/x-www-form-urlencoded",
+    };
+
+    const publish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({ confirmation: "publish-approved", csrf: session.csrf }),
+    });
+    expect(publish.status).toBe(503);
+    expect(publish.headers.get("content-type")).toContain("text/html");
+    const publishHtml = await publish.text();
+    expect(publishHtml).toContain("Publication was not changed");
+    expect(publishHtml).toContain('href="/admin/publish/preview"');
+    expect(publishHtml).not.toContain("private-release");
+
+    const rollback = await current.app.request(`${ADMIN_ORIGIN}/admin/releases/release-1/rollback`, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({
+        confirmation: "rollback-retained-release",
+        csrf: session.csrf,
+      }),
+    });
+    expect(rollback.status).toBe(503);
+    expect(rollback.headers.get("content-type")).toContain("text/html");
+    const rollbackHtml = await rollback.text();
+    expect(rollbackHtml).toContain("Publication was not changed");
+    expect(rollbackHtml).toContain('href="/admin/releases"');
+    expect(rollbackHtml).not.toContain("storage path");
+  });
+});
+
 interface Fixture {
   app: ReturnType<typeof createControlApp>;
   database: TestDatabase;
@@ -266,7 +309,13 @@ interface Fixture {
   dummyPasswordHash: string;
 }
 
-async function fixture(peer = "127.0.0.1"): Promise<Fixture> {
+async function fixture(
+  peer = "127.0.0.1",
+  overrides: { articlePublication?: {
+    publish: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
+    rollback: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
+  } } = {},
+): Promise<Fixture> {
   const database = createTestDatabase();
   cleanups.push(() => database.close());
   seedConsentDocuments(database.db, consentBundle(), 1);
@@ -299,6 +348,17 @@ async function fixture(peer = "127.0.0.1"): Promise<Fixture> {
     SELECT id, version, content_sha256 FROM consent_documents
     WHERE kind = 'marketing' AND locale = 'ko' AND state = 'active'
   `).get() as { id: string; version: string; content_sha256: Buffer };
+  const privacyDocument = database.db.sqlite.prepare(`
+    SELECT id, version, content_sha256 FROM consent_documents
+    WHERE kind = 'privacy' AND locale = 'ko' AND state = 'active'
+  `).get() as { id: string; version: string; content_sha256: Buffer };
+  database.db.sqlite.prepare(`
+    INSERT INTO consent_events (
+      id, consultation_id, document_id, kind, decision, sequence,
+      document_version, document_sha256, actor_type, request_id, occurred_at_ms
+    ) VALUES ('privacy-accepted', 'consultation-1', ?, 'privacy', 'accepted', 1,
+      ?, ?, 'visitor', 'request-intake', 100)
+  `).run(privacyDocument.id, privacyDocument.version, privacyDocument.content_sha256);
   database.db.sqlite.prepare(`
     INSERT INTO consent_events (
       id, consultation_id, document_id, kind, decision, sequence,
@@ -321,6 +381,7 @@ async function fixture(peer = "127.0.0.1"): Promise<Fixture> {
     now: () => state.now,
     peerAddress: () => peer,
     logger: { write: (event: RedactedLogEvent) => logs.push(event) },
+    ...overrides,
   };
   return {
     app: createControlApp(dependencies),
@@ -516,6 +577,10 @@ describe("separate host and administrator browser boundary", () => {
     expect(html).toContain("&lt;img src=x onerror=stored-company&gt;");
     expect(html).not.toContain("<script>stored-name</script>");
     expect(html).toMatch(/<title>Consultation detail<\/title>/);
+    expect(html).toContain('<label for="consultation-status">Next status</label>');
+    expect(html).toContain('<option value="" selected disabled>Choose a valid next status</option>');
+    expect(html).not.toContain('<option value="received">');
+    expect(html).toContain('<option value="acknowledged">acknowledged</option>');
     const detailCsrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
     expect(detailCsrf).toBe(session.csrf);
 
@@ -550,6 +615,14 @@ describe("separate host and administrator browser boundary", () => {
     expect(current.database.db.sqlite.prepare(`
       SELECT status, row_version FROM consultations WHERE id = 'consultation-1'
     `).get()).toEqual({ status: "acknowledged", row_version: 2 });
+    const acknowledgedDetail = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`,
+      { headers: { cookie: session.cookie } },
+    );
+    const acknowledgedHtml = await acknowledgedDetail.text();
+    expect(acknowledgedHtml).not.toContain('<option value="received">');
+    expect(acknowledgedHtml).not.toContain('<option value="acknowledged">');
+    expect(acknowledgedHtml).toContain('<option value="in_progress">in_progress</option>');
     const stale = await current.app.request(
       `${ADMIN_ORIGIN}/admin/consultations/consultation-1/status`,
       {
@@ -563,6 +636,18 @@ describe("separate host and administrator browser boundary", () => {
       },
     );
     expect(stale.status).toBe(409);
+
+    current.database.db.sqlite.prepare(`
+      UPDATE consultations SET status = 'closed', row_version = row_version + 1
+      WHERE id = 'consultation-1'
+    `).run();
+    const closedDetail = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`,
+      { headers: { cookie: session.cookie } },
+    );
+    const closedHtml = await closedDetail.text();
+    expect(closedHtml).toContain("This consultation is in a terminal state.");
+    expect(closedHtml).not.toContain('/consultations/consultation-1/status');
 
     expect((await current.app.request(`${ADMIN_ORIGIN}/admin/logout`, {
       method: "GET", headers: { cookie: session.cookie },
@@ -851,23 +936,23 @@ describe("marketing withdrawal HTTP ceremony", () => {
     const landing = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/${minted.token}`);
     expect(landing.status).toBe(303);
     sensitiveHeaders(landing);
-    expect(landing.headers.get("location")).toBe(`${PUBLIC_ORIGIN}/marketing/withdraw`);
+    expect(landing.headers.get("location")).toBe(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`);
     expect(landing.headers.get("location")).not.toContain(minted.token);
     const landingCookie = cookiePair(landing);
     expect(landingCookie).not.toContain(minted.token);
     const beforeConfirmation = current.database.db.sqlite.serialize();
-    const confirmation = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw`, {
+    const confirmation = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`, {
       headers: { cookie: landingCookie },
     });
     expect(confirmation.status).toBe(200);
     sensitiveHeaders(confirmation);
     const html = await confirmation.text();
     expect(html).not.toContain(minted.token);
-    expect(html).toContain('action="/marketing/withdraw"');
+    expect(html).toContain('action="/marketing/withdraw/confirm"');
     expect(current.database.db.sqlite.serialize()).toEqual(beforeConfirmation);
     const confirmationValue = /name="confirmation" value="([^"]+)"/.exec(html)?.[1];
     expect(confirmationValue).toBeTruthy();
-    const duplicate = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw`, {
+    const duplicate = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`, {
       method: "POST",
       headers: {
         origin: PUBLIC_ORIGIN,
@@ -880,7 +965,7 @@ describe("marketing withdrawal HTTP ceremony", () => {
     expect(current.database.db.sqlite.prepare(`
       SELECT count(*) count FROM consent_events WHERE kind = 'marketing' AND decision = 'withdrawn'
     `).get()).toEqual({ count: 0 });
-    expect((await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw`, {
+    expect((await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`, {
       method: "POST",
       headers: {
         origin: "https://evil.test",
@@ -889,7 +974,7 @@ describe("marketing withdrawal HTTP ceremony", () => {
       },
       body: new URLSearchParams({ confirmation: confirmationValue! }),
     })).status).toBe(403);
-    const withdrawn = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw`, {
+    const withdrawn = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`, {
       method: "POST",
       headers: {
         origin: PUBLIC_ORIGIN,
@@ -916,10 +1001,10 @@ describe("marketing withdrawal HTTP ceremony", () => {
   });
 
   it.each([
-    ["ko", "/marketing/withdraw", "마케팅 수신 동의 철회", "동의 철회가 완료되었습니다"],
-    ["en", "/en/marketing/withdraw", "Withdraw marketing consent", "Marketing consent withdrawn"],
-    ["zh-Hans", "/zh-hans/marketing/withdraw", "撤回营销信息接收同意", "营销信息接收同意已撤回"],
-    ["zh-Hant", "/zh-hant/marketing/withdraw", "撤回行銷資訊接收同意", "行銷資訊接收同意已撤回"],
+    ["ko", "/marketing/withdraw/confirm", "마케팅 수신 동의 철회", "동의 철회가 완료되었습니다"],
+    ["en", "/en/marketing/withdraw/confirm", "Withdraw marketing consent", "Marketing consent withdrawn"],
+    ["zh-Hans", "/zh-hans/marketing/withdraw/confirm", "撤回营销信息接收同意", "营销信息接收同意已撤回"],
+    ["zh-Hant", "/zh-hant/marketing/withdraw/confirm", "撤回行銷資訊接收同意", "行銷資訊接收同意已撤回"],
   ] as const)("renders localized withdrawal confirmation and success for %s", async (
     locale, route, confirmationCopy, successCopy,
   ) => {

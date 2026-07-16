@@ -159,6 +159,7 @@ export function assertArticleCodexCliContract(
     );
     if (
       !output.includes("Usage: codex exec")
+      || !output.includes("--disable <FEATURE>")
       || !output.includes("--ignore-user-config")
       || !output.includes("--ignore-rules")
       || !output.includes("--output-schema")

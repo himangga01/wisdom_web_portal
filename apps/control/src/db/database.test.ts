@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
+  assertRollbackCompatibleMigration,
   closeDatabase,
   isDatabaseReady,
   MIGRATION_FINGERPRINTS,
@@ -18,6 +21,122 @@ let testDatabase: TestDatabase | undefined;
 afterEach(() => testDatabase?.close());
 
 describe("SQLite durability and migrations", () => {
+  it("keeps SQLite user_version synchronized with the exact migration history", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000, 2);
+      expect(db.sqlite.pragma("user_version", { simple: true })).toBe(2);
+      expect(db.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 2 });
+
+      db.sqlite.pragma("user_version = 0");
+      runMigrations(db, 2_000, 2);
+      expect(db.sqlite.pragma("user_version", { simple: true })).toBe(2);
+
+      runMigrations(db, 3_000);
+      expect(db.sqlite.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  it("rejects conflicting nonzero user_version metadata without changing the schema", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000, 2);
+      db.sqlite.pragma("user_version = 1");
+
+      expect(() => runMigrations(db, 2_000)).toThrow(/user_version/i);
+      expect(db.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 2 });
+      expect(db.sqlite.pragma("user_version", { simple: true })).toBe(1);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  it("re-reads migration history under the writer lock before repairing user_version", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "wisdom-control-migration-race-"));
+    const path = join(directory, "control.sqlite");
+    const coordinator = openDatabase(path);
+    try {
+      runMigrations(coordinator, 1_000, 2);
+      coordinator.sqlite.pragma("user_version = 0");
+
+      const clientUrl = new URL("./client.ts", import.meta.url).href;
+      const script = `
+        import { once } from "node:events";
+        import { closeDatabase, openDatabase, runMigrations } from ${JSON.stringify(clientUrl)};
+        const db = openDatabase(process.env.WISDOM_MIGRATION_RACE_DB);
+        process.stdout.write("opened\\n");
+        await once(process.stdin, "data");
+        process.stdout.write("running\\n");
+        try {
+          runMigrations(db, 2_000);
+        } finally {
+          closeDatabase(db);
+        }
+      `;
+      const child = spawn(process.execPath, [
+        "--import", "tsx", "--input-type=module", "--eval", script,
+      ], {
+        env: { ...process.env, WISDOM_MIGRATION_RACE_DB: path },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const stderr: Buffer[] = [];
+      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      await once(child.stdout, "data");
+
+      coordinator.sqlite.exec("BEGIN IMMEDIATE");
+      child.stdin.end("go\n");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      coordinator.sqlite.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (3, ?, 1500)",
+      ).run("article-publication-pipeline");
+      coordinator.sqlite.pragma("user_version = 3");
+      coordinator.sqlite.exec("COMMIT");
+
+      const [exitCode] = await once(child, "exit");
+      expect(Buffer.concat(stderr).toString("utf8"), "child stderr").toBe("");
+      expect(exitCode).toBe(0);
+      expect(coordinator.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 3 });
+      expect(coordinator.sqlite.pragma("user_version", { simple: true })).toBe(3);
+    } finally {
+      if (coordinator.sqlite.inTransaction) coordinator.sqlite.exec("ROLLBACK");
+      closeDatabase(coordinator);
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("blocks an incompatible schema upgrade during a rollback-capable deployment", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000, 2);
+      expect(() => assertRollbackCompatibleMigration(db)).toThrowError(
+        expect.objectContaining({ code: "DATABASE_MIGRATION_ROLLBACK_INCOMPATIBLE" }),
+      );
+      expect(db.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 2 });
+
+      runMigrations(db, 2_000);
+      expect(() => assertRollbackCompatibleMigration(db)).not.toThrow();
+    } finally {
+      closeDatabase(db);
+    }
+
+    const bootstrap = openDatabase(":memory:");
+    try {
+      expect(() => assertRollbackCompatibleMigration(bootstrap)).not.toThrow();
+    } finally {
+      closeDatabase(bootstrap);
+    }
+  });
+
   it("keeps the immutable v1 and v2 migration bytes unchanged", () => {
     expect(MIGRATION_FINGERPRINTS.slice(0, 2)).toEqual([
       { version: 1, sha256: "0c7085ea33ea2c92181e55cd2161af57557fadd34cd1675f293e0388d4fff86b" },
@@ -805,6 +924,7 @@ describe("SQLite durability and migrations", () => {
         { version: 1, name: "initial-control-schema" },
         { version: 2, name: "admin-notification-withdrawal" },
       ]);
+      expect(legacy.sqlite.pragma("user_version", { simple: true })).toBe(2);
       const columns = (legacy.sqlite.pragma("table_info(article_revisions)") as Array<{ name: string }>)
         .map((column) => column.name);
       expect(columns).toContain("review_state");
@@ -857,6 +977,14 @@ describe("SQLite durability and migrations", () => {
       } finally {
         database.close();
       }
+    }
+
+    const versionMismatch = createTestDatabase();
+    try {
+      versionMismatch.db.sqlite.pragma("user_version = 2");
+      expect(isDatabaseReady(versionMismatch.db)).toBe(false);
+    } finally {
+      versionMismatch.close();
     }
   });
 
@@ -1009,6 +1137,7 @@ describe("SQLite durability and migrations", () => {
     expect(testDatabase.db.sqlite.prepare("SELECT max(version) version FROM schema_migrations").get()).toEqual({
       version: SCHEMA_VERSION,
     });
+    expect(pragma("user_version")).toBe(SCHEMA_VERSION);
 
     const tables = testDatabase.db.sqlite.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table'",

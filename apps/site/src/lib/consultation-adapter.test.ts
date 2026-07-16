@@ -23,6 +23,26 @@ const consentConfiguration = {
   privacyVersion: "privacy-2026-07-16",
   marketingVersion: "marketing-2026-07-16",
   formToken: "signed-form-token",
+  documents: {
+    privacy: {
+      version: "privacy-2026-07-16",
+      title: "Privacy collection and use",
+      bodyMarkdown: "We collect contact details only to answer this request.",
+      contentSha256: "a".repeat(64),
+      effectiveAt: "2026-07-16T00:00:00.000Z",
+      retentionMonths: 12,
+      required: true,
+    },
+    marketing: {
+      version: "marketing-2026-07-16",
+      title: "Marketing communications",
+      bodyMarkdown: "Optional news and service information.",
+      contentSha256: "b".repeat(64),
+      effectiveAt: "2026-07-16T00:00:00.000Z",
+      retentionMonths: 24,
+      required: false,
+    },
+  },
 };
 
 describe("consultation form adapter", () => {
@@ -83,8 +103,8 @@ describe("consultation form adapter", () => {
     ) => new Response(JSON.stringify({
       locale: "en",
       documents: {
-        privacy: { version: consentConfiguration.privacyVersion },
-        marketing: { version: consentConfiguration.marketingVersion },
+        privacy: consentConfiguration.documents.privacy,
+        marketing: consentConfiguration.documents.marketing,
       },
       formToken: consentConfiguration.formToken,
     }), { status: 200, headers: { "content-type": "application/json" } }));
@@ -94,6 +114,44 @@ describe("consultation form adapter", () => {
       "/api/v1/consent-documents?locale=en",
       expect.objectContaining({ headers: { Accept: "application/json" } }),
     );
+  });
+
+  it("rejects incomplete or semantically invalid consent documents", async () => {
+    const { parseConsentConfiguration } = await import("./consultation-adapter.js");
+    const response = {
+      locale: "en",
+      documents: consentConfiguration.documents,
+      formToken: consentConfiguration.formToken,
+    };
+
+    expect(() => parseConsentConfiguration({
+      ...response,
+      documents: {
+        ...response.documents,
+        privacy: { ...response.documents.privacy, bodyMarkdown: "" },
+      },
+    }, "en")).toThrow(/bodyMarkdown/);
+    expect(() => parseConsentConfiguration({
+      ...response,
+      documents: {
+        ...response.documents,
+        privacy: { ...response.documents.privacy, required: false },
+      },
+    }, "en")).toThrow(/required/);
+    expect(() => parseConsentConfiguration({
+      ...response,
+      documents: {
+        ...response.documents,
+        marketing: { ...response.documents.marketing, contentSha256: "not-a-hash" },
+      },
+    }, "en")).toThrow(/contentSha256/);
+    expect(() => parseConsentConfiguration({
+      ...response,
+      documents: {
+        ...response.documents,
+        marketing: { ...response.documents.marketing, effectiveAt: "July 16" },
+      },
+    }, "en")).toThrow(/effectiveAt/);
   });
 
   it("posts JSON with an idempotency UUID and validates the 201 receipt", async () => {

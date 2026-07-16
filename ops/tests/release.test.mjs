@@ -18,6 +18,7 @@ function createAdapter(overrides = {}) {
   return {
     calls,
     adapter: {
+      acquireOperationLock: async () => async () => undefined,
       preflight: async () => calls.push("preflight"),
       validatePaths: async () => calls.push("paths"),
       exists: async () => false,
@@ -217,6 +218,42 @@ test("prune failure reports a warning and never deletes the active release", asy
   assert.ok(calls.includes("switch"));
   assert.ok(calls.includes("active-health"));
   assert.ok(!calls.includes("remove-incomplete"));
+});
+
+test("rollback cannot activate a retired release while deploy retention is pruning", async () => {
+  let locked = false;
+  let releasePrune;
+  const pruneFinished = new Promise((resolve) => { releasePrune = resolve; });
+  let signalPrune;
+  const pruneStarted = new Promise((resolve) => { signalPrune = resolve; });
+  const acquireOperationLock = async () => {
+    if (locked) {
+      throw Object.assign(new Error("release operation in progress"), { code: "RELEASE_OPERATION_LOCKED" });
+    }
+    locked = true;
+    return async () => { locked = false; };
+  };
+  const deploy = createAdapter({
+    acquireOperationLock,
+    prune: async () => {
+      signalPrune();
+      await pruneFinished;
+    },
+  });
+  const rollback = createAdapter({ acquireOperationLock, exists: async () => true });
+
+  const deployment = deployRelease({ ...fixture, dryRun: false }, deploy.adapter);
+  await pruneStarted;
+  await assert.rejects(rollbackRelease({
+    releaseRoot: fixture.releaseRoot,
+    currentLink: fixture.currentLink,
+    releaseId: "20260715T010203Z-fedcba9",
+    canaryPort: 18788,
+    dryRun: false,
+  }, rollback.adapter), { code: "RELEASE_OPERATION_LOCKED" });
+  releasePrune();
+  await deployment;
+  assert.equal(locked, false);
 });
 
 test("rollback failure never switches the active pointer", async () => {

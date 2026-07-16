@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createMacServiceAdapter } from "./mac-services.mjs";
+import { acquireReleaseOperationLock } from "./release-operation-lock.mjs";
 import {
   atomicSwitchRelease,
   copyReleaseSource,
@@ -43,6 +44,22 @@ export function resolveMacReleaseScripts({ opsRoot = DEFAULT_OPS_ROOT, destinati
   };
 }
 
+export function buildMacPreflightArguments(options) {
+  const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
+  if (!path.isAbsolute(opsRoot)) throw Object.assign(new Error("opsRoot must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
+  return [
+    path.join(opsRoot, "scripts", "preflight.mjs"),
+    "--release-root", options.releaseRoot,
+    "--current", options.currentLink,
+    "--data-root", options.dataRoot,
+    "--caddy", options.caddyBinary,
+    "--cloudflared", options.cloudflaredBinary,
+    "--age", options.ageBinary,
+    "--public-release-root", options.publicReleaseRoot,
+    "--public-current", options.publicCurrentLink,
+  ];
+}
+
 function keychainArguments(options, destination, configPath, command, args) {
   return [
     resolveMacReleaseScripts({ opsRoot: options.opsRoot, destination }).keychainExec,
@@ -51,6 +68,24 @@ function keychainArguments(options, destination, configPath, command, args) {
     ...SECRET_MAPPINGS.flatMap((mapping) => ["--secret", mapping]),
     "--", command, ...args,
   ];
+}
+
+export function buildMacMigrationArguments(options, destination) {
+  const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
+  return keychainArguments(
+    { ...options, opsRoot },
+    destination,
+    options.runtimeConfig,
+    options.npmBinary,
+    [
+      "run",
+      "db:migrate",
+      "--workspace",
+      "@wisdom/control",
+      "--",
+      "--require-rollback-compatible",
+    ],
+  );
 }
 
 export async function stopCanaryProcess(child, { graceMs = 5_000, killWaitMs = 2_000 } = {}) {
@@ -114,32 +149,21 @@ export function createMacReleaseAdapter(options) {
   const serviceAdapter = createMacServiceAdapter();
   const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
   if (!path.isAbsolute(opsRoot)) throw Object.assign(new Error("opsRoot must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
-  const preflightScript = path.join(opsRoot, "scripts", "preflight.mjs");
   return {
+    acquireOperationLock: acquireReleaseOperationLock,
     validatePaths: (input) => validateReleaseFilesystem(input),
     exists: async (candidate) => {
       try { await realpath(candidate); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; }
     },
-    preflight: async () => run(options.nodeBinary, [
-      preflightScript,
-      "--release-root", options.releaseRoot,
-      "--data-root", options.dataRoot,
-      "--caddy", options.caddyBinary,
-      "--cloudflared", options.cloudflaredBinary,
-      "--age", options.ageBinary,
-      "--public-release-root", options.publicReleaseRoot,
-      "--public-current", options.publicCurrentLink,
-    ]),
+    preflight: async () => run(options.nodeBinary, buildMacPreflightArguments({ ...options, opsRoot })),
     copySource: copyReleaseSource,
     installDependencies: (destination) => run(options.npmBinary, ["ci"], { cwd: destination }),
     build: (destination) => run(options.npmBinary, ["run", "build"], { cwd: destination }),
-    migrate: (destination) => run(options.nodeBinary, keychainArguments(
-      { ...options, opsRoot },
-      destination,
-      options.runtimeConfig,
-      options.npmBinary,
-      ["run", "db:migrate", "--workspace", "@wisdom/control"],
-    ), { cwd: destination }),
+    migrate: (destination) => run(
+      options.nodeBinary,
+      buildMacMigrationArguments({ ...options, opsRoot }, destination),
+      { cwd: destination },
+    ),
     writeManifest: (destination, { releaseId }) => createReleaseManifest(destination, releaseId),
     verify: (destination, { releaseId }) => verifyReleaseManifest(destination, releaseId),
     startCanary: async (destination, port) => {
