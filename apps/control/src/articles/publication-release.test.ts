@@ -20,6 +20,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createStaticKeyProvider } from "../crypto/index.js";
+import { createControlApp } from "../app.js";
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { activateConsentBundle, seedCompleteConsentBundles } from "../consent/service.js";
 import {
@@ -39,6 +40,7 @@ import {
   type PublicationReleaseConfig,
   type PublicationReleaseDependencies,
 } from "./publication-release.js";
+import * as publicationReleaseModule from "./publication-release.js";
 import type { PublicationSnapshot } from "./publication-snapshot.js";
 
 const ADMIN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -225,6 +227,86 @@ function dependencies(
 }
 
 describe("journaled publication activation", () => {
+  it("publishes a policy-only release and moves the sealed API plus all eight policy DOMs together", async () => {
+    const deps = dependencies();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-policy-a",
+      nowMs: NOW,
+    }, config, deps);
+    const resolverFactory = (publicationReleaseModule as unknown as {
+      createReleaseConsentAuthorityResolver?: (
+        db: typeof fixture.db,
+        config: PublicationReleaseConfig,
+      ) => () => { bundle: PublicationSnapshot["consentBundle"] } | undefined;
+    }).createReleaseConsentAuthorityResolver;
+    expect(typeof resolverFactory).toBe("function");
+    const resolveAuthority = resolverFactory!(fixture.db, config);
+    expect(resolveAuthority()?.bundle.bundleId).toBe("bundle-2026-07-16");
+
+    seedCompleteConsentBundles(fixture.db, consentBundle("bundle-new", "new"), NOW + 1);
+    activateConsentBundle(fixture.db, "bundle-new", NOW + 2);
+    expect(resolveAuthority()?.bundle.bundleId).toBe("bundle-2026-07-16");
+
+    const app = createControlApp({
+      db: fixture.db,
+      keyProvider,
+      consentAuthorityResolver: resolveAuthority as never,
+      allowedOrigins: [config.publicOrigin],
+      enforceOrigin: true,
+      now: () => NOW + 3,
+    });
+    const beforePublication = await app.request(
+      `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
+    );
+    expect((await beforePublication.json()).documents.privacy.version).toBe("privacy-2026-07-16");
+
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-policy-b",
+      nowMs: NOW + 4,
+    }, config, deps);
+    expect(second.releaseId).not.toBe(first.releaseId);
+    const authority = resolveAuthority()!;
+    expect(authority.bundle.bundleId).toBe("bundle-new");
+
+    const afterPublication = await app.request(
+      `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
+    );
+    expect((await afterPublication.json()).documents).toMatchObject({
+      privacy: { version: "privacy-new", retentionMonths: 12 },
+      marketing: { version: "marketing-new", retentionMonths: 24 },
+    });
+    const releasePath = join(config.releaseRoot, second.version);
+    for (const document of authority.bundle.documents) {
+      const prefix = document.locale === "ko" ? ""
+        : document.locale === "en" ? "en/"
+          : document.locale === "zh-Hans" ? "zh-hans/" : "zh-hant/";
+      const route = document.kind === "privacy" ? "privacy" : "marketing/withdraw";
+      const html = readFileSync(join(releasePath, prefix, route, "index.html"), "utf8");
+      expect(html).toContain(`data-consent-sha256="${document.contentSha256}"`);
+      expect(html).toContain(`data-consent-retention-months="${document.retentionMonths}"`);
+    }
+  });
+
+  it("rejects and cleans a build whose activated consent bundle changes before finalization", async () => {
+    seedCompleteConsentBundles(fixture.db, consentBundle("bundle-race", "race"), NOW + 1);
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-consent-race",
+      nowMs: NOW,
+    }, config, dependencies({
+      prepareRelease: ({ snapshot, outputDirectory }) => {
+        const sealed = prepareRelease(snapshot, outputDirectory);
+        activateConsentBundle(fixture.db, "bundle-race", NOW + 2);
+        return Promise.resolve(sealed);
+      },
+    }))).rejects.toThrow(/^PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD$/);
+    expect(existsSync(config.currentLink)).toBe(false);
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
+    expect(readdirSync(config.releaseRoot).filter((name) => !name.endsWith(".log"))).toEqual([]);
+  });
+
   it("accepts one fully verified ops bootstrap pointer before the first database release", async () => {
     const bootstrap = join(config.releaseRoot, "bootstrap-initial");
     mkdirSync(bootstrap);

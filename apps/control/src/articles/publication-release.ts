@@ -17,6 +17,17 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import {
+  LOCALES,
+  publishedConsentBundleSchema,
+  type PublishedConsentBundle,
+} from "@wisdom/shared";
+
+import {
+  getActivePublishedConsentBundle,
+  getPublishedConsentBundleById,
+  type ConsentAuthorityResolver,
+} from "../consent/service.js";
 import type { KeyProvider } from "../crypto/index.js";
 import type { ControlDatabase } from "../db/client.js";
 import { checkArticleForRetainedConsultationPii } from "./no-pii.js";
@@ -110,6 +121,18 @@ interface ActivationRow {
   manifest_sha256: Buffer;
   target_path: string;
   previous_path: string | null;
+}
+
+interface PublicationReleaseMetadata {
+  schemaVersion: 1;
+  snapshotManifestSha256: string;
+  baseReleaseId: string | null;
+  baseReleaseGeneration: number;
+  promotions: PublicationPromotion[];
+  consentBundle: {
+    bundleId: string;
+    contentFileSha256: string;
+  };
 }
 
 const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -321,6 +344,67 @@ function safeFailureCode(error: unknown): string {
   return /^[A-Z][A-Z0-9_]{2,80}$/.test(message) ? message : "PUBLICATION_FAILED";
 }
 
+function canonicalJson(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function consentBundlesEqual(
+  left: PublishedConsentBundle,
+  right: PublishedConsentBundle,
+): boolean {
+  return canonicalJson(publishedConsentBundleSchema.parse(left))
+    === canonicalJson(publishedConsentBundleSchema.parse(right));
+}
+
+function parsePublicationReleaseMetadata(value: string | null): PublicationReleaseMetadata {
+  let parsed: unknown;
+  try {
+    parsed = value === null ? undefined : JSON.parse(value);
+  } catch {
+    throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
+  }
+  const record = parsed as Partial<PublicationReleaseMetadata>;
+  if (Object.keys(record).sort().join("\0")
+      !== "baseReleaseGeneration\0baseReleaseId\0consentBundle\0promotions\0schemaVersion\0snapshotManifestSha256"
+    || record.schemaVersion !== 1
+    || typeof record.snapshotManifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(record.snapshotManifestSha256)
+    || (record.baseReleaseId !== null && typeof record.baseReleaseId !== "string")
+    || !Number.isSafeInteger(record.baseReleaseGeneration)
+    || (record.baseReleaseGeneration ?? -1) < 0
+    || !Array.isArray(record.promotions)
+    || record.promotions.length > 64
+    || !record.consentBundle || typeof record.consentBundle !== "object"
+    || Object.keys(record.consentBundle).sort().join("\0") !== "bundleId\0contentFileSha256"
+    || typeof record.consentBundle.bundleId !== "string"
+    || !record.consentBundle.bundleId.trim()
+    || record.consentBundle.bundleId.length > 200
+    || typeof record.consentBundle.contentFileSha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(record.consentBundle.contentFileSha256)) {
+    throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
+  }
+  const identities = new Set<string>();
+  for (const promotion of record.promotions) {
+    if (!promotion || typeof promotion !== "object" || Array.isArray(promotion)
+      || Object.keys(promotion).sort().join("\0")
+        !== "articleId\0expectedRowVersion\0locale\0revisionId"
+      || typeof promotion.articleId !== "string" || !promotion.articleId
+      || typeof promotion.revisionId !== "string" || !promotion.revisionId
+      || !LOCALES.includes(promotion.locale)
+      || !Number.isSafeInteger(promotion.expectedRowVersion)
+      || promotion.expectedRowVersion < 1) {
+      throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
+    }
+    const identity = `${promotion.articleId}\0${promotion.locale}`;
+    if (identities.has(identity)) throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
+    identities.add(identity);
+  }
+  return record as PublicationReleaseMetadata;
+}
+
 function recordBuildFailure(config: PublicationReleaseConfig, error: unknown, nowMs: number): void {
   appendFileSync(
     join(config.releaseRoot, "failed-publication.log"),
@@ -379,6 +463,16 @@ function assertBaseReleaseConsistent(
   }
 }
 
+function assertConsentBundleConsistent(
+  db: ControlDatabase,
+  snapshot: PublicationSnapshot,
+): void {
+  const active = getActivePublishedConsentBundle(db);
+  if (!active || !consentBundlesEqual(active, snapshot.consentBundle)) {
+    throw new Error("PUBLICATION_CONSENT_BUNDLE_CHANGED_DURING_BUILD");
+  }
+}
+
 function insertPreparedRelease(
   db: ControlDatabase,
   keyProvider: KeyProvider,
@@ -388,6 +482,10 @@ function insertPreparedRelease(
     path: string;
     activationId: string;
     snapshotManifestSha256: string;
+    consentBundle: {
+      bundleId: string;
+      contentFileSha256: string;
+    };
   },
   config: PublicationReleaseConfig,
 ): void {
@@ -451,10 +549,12 @@ function insertPreparedRelease(
       input.nowMs,
       input.actorAdminId,
       JSON.stringify({
+        schemaVersion: 1,
         snapshotManifestSha256: release.snapshotManifestSha256,
         baseReleaseId: snapshot.baseReleaseId,
         baseReleaseGeneration: snapshot.baseReleaseGeneration,
         promotions: snapshot.promotions,
+        consentBundle: release.consentBundle,
       }),
       input.nowMs,
       Buffer.from(release.manifestSha256, "hex"),
@@ -509,6 +609,64 @@ function verifyReleaseRow(config: PublicationReleaseConfig, row: ReleaseRow): Se
     throw new Error("PUBLICATION_RELEASE_DATABASE_MANIFEST_MISMATCH");
   }
   return verified;
+}
+
+function verifyReleaseMetadata(
+  row: ReleaseRow,
+  verified: SealedPublicationRelease,
+): PublicationReleaseMetadata {
+  const metadata = parsePublicationReleaseMetadata(row.metadata_json);
+  if (metadata.snapshotManifestSha256 !== verified.manifest.snapshotManifestSha256
+    || metadata.consentBundle.bundleId !== verified.manifest.consentBundle.bundleId
+    || metadata.consentBundle.contentFileSha256
+      !== verified.manifest.consentBundle.contentFileSha256) {
+    throw new Error("PUBLICATION_RELEASE_METADATA_MISMATCH");
+  }
+  return metadata;
+}
+
+export function createReleaseConsentAuthorityResolver(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+): ConsentAuthorityResolver {
+  return () => {
+    try {
+      validateConfig(config);
+      return db.sqlite.transaction(() => {
+        const pending = db.sqlite.prepare(`
+          SELECT 1 present FROM release_activations
+          WHERE state IN ('prepared', 'switched') LIMIT 1
+        `).get();
+        if (pending) return undefined;
+        const activeRows = db.sqlite.prepare(`
+          SELECT id, version, path, manifest_sha256, state, created_at_ms,
+            created_by, activated_at_ms, activation_generation, metadata_json
+          FROM releases WHERE state = 'active'
+        `).all() as ReleaseRow[];
+        if (activeRows.length !== 1) return undefined;
+        const active = activeRows[0]!;
+        const activePath = assertDirectReleasePath(config.releaseRoot, active.path);
+        if (readCurrentTarget(config) !== activePath) return undefined;
+        const verified = verifyReleaseRow(config, active);
+        verifyReleaseMetadata(active, verified);
+        const databaseBundle = getPublishedConsentBundleById(
+          db,
+          verified.consentBundle.bundleId,
+        );
+        if (!databaseBundle || !consentBundlesEqual(databaseBundle, verified.consentBundle)) {
+          return undefined;
+        }
+        return {
+          source: "release" as const,
+          releaseId: active.id,
+          releaseManifestSha256: verified.manifestSha256,
+          bundle: verified.consentBundle,
+        };
+      }).deferred();
+    } catch {
+      return undefined;
+    }
+  };
 }
 
 function activationIndexNowPayload(
@@ -916,7 +1074,6 @@ export async function publishApprovedArticles(
   validateConfig(config);
   const dependencies = resolvedDependencies(dependencyOverrides);
   const promotions = approvedPromotions(db);
-  if (promotions.length === 0) throw new Error("PUBLICATION_NO_APPROVED_CONTENT");
   const snapshot = capturePublicationSnapshot(db, keyProvider, {
     promote: promotions,
     nowMs: input.nowMs,
@@ -952,6 +1109,7 @@ export async function publishApprovedArticles(
       !== computePublicationSnapshotManifestSha256(snapshot)) {
       throw new Error("PUBLICATION_SNAPSHOT_MANIFEST_MISMATCH");
     }
+    assertConsentBundleConsistent(db, snapshot);
     const previousUrls = snapshot.baseReleaseId
       ? verifyReleaseRow(config, releaseRow(db, snapshot.baseReleaseId)).sitemapUrls
       : [];
@@ -971,6 +1129,7 @@ export async function publishApprovedArticles(
     path: finalPath,
     manifestSha256: finalVerified.manifestSha256,
     snapshotManifestSha256: finalVerified.manifest.snapshotManifestSha256,
+    consentBundle: finalVerified.manifest.consentBundle,
   }, config);
   dependencies.faultInjector?.("before-switch");
   (dependencies.switchCurrent ?? switchCurrentAtomic)(finalPath, config.currentLink, activationId);
