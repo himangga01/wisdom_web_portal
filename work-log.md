@@ -129,6 +129,8 @@
 - `docs/00-document-map.md`를 추가해 개발·동의·검색·배포·복구·장애 문서와 코드 영역을 한 곳에서 찾게 했다.
 - 구현 코드가 준비된 상태와 실제 외부 공개 상태를 분리했다. 도메인·Cloudflare credential·Kakao URL·SMTP·Hermes/Telegram·owner MFA·승인 정책 문구·보유 범위·전문 직함·검색 소유권·실제 Mac 훈련·외부 uptime은 운영자가 완료해야 하는 launch gate다.
 - broad whole-branch review에서 공개 동의 authority를 매 요청 전체 해시하던 비용과 보안 스캐너가 철회 GET을 먼저 소비할 수 있는 문제를 재현했다. `1f249ac`에서 immutable verified cache·cheap identity key·rate limit과 scanner-safe 반복 GET·one-shot POST로 수정했고, 최종 재리뷰는 Critical 0·Important 0이다.
-- clean install `npm.cmd ci` 뒤 `npm.cmd run verify`를 496.9초 동안 실행했다. root 9/9, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows fixture 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108 통과다.
+- `master` 병합 후 Windows clean checkout에서 `core.autocrlf`가 canonical publication fixture를 바꾸는 문제와 Ops 테스트가 Control 산출물에 암묵적으로 의존하는 문제를 재현했다. `.gitattributes` LF 정책과 root orchestration의 Control 선행 빌드로 수정했다.
+- 상담 terminal status를 `aria-busy` 해제와 버튼 복구 뒤 공개하도록 수정하고 회귀 테스트를 추가했다. WebKit trace로 전역 smooth scroll 중 자동화 포인터가 화면 하단 버튼을 빗나가는 원인을 확인해 두 상태 머신 테스트를 reduced-motion 환경으로 고정했으며, 관련 시나리오를 40/40 반복 통과했다.
+- clean install `npm.cmd ci` 뒤 최종 `npm.cmd run verify`를 322.9초 동안 실행했다. root 11/11, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows fixture 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108 통과다.
 - 실제 로컬 브라우저에서 320·390·768·1440, 4개 언어, 모바일 메뉴, 서비스·상담·개인정보·철회, 18개·500ms C1, canonical/hreflang과 console error 0을 확인했다. `git diff -- prototypes`도 비어 있다.
 - 실제 공개 배포 완료를 뜻하지 않는다. Mac mini의 외부 입력·실기기·복구·경보 게이트는 `docs/operations/release-candidate.md`에서 계속 미완료로 관리한다.

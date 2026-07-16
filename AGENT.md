@@ -73,4 +73,5 @@
 - Task 8에서 요구사항 추적표와 외부 launch-input checklist를 정리하고 보안·개인정보, UX·접근성, 아키텍처·복구, SEO·AI·i18n, 콘텐츠·법적 표현, 운영·릴리스 관점의 병렬 비판 검토 결과를 재현·수정하는 release-candidate hardening을 수행했다.
 - 저장소의 구현 완료는 실제 공개 배포 완료를 뜻하지 않는다. 도메인·Cloudflare·Kakao·SMTP·Hermes/Telegram·owner 등록·승인된 정책 문구와 보유 범위·전문 직함·검색 소유권·실제 Mac 훈련·외부 uptime 감시는 `docs/operations/release-candidate.md`의 외부 게이트로 남긴다.
 - 최종 whole-branch review의 Important 2건을 `1f249ac`에서 수정했다. 공개 동의 조회는 verified release cache와 저비용 identity key·rate limit로 매 요청 전체 해시를 제거했고, 마케팅 철회는 scanner-safe 반복 GET과 원자적 one-shot POST로 분리했다. 독립 재리뷰는 Critical 0·Important 0이다.
-- clean install 이후 최종 검증은 root 9/9, shared 70/70, control 415/415, site 98/98, Ops 203 pass·6 Windows skip·0 fail, 68페이지 빌드, Playwright 108/108 통과다. 320·390·768·1440과 4개 언어 실제 로컬 브라우저 점검, prototype 무변경도 확인했다.
+- `master` 병합 후 Windows clean checkout에서 `core.autocrlf`와 workspace 산출물 순서 문제를 발견해 LF 정책과 Control 선행 빌드를 고정했다. 상담 terminal status는 폼·버튼 복구 뒤 공개하고, WebKit 상태 머신 E2E는 reduced-motion 환경에서 포인터 스크롤 변동을 제거했다. 최종 수정 재리뷰도 Critical 0·Important 0·Minor 0이다.
+- clean install 이후 최종 검증은 root 11/11, shared 70/70, control 415/415, site 98/98, Ops 203 pass·6 Windows skip·0 fail, 68페이지 빌드, Playwright 108/108 통과다. 관련 WebKit 재시도 시나리오 40/40 반복 통과, 320·390·768·1440과 4개 언어 실제 로컬 브라우저 점검, prototype 무변경도 확인했다.

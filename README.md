@@ -43,7 +43,7 @@ npm run verify
 
 루트 명령은 `packages/*`를 `apps/*`보다 먼저 처리하며, 아직 같은 이름의 스크립트가 없는 워크스페이스는 건너뜁니다. `typecheck`, `test`, `test:e2e`는 소비 앱을 실행하기 전에 `@wisdom/shared`를 빌드하므로 `packages/shared/dist`가 없는 새 checkout에서도 동작합니다. `verify`는 타입 검사, 단위 테스트, 빌드, E2E 테스트 순서로 전체 운영 워크스페이스를 확인합니다.
 
-2026-07-16 clean install 최종 검증에서는 root 9/9, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows 전용 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108이 통과했습니다. 정확한 명령·브라우저 수동 점검·감사 결과는 [릴리스 후보 점검표](docs/operations/release-candidate.md)의 검증 증거를 따릅니다.
+2026-07-16 clean install 최종 검증에서는 root 11/11, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows 전용 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108이 통과했습니다. 정확한 명령·브라우저 수동 점검·감사 결과는 [릴리스 후보 점검표](docs/operations/release-candidate.md)의 검증 증거를 따릅니다.
 
 ## 환경 설정
 
