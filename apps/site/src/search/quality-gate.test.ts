@@ -46,29 +46,31 @@ const article: PublishedArticleDocument = {
 };
 
 describe("search publication quality gate", () => {
-  it("builds complete, deterministic localized service evidence", () => {
+  it("builds complete, deterministic localized service content without invented provenance", () => {
     const publication = buildServicePublication("en", "procurement");
 
     expect(publication.answerSections.map(({ id }) => id))
       .toEqual(SERVICE_REQUIRED_ANSWER_SECTION_IDS);
     expect(publication.title).toContain(publication.h1);
     expect(publication.description).toBe(publication.summary);
-    expect(publication.reviewer.name).toBe("Jihye Kang");
-    expect(publication.reviewer.role).toBe("Representative Administrative Attorney");
-    expect(publication.revisionId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
     expect(publication.contentSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(publication.sources).toEqual([
-      expect.objectContaining({ url: "https://www.pps.go.kr/" }),
-    ]);
+    for (const field of [
+      "reviewer",
+      "reviewedAt",
+      "firstPublishedAt",
+      "modifiedAt",
+      "revisionId",
+      "sources",
+    ]) {
+      expect(publication).not.toHaveProperty(field);
+    }
     expect(() => assertServicePublicationQuality(publication)).not.toThrow();
     expect(buildServicePublication("en", "procurement")).toEqual(publication);
   });
 
   it.each([
     (value: ReturnType<typeof buildServicePublication>) => ({ ...value, title: "" }),
-    (value: ReturnType<typeof buildServicePublication>) => ({ ...value, sources: [] }),
+    (value: ReturnType<typeof buildServicePublication>) => ({ ...value, summary: "" }),
     (value: ReturnType<typeof buildServicePublication>) => ({
       ...value,
       answerSections: value.answerSections.filter(({ id }) => id !== "preparation"),

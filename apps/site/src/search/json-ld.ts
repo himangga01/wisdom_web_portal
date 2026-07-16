@@ -3,8 +3,14 @@ import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
 import { OFFICE, siteContent } from "../content/site-content.js";
 import { toLocalizedPath } from "../lib/routes.js";
 import { absolutePublicUrl } from "./origin.js";
-import type { ServicePublication } from "./quality-gate.js";
 import type { JsonLdDocument, SearchDocument } from "./types.js";
+
+interface BreadcrumbListItem {
+  "@type": "ListItem";
+  position: number;
+  name: string;
+  item: string;
+}
 
 function representativeRole(locale: Locale): string {
   return locale === "ko" ? "대표행정사"
@@ -49,22 +55,34 @@ function breadcrumbs(document: SearchDocument): Record<string, unknown> {
   const content = siteContent[document.locale];
   const origin = new URL(document.canonicalUrl).origin;
   const home = absolutePublicUrl(origin, toLocalizedPath(document.locale, "/"));
-  const items = [{ position: 1, name: content.navigation.home, item: home }];
+  const items: BreadcrumbListItem[] = [{
+    "@type": "ListItem",
+    position: 1,
+    name: content.navigation.home,
+    item: home,
+  }];
   if (document.kind === "service") {
     items.push({
+      "@type": "ListItem",
       position: 2,
       name: content.navigation.services,
       item: absolutePublicUrl(origin, toLocalizedPath(document.locale, "/services")),
     });
   } else if (document.kind === "article") {
     items.push({
+      "@type": "ListItem",
       position: 2,
       name: content.navigation.insights,
       item: absolutePublicUrl(origin, toLocalizedPath(document.locale, "/insights")),
     });
   }
   if (document.canonicalUrl !== home) {
-    items.push({ position: items.length + 1, name: document.h1, item: document.canonicalUrl });
+    items.push({
+      "@type": "ListItem",
+      position: items.length + 1,
+      name: document.h1,
+      item: document.canonicalUrl,
+    });
   }
   return {
     "@type": "BreadcrumbList",
@@ -73,7 +91,7 @@ function breadcrumbs(document: SearchDocument): Record<string, unknown> {
   };
 }
 
-function serviceNode(document: SearchDocument, service: ServicePublication): Record<string, unknown> {
+function serviceNode(document: SearchDocument): Record<string, unknown> {
   const origin = new URL(document.canonicalUrl).origin;
   return {
     "@type": "Service",
@@ -83,13 +101,6 @@ function serviceNode(document: SearchDocument, service: ServicePublication): Rec
     url: document.canonicalUrl,
     inLanguage: document.locale,
     provider: { "@id": `${origin}/#professional-service` },
-    reviewedBy: {
-      "@id": `${origin}/#representative`,
-      name: service.reviewer.name,
-      jobTitle: service.reviewer.role,
-    },
-    dateModified: service.modifiedAt,
-    citation: service.sources.map(({ url }) => url),
   };
 }
 
@@ -105,11 +116,6 @@ function articleNode(document: SearchDocument, article: PublishedArticleDocument
     inLanguage: document.locale,
     datePublished: article.firstPublishedAt,
     dateModified: article.modifiedAt,
-    author: {
-      "@id": `${origin}/#representative`,
-      name: article.reviewer.name,
-      jobTitle: article.reviewer.role,
-    },
     reviewedBy: {
       "@id": `${origin}/#representative`,
       name: article.reviewer.name,
@@ -128,7 +134,7 @@ export function createJsonLdDocument(document: SearchDocument): JsonLdDocument {
     "@graph": [
       professionalService(document),
       representative(document),
-      ...(document.service ? [serviceNode(document, document.service)] : []),
+      ...(document.service ? [serviceNode(document)] : []),
       ...(document.article ? [articleNode(document, document.article)] : []),
       breadcrumbs(document),
     ],

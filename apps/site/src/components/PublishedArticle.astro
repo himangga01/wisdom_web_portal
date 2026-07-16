@@ -14,16 +14,15 @@ interface Props {
 
 const { article, localeLinks, searchDocument } = Astro.props;
 const labels: Record<Locale, {
-  authoredBy: string;
   firstPublished: string;
   modified: string;
   reviewedBy: string;
   sources: string;
 }> = {
-  ko: { authoredBy: "작성", firstPublished: "최초 공개", modified: "최종 수정", reviewedBy: "검수", sources: "출처" },
-  en: { authoredBy: "Authored by", firstPublished: "First published", modified: "Last modified", reviewedBy: "Reviewed by", sources: "Sources" },
-  "zh-Hans": { authoredBy: "撰写", firstPublished: "首次发布", modified: "最后修改", reviewedBy: "审查", sources: "来源" },
-  "zh-Hant": { authoredBy: "撰寫", firstPublished: "首次發布", modified: "最後修改", reviewedBy: "審查", sources: "來源" },
+  ko: { firstPublished: "최초 공개", modified: "최종 수정", reviewedBy: "검수", sources: "출처" },
+  en: { firstPublished: "First published", modified: "Last modified", reviewedBy: "Reviewed by", sources: "Sources" },
+  "zh-Hans": { firstPublished: "首次发布", modified: "最后修改", reviewedBy: "审查", sources: "来源" },
+  "zh-Hant": { firstPublished: "首次發布", modified: "最後修改", reviewedBy: "審查", sources: "來源" },
 };
 const copy = labels[article.locale];
 ---
@@ -58,7 +57,6 @@ const copy = labels[article.locale];
         <div class="published-article-body" set:html={article.bodyHtml} />
 
         <footer class="article-provenance">
-          <p><strong>{copy.authoredBy}</strong> {article.reviewer.name} · {article.reviewer.role}</p>
           <p><strong>{copy.reviewedBy}</strong> {article.reviewer.name} · {article.reviewer.role}</p>
           <section aria-labelledby="article-sources-heading">
             <h2 id="article-sources-heading">{copy.sources}</h2>

@@ -27,13 +27,6 @@ const selectedService = serviceSlug
 const heading = searchDocument.h1;
 const backToServices = toLocalizedPath(locale, "/services");
 const servicePublication = searchDocument.service;
-const serviceEvidenceLabels: Record<Locale, { reviewed: string; sources: string }> = {
-  ko: { reviewed: "검수", sources: "공식 출처" },
-  en: { reviewed: "Reviewed", sources: "Official sources" },
-  "zh-Hans": { reviewed: "审查", sources: "官方来源" },
-  "zh-Hant": { reviewed: "審查", sources: "官方來源" },
-};
-const evidenceLabels = serviceEvidenceLabels[locale];
 ---
 
 <BaseLayout
@@ -111,26 +104,6 @@ const evidenceLabels = serviceEvidenceLabels[locale];
                     </section>
                   ))}
                 </div>
-                <footer class="service-evidence">
-                  <p>
-                    <strong>{evidenceLabels.reviewed}</strong>{" "}
-                    {servicePublication.reviewer.name} · {servicePublication.reviewer.role}{" "}
-                    <time datetime={servicePublication.reviewedAt}>
-                      {servicePublication.reviewedAt.slice(0, 10)}
-                    </time>
-                  </p>
-                  <section aria-labelledby="service-sources-heading">
-                    <h2 id="service-sources-heading">{evidenceLabels.sources}</h2>
-                    <ul>
-                      {servicePublication.sources.map((source) => (
-                        <li>
-                          <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
-                          <time datetime={source.sourceTimestamp}>{source.sourceTimestamp.slice(0, 10)}</time>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                </footer>
               </div>
               <aside class="content-cta">
                 <p>{content.pages.consultationIntro}</p>

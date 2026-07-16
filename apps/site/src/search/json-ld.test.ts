@@ -15,6 +15,7 @@ const allowedTypes = new Set([
   "Service",
   "Article",
   "BreadcrumbList",
+  "ListItem",
 ]);
 
 function schemaTypes(value: unknown): string[] {
@@ -60,12 +61,13 @@ describe("visible-content-derived JSON-LD", () => {
     });
     expect(person).not.toHaveProperty("roleName");
     expect(breadcrumb?.itemListElement).toEqual([
-      { position: 1, name: "Home", item: `${origin}/en` },
-      { position: 2, name: "Services", item: `${origin}/en/services` },
-      { position: 3, name: service.h1, item: service.canonicalUrl },
+      { "@type": "ListItem", position: 1, name: "Home", item: `${origin}/en` },
+      { "@type": "ListItem", position: 2, name: "Services", item: `${origin}/en/services` },
+      { "@type": "ListItem", position: 3, name: service.h1, item: service.canonicalUrl },
     ]);
-    expect((serviceNode?.reviewedBy as Record<string, unknown>).jobTitle)
-      .toBe("Representative Administrative Attorney");
+    expect(serviceNode).not.toHaveProperty("reviewedBy");
+    expect(serviceNode).not.toHaveProperty("dateModified");
+    expect(serviceNode).not.toHaveProperty("citation");
   });
 
   it("uses approved article identity, dates, reviewer, and sources", () => {
@@ -81,7 +83,6 @@ describe("visible-content-derived JSON-LD", () => {
       inLanguage: "en",
       datePublished: "2026-07-03T00:00:00.000Z",
       dateModified: "2026-07-03T00:00:00.000Z",
-      author: { "@id": `${origin}/#representative` },
       reviewedBy: {
         "@id": `${origin}/#representative`,
         name: "Jihye Kang",
@@ -89,12 +90,13 @@ describe("visible-content-derived JSON-LD", () => {
       },
       citation: ["https://example.test/procurement"],
     });
+    expect(articleNode).not.toHaveProperty("author");
     const breadcrumb = document.jsonLd["@graph"]
       .find((node) => node["@type"] === "BreadcrumbList");
     expect(breadcrumb?.itemListElement).toEqual([
-      { position: 1, name: "Home", item: `${origin}/en` },
-      { position: 2, name: "Insights", item: `${origin}/en/insights` },
-      { position: 3, name: document.h1, item: document.canonicalUrl },
+      { "@type": "ListItem", position: 1, name: "Home", item: `${origin}/en` },
+      { "@type": "ListItem", position: 2, name: "Insights", item: `${origin}/en/insights` },
+      { "@type": "ListItem", position: 3, name: document.h1, item: document.canonicalUrl },
     ]);
   });
 
@@ -108,6 +110,21 @@ describe("visible-content-derived JSON-LD", () => {
       expect(office.url).toBe(document.canonicalUrl);
       expect(() => new URL(String(office["@id"]))).not.toThrow();
       expect(() => new URL(String(office.url))).not.toThrow();
+    }
+  });
+
+  it("types every breadcrumb entry as an ordered ListItem", () => {
+    const index = buildSearchIndex(origin, loadPublishedContent(fixtureDirectory));
+
+    for (const document of index.indexable) {
+      const breadcrumb = document.jsonLd["@graph"]
+        .find((node) => node["@type"] === "BreadcrumbList");
+      const items = breadcrumb?.itemListElement as Array<Record<string, unknown>>;
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.map((item) => item["@type"])).toEqual(items.map(() => "ListItem"));
+      expect(items.map((item) => item.position)).toEqual(
+        items.map((_, index) => index + 1),
+      );
     }
   });
 

@@ -51,20 +51,19 @@ robots는 접근통제가 아닙니다. 관리자·API·토큰 URL은 별도 호
 - `Article`
 - `BreadcrumbList`
 
-`Attorney`, `Review`, `AggregateRating`, 가짜 후기·평점·성공률·순위·보장 문구는 만들지 않습니다. 사무소와 대표의 ID는 각각 `PUBLIC_ORIGIN/#professional-service`, `PUBLIC_ORIGIN/#representative`로 고정합니다. 사무소 `url`은 현재 문서 URL이 아니라 해당 언어의 홈 canonical입니다.
+각 `BreadcrumbList.itemListElement`는 중첩 타입 `ListItem`과 position, name, 절대 HTTPS item을 모두 가집니다. `Attorney`, `Review`, `AggregateRating`, 가짜 후기·평점·성공률·순위·보장 문구는 만들지 않습니다. 사무소와 대표의 ID는 각각 `PUBLIC_ORIGIN/#professional-service`, `PUBLIC_ORIGIN/#representative`로 고정합니다. 사무소 `url`은 현재 문서 URL이 아니라 해당 언어의 홈 canonical입니다.
 
 서비스 상세 페이지가 색인되려면 다음 항목이 모두 있어야 합니다.
 
 - 현지화된 title, description 및 H1
 - `scope`, `preparation`, `process` 답변 섹션
-- 대표행정사 검수자 이름과 직함
-- 실제 콘텐츠 개정에 연결된 검수일·최초 공개일·수정일
-- 승인 revision ID와 콘텐츠 SHA-256
-- 화면에 표시되는 유효한 HTTPS 공식 출처 한 개 이상
+- 화면의 서비스 설명과 답변 섹션에서 다시 계산한 콘텐츠 SHA-256
 
-승인 글은 정규화 Markdown과 sanitizer 결과, H2 답변 섹션, 검수자, 네 개의 이벤트 일자, revision ID, 실제 semantic SHA-256 및 HTTPS 출처를 모두 통과해야 합니다. Site는 `computePublishedArticleContentSha256`으로 제목·요약·정규화 Markdown·출처·언어를 다시 계산합니다. 문자 수만으로 게시 가능 여부를 판단하지 않습니다.
+정적 서비스 설명에는 별도의 실제 승인 기록이 없으므로 검수자, 검수·게시·수정일, revision ID 또는 포괄적인 기관 홈페이지를 근거로 한 출처를 표시하지 않습니다. claim-level 출처와 검수자 표시는 해당 콘텐츠와 연결된 실제 승인 기록이 있을 때만 추가할 수 있습니다.
 
-화면의 H1·요약·검수자·일자·출처와 JSON-LD는 같은 타입 DTO에서 생성됩니다. JSON-LD는 `<`, `>`, `&`와 script 종료 문자열을 이스케이프합니다.
+승인 글은 정규화 Markdown과 sanitizer 결과, H2 답변 섹션, 실제 승인 기록의 검수자, 네 개의 이벤트 일자, revision ID, 실제 semantic SHA-256 및 HTTPS 출처를 모두 통과해야 합니다. 승인 관리자는 작성자가 아니라 검수자이므로 별도의 작성자 필드가 없는 한 화면과 Article JSON-LD에 author를 만들지 않습니다. Site는 `computePublishedArticleContentSha256`으로 제목·요약·정규화 Markdown·출처·언어를 다시 계산합니다. 문자 수만으로 게시 가능 여부를 판단하지 않습니다.
+
+화면의 H1·요약과, 승인 글에만 존재하는 검수자·일자·출처는 JSON-LD와 같은 타입 DTO에서 생성됩니다. JSON-LD는 `<`, `>`, `&`와 script 종료 문자열을 이스케이프합니다.
 
 정적 기본 콘텐츠를 수정하면 `surface-registry.ts`의 해당 `lastModified`를 실제 콘텐츠 개정 시각으로 함께 갱신합니다. 빌드 시각을 `lastmod`로 사용하지 않습니다.
 
@@ -163,7 +162,8 @@ npm run test:e2e --workspace @wisdom/site -- --grep 'search discovery|published 
 - sitemap `<loc>` 집합이 색인 가능한 canonical 집합과 정확히 같다.
 - RSS item 수가 active manifest 승인 글 수와 같고 초안·PII·unsafe HTML canary가 없다.
 - JSON-LD의 모든 `@id`, `url`, breadcrumb item, citation이 파싱 가능한 절대 HTTPS URL이다.
-- Service와 Article JSON-LD의 이름·설명·검수자·일자·출처가 화면 내용과 같다.
+- Service JSON-LD에는 승인 기록 없는 검수자·일자·출처가 없고, Article JSON-LD의 이름·설명·검수자·일자·출처는 실제 승인 기록 및 화면 내용과 같다.
+- 별도 작성자 필드가 없는 Article JSON-LD와 화면에는 author 또는 작성자 표시가 없다.
 - `/robots.txt`가 HTTP 200 `text/plain`이고 각 명시적 allow 그룹에 민감 경로가 반복된다.
 - GPTBot은 전체 차단되고 OAI-SearchBot과 ChatGPT-User는 독립 그룹이다.
 - Google DNS 값이 HTML·feed·sitemap에 없고 네이버 값은 선택한 한 방식으로만 출력된다.

@@ -94,6 +94,7 @@ describe("published article DOM", () => {
     expect(html).toContain('href="https://example.test/procurement-source"');
     expect(html).toContain("Jihye Kang");
     expect(html).toContain("Administrative Attorney");
+    expect(html).not.toContain("Authored by");
     expect(html).toContain('datetime="2026-07-03T00:00:00.000Z"');
     expect(html).toContain('datetime="2026-07-04T00:00:00.000Z"');
     expect(html).toContain('rel="canonical" href="https://www.jihye-office.kr/en/insights/procurement-guide"');
@@ -112,6 +113,7 @@ describe("published article DOM", () => {
         jobTitle: "Administrative Attorney",
       },
     });
+    expect(articleNode).not.toHaveProperty("author");
     expect(html).toMatch(/href="\/en\/insights"[^>]+aria-current="page"/);
     expect(html).not.toMatch(/hreflang="zh-(?:Hans|Hant)"/);
     expect(html).not.toContain("/zh-hans/insights/");

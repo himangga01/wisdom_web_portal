@@ -662,18 +662,15 @@ test.describe("search discovery surface", () => {
     }
   });
 
-  test("keeps visible service evidence equal to the JSON-LD claims", async ({ page }) => {
+  test("keeps service content visible without invented provenance claims", async ({ page }) => {
     await page.goto("/en/services/procurement");
 
     await expect(page.locator("[data-answer-section]")).toHaveCount(3);
     await expect(page.locator('[data-answer-section="scope"]')).toContainText(
       "Direct production certificate",
     );
-    await expect(page.locator(".service-evidence")).toContainText("Jihye Kang");
-    await expect(page.locator(".service-evidence")).toContainText(
-      "Representative Administrative Attorney",
-    );
-    await expect(page.locator('.service-evidence a[href="https://www.pps.go.kr/"]')).toHaveCount(1);
+    await expect(page.locator(".service-evidence")).toHaveCount(0);
+    await expect(page.locator('a[href="https://www.pps.go.kr/"]')).toHaveCount(0);
 
     const graph = await page.locator('script[type="application/ld+json"]').evaluate((script) => (
       JSON.parse(script.textContent ?? "")["@graph"] as Array<Record<string, unknown>>
@@ -682,12 +679,10 @@ test.describe("search discovery surface", () => {
     expect(service).toMatchObject({
       name: await page.locator("h1").textContent(),
       description: await page.locator(".page-hero p").last().textContent(),
-      reviewedBy: {
-        name: "Jihye Kang",
-        jobTitle: "Representative Administrative Attorney",
-      },
-      citation: ["https://www.pps.go.kr/"],
     });
+    expect(service).not.toHaveProperty("reviewedBy");
+    expect(service).not.toHaveProperty("dateModified");
+    expect(service).not.toHaveProperty("citation");
     expect(JSON.stringify(graph)).not.toMatch(/"@type":"(?:Attorney|Review|AggregateRating)"|nosourceinfo/);
   });
 
@@ -756,6 +751,12 @@ test.describe("published insight fixture", () => {
     await expect(page.locator(".published-article-body")).toContainText(
       "Confirm the procurement route before preparing evidence.",
     );
+    await expect(page.locator(".article-provenance")).toContainText("Reviewed by");
+    await expect(page.locator(".article-provenance")).not.toContainText("Authored by");
+    const articleGraph = await page.locator('script[type="application/ld+json"]').evaluate((script) => (
+      JSON.parse(script.textContent ?? "")["@graph"] as Array<Record<string, unknown>>
+    ));
+    expect(articleGraph.find((node) => node["@type"] === "Article")).not.toHaveProperty("author");
     await expect(page.locator('link[rel="alternate"][hreflang="ko"]')).toHaveAttribute(
       "href",
       `${publicOrigin}/insights/jodal-entry-guide`,

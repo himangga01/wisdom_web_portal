@@ -85,10 +85,9 @@ describe("public Astro page DOM", () => {
     for (const answerSection of ["scope", "preparation", "process"]) {
       expect(html).toContain(`data-answer-section="${answerSection}"`);
     }
-    expect(html).toContain("Jihye Kang");
-    expect(html).toContain("Representative Administrative Attorney");
-    expect(html).toContain('datetime="2026-07-16T00:00:00.000Z"');
-    expect(html).toContain('href="https://www.pps.go.kr/"');
+    expect(html).not.toContain("Official sources");
+    expect(html).not.toContain('datetime="2026-07-16T00:00:00.000Z"');
+    expect(html).not.toContain('href="https://www.pps.go.kr/"');
     const jsonLd = html.match(/<script type="application\/ld\+json">([^<]+)<\/script>/)?.[1];
     expect(jsonLd).toBeDefined();
     const graph = JSON.parse(jsonLd!)["@graph"] as Array<Record<string, unknown>>;
@@ -96,12 +95,10 @@ describe("public Astro page DOM", () => {
     expect(serviceNode).toMatchObject({
       name: "Public Procurement",
       description: "Production, product, and registration support for entering public procurement.",
-      reviewedBy: {
-        name: "Jihye Kang",
-        jobTitle: "Representative Administrative Attorney",
-      },
-      citation: ["https://www.pps.go.kr/"],
     });
+    expect(serviceNode).not.toHaveProperty("reviewedBy");
+    expect(serviceNode).not.toHaveProperty("dateModified");
+    expect(serviceNode).not.toHaveProperty("citation");
   });
 
   it("localizes homepage labels and representative facts without Korean leakage", async () => {
