@@ -1,17 +1,14 @@
-import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
+import { randomBytes as nodeRandomBytes } from "node:crypto";
 
 import type { ControlDatabase } from "../db/client.js";
+import { parseIndexNowPayloadJson } from "./indexnow-payload.js";
 
 export const INDEXNOW_LEASE_MS = 2 * 60_000;
 export const INDEXNOW_MAX_ATTEMPTS = 5;
 
 const INDEXNOW_RETRY_BASE_MS = 60_000;
 const INDEXNOW_RETRY_MAX_MS = 60 * 60_000;
-const MAX_PAYLOAD_BYTES = 256 * 1_024;
-const MAX_URLS = 10_000;
-const MAX_URL_LENGTH = 4_096;
 const WORKER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const HOST_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const PROVIDER_MESSAGE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export const INDEXNOW_RETRYABLE_ERROR_CODES = [
@@ -277,56 +274,8 @@ function failIndexNowDelivery(
 }
 
 function parseIndexNowPayload(payloadJson: string): IndexNowPayload | undefined {
-  if (Buffer.byteLength(payloadJson, "utf8") > MAX_PAYLOAD_BYTES) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payloadJson);
-  } catch {
-    return undefined;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-  const record = parsed as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  if (keys.length !== 3
-    || keys[0] !== "host"
-    || keys[1] !== "urlSetSha256"
-    || keys[2] !== "urls") return undefined;
-  if (
-    typeof record.host !== "string"
-    || record.host !== record.host.toLowerCase()
-    || !HOST_PATTERN.test(record.host)
-    || typeof record.urlSetSha256 !== "string"
-    || !/^[a-f0-9]{64}$/u.test(record.urlSetSha256)
-    || !Array.isArray(record.urls)
-    || record.urls.length < 1
-    || record.urls.length > MAX_URLS
-  ) return undefined;
-
-  const urls: string[] = [];
-  const unique = new Set<string>();
-  for (const value of record.urls) {
-    if (typeof value !== "string" || value.length < 1 || value.length > MAX_URL_LENGTH) return undefined;
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      return undefined;
-    }
-    if (
-      url.protocol !== "https:"
-      || url.hostname !== record.host
-      || url.username !== ""
-      || url.password !== ""
-      || url.hash !== ""
-      || unique.has(value)
-    ) return undefined;
-    unique.add(value);
-    urls.push(value);
-  }
-  if (createHash("sha256").update(urls.join("\n")).digest("hex") !== record.urlSetSha256) {
-    return undefined;
-  }
-  return { host: record.host, urls };
+  const payload = parseIndexNowPayloadJson(payloadJson);
+  return payload ? { host: payload.host, urls: payload.urls } : undefined;
 }
 
 export type IndexNowDeliveryResult =

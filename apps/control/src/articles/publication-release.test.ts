@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -135,7 +136,11 @@ function write(relativePath: string, contents: string, outputDirectory: string) 
   writeFileSync(path, contents, "utf8");
 }
 
-function prepareRelease(snapshot: PublicationSnapshot, outputDirectory: string): SealedPublicationRelease {
+function prepareRelease(
+  snapshot: PublicationSnapshot,
+  outputDirectory: string,
+  sitemapUrls?: readonly string[],
+): SealedPublicationRelease {
   mkdirSync(outputDirectory);
   const alternates = new Map<string, string>();
   for (const document of snapshot.documents) {
@@ -157,11 +162,11 @@ function prepareRelease(snapshot: PublicationSnapshot, outputDirectory: string):
   write("robots.txt", "User-agent: *\nAllow: /\n", outputDirectory);
   write("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${[
+${(sitemapUrls ?? [
     ...snapshot.documents.map(({ route }) => `${config.publicOrigin}${route}`),
     `${config.publicOrigin}/`,
     `${config.publicOrigin}/insights`,
-  ].map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
+  ]).map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
 </urlset>
 `, outputDirectory);
   return verifyAndSealPublicationBuild({
@@ -322,6 +327,95 @@ describe("journaled publication activation", () => {
       "https://www.example.com/insights",
       "https://www.example.com/insights/procurement-guide",
     ]);
+  });
+
+  it("rejects a target-plus-previous URL union over IndexNow limits before switching", async () => {
+    const firstUrls = Array.from({ length: 6_000 }, (_, index) =>
+      `${config.publicOrigin}/first/${index.toString(36).padStart(3, "0")}`);
+    const secondUrls = Array.from({ length: 6_000 }, (_, index) =>
+      `${config.publicOrigin}/second/${index.toString(36).padStart(3, "0")}`);
+    const payloadBytes = (urls: readonly string[]) => Buffer.byteLength(JSON.stringify({
+      host: "www.example.com",
+      urlSetSha256: createHash("sha256").update(urls.join("\n")).digest("hex"),
+      urls,
+    }), "utf8");
+    expect(payloadBytes(firstUrls)).toBeLessThanOrEqual(256 * 1_024);
+    expect(payloadBytes(secondUrls)).toBeLessThanOrEqual(256 * 1_024);
+    expect(firstUrls.length + secondUrls.length).toBeGreaterThan(10_000);
+
+    let build = 0;
+    const deps = dependencies({
+      prepareRelease: ({ snapshot, outputDirectory }) => Promise.resolve(
+        prepareRelease(snapshot, outputDirectory, build++ === 0 ? firstUrls : secondUrls),
+      ),
+    });
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-first-bounded-set",
+      nowMs: NOW,
+    }, config, deps);
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, published_revision_id = NULL,
+        published_at_ms = NULL, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'ko'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-oversized-union",
+      nowMs: NOW + 2,
+    }, config, deps)).rejects.toThrow("PUBLICATION_INDEXNOW_PAYLOAD_LIMIT_EXCEEDED");
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, first.version));
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 1 });
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM release_activations").get()).toEqual({ count: 1 });
+    expect(readdirSync(config.releaseRoot).sort()).toEqual([first.version]);
+  });
+
+  it("rejects an under-10,000 target-plus-previous union over 256 KiB before switching", async () => {
+    const firstUrls = Array.from({ length: 3_500 }, (_, index) =>
+      `${config.publicOrigin}/bytes-first/${index.toString(36).padStart(3, "0")}/${"x".repeat(15)}`);
+    const secondUrls = Array.from({ length: 3_500 }, (_, index) =>
+      `${config.publicOrigin}/bytes-second/${index.toString(36).padStart(3, "0")}/${"y".repeat(15)}`);
+    const payloadBytes = (urls: readonly string[]) => Buffer.byteLength(JSON.stringify({
+      host: "www.example.com",
+      urlSetSha256: createHash("sha256").update(urls.join("\n")).digest("hex"),
+      urls,
+    }), "utf8");
+    expect(firstUrls.length + secondUrls.length).toBeLessThanOrEqual(10_000);
+    expect(payloadBytes(firstUrls)).toBeLessThanOrEqual(256 * 1_024);
+    expect(payloadBytes(secondUrls)).toBeLessThanOrEqual(256 * 1_024);
+    expect(payloadBytes([...firstUrls, ...secondUrls])).toBeGreaterThan(256 * 1_024);
+
+    let build = 0;
+    const deps = dependencies({
+      prepareRelease: ({ snapshot, outputDirectory }) => Promise.resolve(
+        prepareRelease(snapshot, outputDirectory, build++ === 0 ? firstUrls : secondUrls),
+      ),
+    });
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-first-byte-bounded-set",
+      nowMs: NOW,
+    }, config, deps);
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, published_revision_id = NULL,
+        published_at_ms = NULL, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'ko'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-oversized-byte-union",
+      nowMs: NOW + 2,
+    }, config, deps)).rejects.toThrow("PUBLICATION_INDEXNOW_PAYLOAD_LIMIT_EXCEEDED");
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, first.version));
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 1 });
+    expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM release_activations").get()).toEqual({ count: 1 });
+    expect(readdirSync(config.releaseRoot).sort()).toEqual([first.version]);
   });
 
   it("preserves the previous pointer on build failure and retains failed output for investigation", async () => {
@@ -547,7 +641,7 @@ describe("publication release retention", () => {
       mkdirSync(directory);
       const fileBytes = Buffer.from(`release ${version}\n`, "utf8");
       const sitemapBytes = Buffer.from(
-        `<?xml version="1.0"?><urlset><url><loc>${config.publicOrigin}/</loc></url></urlset>\n`,
+        `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${config.publicOrigin}/</loc></url></urlset>\n`,
         "utf8",
       );
       writeFileSync(join(directory, "index.html"), fileBytes);

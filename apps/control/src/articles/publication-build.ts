@@ -17,7 +17,13 @@ import {
   type Locale,
 } from "@wisdom/shared";
 
+import {
+  createIndexNowPayload,
+  IndexNowPayloadValidationError,
+  type CanonicalIndexNowPayload,
+} from "./indexnow-payload.js";
 import type { PublicationSnapshot } from "./publication-snapshot.js";
+import { parsePublicationSitemapUrls } from "./publication-sitemap.js";
 
 const RELEASE_MANIFEST_NAME = ".wisdom-release-manifest.json";
 const MAX_RELEASE_MANIFEST_BYTES = 2 * 1_048_576;
@@ -475,35 +481,33 @@ function parseReleaseManifest(bytes: Buffer): PublicationReleaseManifest {
   return record as PublicationReleaseManifest;
 }
 
-function publicationSitemapUrls(
+function publicationSitemapPayload(
   files: readonly InventoryFile[],
   expectedOrigin?: string,
-): string[] {
+): CanonicalIndexNowPayload {
   const sitemap = files.find(({ path }) => path === "sitemap.xml");
   if (!sitemap) throw new Error("PUBLICATION_SITEMAP_MISSING");
-  const urls = [...sitemap.bytes.toString("utf8").matchAll(/<loc>([^<]*)<\/loc>/gu)]
-    .map((match) => match[1]!.trim());
-  if (urls.length === 0) throw new Error("PUBLICATION_SITEMAP_URLS_EMPTY");
-  if (new Set(urls).size !== urls.length) {
-    throw new Error("PUBLICATION_SITEMAP_URL_DUPLICATE");
+  const urls = parsePublicationSitemapUrls(sitemap.bytes);
+  try {
+    return createIndexNowPayload({
+      ...(expectedOrigin ? { publicOrigin: expectedOrigin } : {}),
+      urls,
+    }).payload;
+  } catch (error) {
+    if (!(error instanceof IndexNowPayloadValidationError)) throw error;
+    const publicationCode = {
+      INDEXNOW_ORIGIN_INVALID: "PUBLICATION_SITEMAP_URL_INVALID",
+      INDEXNOW_URLS_EMPTY: "PUBLICATION_SITEMAP_URLS_EMPTY",
+      INDEXNOW_URL_COUNT_EXCEEDED: "PUBLICATION_SITEMAP_INDEXNOW_LIMIT_EXCEEDED",
+      INDEXNOW_URL_INVALID: "PUBLICATION_SITEMAP_URL_INVALID",
+      INDEXNOW_HTTPS_REQUIRED: "PUBLICATION_SITEMAP_HTTPS_REQUIRED",
+      INDEXNOW_URL_ORIGIN_INVALID: "PUBLICATION_SITEMAP_URL_ORIGIN_INVALID",
+      INDEXNOW_URL_DUPLICATE: "PUBLICATION_SITEMAP_URL_DUPLICATE",
+      INDEXNOW_URL_LENGTH_EXCEEDED: "PUBLICATION_SITEMAP_URL_INVALID",
+      INDEXNOW_PAYLOAD_BYTES_EXCEEDED: "PUBLICATION_SITEMAP_INDEXNOW_LIMIT_EXCEEDED",
+    } satisfies Record<typeof error.code, string>;
+    throw new Error(publicationCode[error.code]);
   }
-  const parsedUrls = urls.map((value) => {
-    try {
-      return new URL(value);
-    } catch {
-      throw new Error("PUBLICATION_SITEMAP_URL_INVALID");
-    }
-  });
-  const sitemapOrigin = expectedOrigin ?? parsedUrls[0]!.origin;
-  for (const url of parsedUrls) {
-    if (url.protocol !== "https:") {
-      throw new Error("PUBLICATION_SITEMAP_HTTPS_REQUIRED");
-    }
-    if (url.origin !== sitemapOrigin) {
-      throw new Error("PUBLICATION_SITEMAP_URL_ORIGIN_INVALID");
-    }
-  }
-  return urls.sort();
 }
 
 export function verifyAndSealPublicationBuild(input: {
@@ -572,11 +576,11 @@ export function verifySealedPublicationRelease(
       throw new Error("PUBLICATION_RELEASE_HASH_MISMATCH");
     }
   }
-  const sitemapUrls = publicationSitemapUrls(actualFiles, expectedOrigin);
+  const sitemapPayload = publicationSitemapPayload(actualFiles, expectedOrigin);
   return {
     manifest,
     manifestSha256: sha256Hex(manifestFile.bytes),
-    sitemapUrls,
-    urlSetSha256: sha256Hex(sitemapUrls.join("\n")),
+    sitemapUrls: sitemapPayload.urls,
+    urlSetSha256: sitemapPayload.urlSetSha256,
   };
 }

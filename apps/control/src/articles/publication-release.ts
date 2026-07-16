@@ -25,6 +25,11 @@ import {
   INDEXNOW_RETRYABLE_ERROR_CODES,
 } from "./indexnow-outbox.js";
 import {
+  createIndexNowPayload,
+  IndexNowPayloadValidationError,
+  type CreatedIndexNowPayload,
+} from "./indexnow-payload.js";
+import {
   computePublicationSnapshotManifestSha256,
   runPublicationBuild,
   verifyAndSealPublicationBuild,
@@ -506,6 +511,26 @@ function verifyReleaseRow(config: PublicationReleaseConfig, row: ReleaseRow): Se
   return verified;
 }
 
+function activationIndexNowPayload(
+  config: PublicationReleaseConfig,
+  targetUrls: readonly string[],
+  previousUrls: readonly string[],
+): CreatedIndexNowPayload {
+  try {
+    return createIndexNowPayload({
+      publicOrigin: config.publicOrigin,
+      urls: [...new Set([...targetUrls, ...previousUrls])],
+    });
+  } catch (error) {
+    if (!(error instanceof IndexNowPayloadValidationError)) throw error;
+    if (error.code === "INDEXNOW_URL_COUNT_EXCEEDED"
+      || error.code === "INDEXNOW_PAYLOAD_BYTES_EXCEEDED") {
+      throw new Error("PUBLICATION_INDEXNOW_PAYLOAD_LIMIT_EXCEEDED");
+    }
+    throw new Error("PUBLICATION_INDEXNOW_PAYLOAD_INVALID");
+  }
+}
+
 function applyReleaseHeads(
   db: ControlDatabase,
   target: ReleaseRow,
@@ -606,13 +631,11 @@ function commitActivation(
   const previousUrls = activation.previous_release_id
     ? verifyReleaseRow(config, releaseRow(db, activation.previous_release_id)).sitemapUrls
     : [];
-  const indexNowUrls = [...new Set([
-    ...verified.sitemapUrls,
-    ...previousUrls,
-  ])].sort();
-  const urlSetSha256 = createHash("sha256")
-    .update(indexNowUrls.join("\n"))
-    .digest("hex");
+  const indexNowPayload = activationIndexNowPayload(
+    config,
+    verified.sitemapUrls,
+    previousUrls,
+  );
   const current = readCurrentTarget(config);
   const targetPath = assertDirectReleasePath(config.releaseRoot, target.path);
   if (current !== targetPath) throw new Error("PUBLICATION_ACTIVATION_POINTER_MISMATCH");
@@ -652,11 +675,6 @@ function commitActivation(
     `).run(input.nowMs, input.nowMs, activationId);
 
     const outboxId = safeUuid(dependencies.randomUUID);
-    const payload = JSON.stringify({
-      host: new URL(config.publicOrigin).hostname,
-      urlSetSha256,
-      urls: indexNowUrls,
-    });
     db.sqlite.prepare(`
       INSERT INTO publication_outbox (
         id, release_id, event_type, manifest_sha256, payload_json, state,
@@ -677,7 +695,7 @@ function commitActivation(
       outboxId,
       target.id,
       target.manifest_sha256,
-      payload,
+      indexNowPayload.payloadJson,
       input.nowMs,
       input.nowMs,
       input.nowMs,
@@ -926,12 +944,23 @@ export async function publishApprovedArticles(
     throw error;
   }
   const independent = verifySealedPublicationRelease(outputDirectory, config.publicOrigin);
-  if (independent.manifestSha256 !== sealed.manifestSha256) {
-    throw new Error("PUBLICATION_PREPARED_MANIFEST_MISMATCH");
-  }
-  if (independent.manifest.snapshotManifestSha256
-    !== computePublicationSnapshotManifestSha256(snapshot)) {
-    throw new Error("PUBLICATION_SNAPSHOT_MANIFEST_MISMATCH");
+  try {
+    if (independent.manifestSha256 !== sealed.manifestSha256) {
+      throw new Error("PUBLICATION_PREPARED_MANIFEST_MISMATCH");
+    }
+    if (independent.manifest.snapshotManifestSha256
+      !== computePublicationSnapshotManifestSha256(snapshot)) {
+      throw new Error("PUBLICATION_SNAPSHOT_MANIFEST_MISMATCH");
+    }
+    const previousUrls = snapshot.baseReleaseId
+      ? verifyReleaseRow(config, releaseRow(db, snapshot.baseReleaseId)).sitemapUrls
+      : [];
+    activationIndexNowPayload(config, independent.sitemapUrls, previousUrls);
+  } catch (error) {
+    cleanSuccessfulTemporaryDirectory(config.releaseRoot, outputDirectory);
+    cleanSuccessfulTemporaryDirectory(config.releaseRoot, snapshotDirectory);
+    cleanSuccessfulTemporaryDirectory(config.releaseRoot, buildHome);
+    throw error;
   }
   renameSync(outputDirectory, finalPath);
   const finalVerified = verifySealedPublicationRelease(finalPath, config.publicOrigin);
@@ -975,6 +1004,8 @@ export function rollbackPublication(
   if (current !== assertDirectReleasePath(config.releaseRoot, active.path)) {
     throw new Error("PUBLICATION_BASE_POINTER_MISMATCH");
   }
+  const activeVerified = verifyReleaseRow(config, releaseRow(db, active.id));
+  activationIndexNowPayload(config, verified.sitemapUrls, activeVerified.sitemapUrls);
   const activationId = safeUuid(dependencies.randomUUID);
   db.sqlite.prepare(`
     INSERT INTO release_activations (

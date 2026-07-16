@@ -287,13 +287,10 @@ describe("IndexNow outbox delivery", () => {
     expect(sendJson).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects malformed or cross-host payloads permanently without calling the sender", async () => {
+  it("rejects a validly shaped and hashed cross-host payload without calling the sender", async () => {
+    const attackerUrls = ["https://attacker.example/insights"];
     insertOutbox({
-      payloadJson: JSON.stringify({
-        host: "www.example.com",
-        urls: ["https://attacker.example/insights"],
-        providerKey: "must-not-be-accepted",
-      }),
+      payloadJson: payloadJson(attackerUrls),
     });
     const sendJson = vi.fn();
 
@@ -324,6 +321,29 @@ describe("IndexNow outbox delivery", () => {
       randomBytes,
       sendJson,
     })).resolves.toEqual({ kind: "idle" });
+  });
+
+  it("rejects a same-host payload whose URL-set hash does not match", async () => {
+    insertOutbox({
+      payloadJson: JSON.stringify({
+        host: "www.example.com",
+        urlSetSha256: "0".repeat(64),
+        urls: DEFAULT_URLS,
+      }),
+    });
+    const sendJson = vi.fn();
+
+    await expect(deliverNextIndexNowOutbox(fixture.db, {
+      workerId: "worker-a",
+      now: () => NOW,
+      randomBytes,
+      sendJson,
+    })).resolves.toEqual({
+      kind: "failed",
+      outboxId: "22222222-2222-4222-8222-222222222222",
+      errorCode: "INDEXNOW_PAYLOAD_INVALID",
+    });
+    expect(sendJson).not.toHaveBeenCalled();
   });
 
   it("persists only generic transport errors and never changes the active release", async () => {

@@ -119,10 +119,22 @@ function writeValidBuild(snapshot = fixtureSnapshot()) {
   writeFile("_astro/app.abc123.js", "console.log('public');\n");
   writeFile("robots.txt", "User-agent: *\nAllow: /\n");
   writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>${PUBLIC_ORIGIN}${article.route}</loc></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>${PUBLIC_ORIGIN}${article.route}</loc><lastmod>2026-07-16</lastmod><xhtml:link rel="alternate" hreflang="ko" href="${PUBLIC_ORIGIN}${article.route}" /></url>
   <url><loc>${PUBLIC_ORIGIN}/</loc></url>
   <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>
+</urlset>
+`);
+}
+
+function writeSitemapUrls(urls: readonly string[]): void {
+  const escaped = urls.map((url) => url
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;"));
+  writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${escaped.map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
 </urlset>
 `);
 }
@@ -266,8 +278,8 @@ describe("static release verification", () => {
     writeFile("index.html", '<html><body><a href="/insights">Insights</a></body></html>');
     writeFile("insights/index.html", '<html><body><a href="/">Home</a></body></html>');
     writeFile("robots.txt", "User-agent: *\nAllow: /\n");
-    writeFile("sitemap.xml", `<?xml version="1.0"?>
-<urlset>
+    writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>${PUBLIC_ORIGIN}/insights</loc></url>
   <url><loc>${PUBLIC_ORIGIN}/</loc></url>
 </urlset>
@@ -287,6 +299,86 @@ describe("static release verification", () => {
     expect(sealed.urlSetSha256).toBe(sha256(sealed.sitemapUrls.join("\n")));
   });
 
+  it("rejects malformed sitemap roots, nesting, XML, and non-UTF-8 declarations", () => {
+    const snapshot = fixtureSnapshot();
+    const invalidSitemaps = [
+      `<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${PUBLIC_ORIGIN}/</loc></url></sitemapindex>`,
+      `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><wrapper><loc>${PUBLIC_ORIGIN}/</loc></wrapper></url></urlset>`,
+      `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${PUBLIC_ORIGIN}/</loc></urlset>`,
+      `<?xml version="1.0" encoding="ISO-8859-1"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${PUBLIC_ORIGIN}/</loc></url></urlset>`,
+    ];
+    for (const sitemap of invalidSitemaps) {
+      writeValidBuild(snapshot);
+      writeFile("sitemap.xml", sitemap);
+      expect(() => verifyAndSealPublicationBuild({
+        outputDirectory: join(root, "dist"),
+        snapshot,
+        requiredCoreRoutes: ["/", "/insights"],
+        forbiddenCanaries: [],
+        publicOrigin: PUBLIC_ORIGIN,
+      })).toThrow("PUBLICATION_SITEMAP_XML_INVALID");
+      rmSync(join(root, "dist"), { force: true, recursive: true });
+    }
+  });
+
+  it("ignores comment text that looks like a loc element", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <!-- <loc>${PUBLIC_ORIGIN}/comment-only</loc> -->
+  <url><loc>${PUBLIC_ORIGIN}/</loc></url>
+</urlset>
+`);
+
+    const sealed = verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    });
+    expect(sealed.sitemapUrls).toEqual([`${PUBLIC_ORIGIN}/`]);
+  });
+
+  it("decodes predefined XML entities in direct loc text", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${PUBLIC_ORIGIN}/search?a=1&amp;b=2</loc></url>
+</urlset>
+`);
+
+    const sealed = verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    });
+    expect(sealed.sitemapUrls).toEqual([`${PUBLIC_ORIGIN}/search?a=1&b=2`]);
+  });
+
+  it("rejects DTD and external entity declarations", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeFile("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE urlset [<!ENTITY xxe SYSTEM "file:///private/etc/passwd">]>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>&xxe;</loc></url>
+</urlset>
+`);
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_DTD_FORBIDDEN");
+  });
+
   it("rejects duplicate sitemap URLs", () => {
     const snapshot = fixtureSnapshot();
     writeValidBuild(snapshot);
@@ -302,6 +394,78 @@ describe("static release verification", () => {
       forbiddenCanaries: [],
       publicOrigin: PUBLIC_ORIGIN,
     })).toThrow("PUBLICATION_SITEMAP_URL_DUPLICATE");
+  });
+
+  it("rejects canonical-equivalent duplicate sitemap URLs", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeSitemapUrls([
+      `${PUBLIC_ORIGIN}/insights`,
+      "https://www.example.com:443/insights",
+    ]);
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_DUPLICATE");
+  });
+
+  it.each([
+    "https://reader:secret@www.example.com/insights",
+    "https://:@www.example.com/insights",
+    "https:@www.example.com/insights",
+    `${PUBLIC_ORIGIN}/insights#private-fragment`,
+    `${PUBLIC_ORIGIN}/insights#`,
+  ])("rejects sitemap URLs with credentials or fragments: %s", (url) => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeSitemapUrls([url]);
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_INVALID");
+  });
+
+  it("rejects sitemap URL count and IndexNow payload byte limits while sealing", () => {
+    const snapshot = fixtureSnapshot();
+    const cases = [
+      Array.from({ length: 10_001 }, (_, index) => `${PUBLIC_ORIGIN}/u/${index}`),
+      Array.from({ length: 9_000 }, (_, index) =>
+        `${PUBLIC_ORIGIN}/payload/${index.toString().padStart(4, "0")}/${"x".repeat(12)}`),
+    ];
+    for (const urls of cases) {
+      writeValidBuild(snapshot);
+      writeSitemapUrls(urls);
+      expect(() => verifyAndSealPublicationBuild({
+        outputDirectory: join(root, "dist"),
+        snapshot,
+        requiredCoreRoutes: ["/", "/insights"],
+        forbiddenCanaries: [],
+        publicOrigin: PUBLIC_ORIGIN,
+      })).toThrow("PUBLICATION_SITEMAP_INDEXNOW_LIMIT_EXCEEDED");
+      rmSync(join(root, "dist"), { force: true, recursive: true });
+    }
+  });
+
+  it("rejects an IndexNow URL longer than 4,096 characters while sealing", () => {
+    const snapshot = fixtureSnapshot();
+    writeValidBuild(snapshot);
+    writeSitemapUrls([`${PUBLIC_ORIGIN}/${"x".repeat(4_100)}`]);
+
+    expect(() => verifyAndSealPublicationBuild({
+      outputDirectory: join(root, "dist"),
+      snapshot,
+      requiredCoreRoutes: ["/", "/insights"],
+      forbiddenCanaries: [],
+      publicOrigin: PUBLIC_ORIGIN,
+    })).toThrow("PUBLICATION_SITEMAP_URL_INVALID");
   });
 
   it("rejects cross-origin sitemap URLs", () => {
@@ -343,7 +507,7 @@ describe("static release verification", () => {
   it("rejects an empty sitemap URL set", () => {
     const snapshot = fixtureSnapshot();
     writeValidBuild(snapshot);
-    writeFile("sitemap.xml", "<?xml version=\"1.0\"?><urlset></urlset>\n");
+    writeFile("sitemap.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"></urlset>\n");
 
     expect(() => verifyAndSealPublicationBuild({
       outputDirectory: join(root, "dist"),
