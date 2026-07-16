@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,15 @@ import test from "node:test";
 
 const workspaceRoot = resolve(import.meta.dirname, "..");
 const buildScript = join(workspaceRoot, "apps", "site", "scripts", "build.mjs");
+const fixtureRoot = join(
+  workspaceRoot,
+  "apps",
+  "site",
+  "src",
+  "content",
+  "__fixtures__",
+  "published-content",
+);
 
 function runBuild(argumentsForBuild, environment = {}) {
   const env = { ...process.env };
@@ -20,6 +29,30 @@ function runBuild(argumentsForBuild, environment = {}) {
     windowsHide: true,
   });
 }
+
+test("canonical publication fixtures stay LF-only across Git checkouts", () => {
+  const attributesPath = join(workspaceRoot, ".gitattributes");
+  assert.equal(existsSync(attributesPath), true, ".gitattributes must pin canonical fixture bytes");
+  assert.match(
+    readFileSync(attributesPath, "utf8"),
+    /^apps\/site\/src\/content\/__fixtures__\/published-content\/\*\* text eol=lf$/m,
+  );
+
+  const fixturePaths = [
+    join(fixtureRoot, "manifest.json"),
+    join(fixtureRoot, "consent-bundle.json"),
+    ...readdirSync(join(fixtureRoot, "articles"))
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => join(fixtureRoot, "articles", name)),
+  ];
+  for (const fixturePath of fixturePaths) {
+    assert.equal(
+      readFileSync(fixturePath, "utf8").includes("\r"),
+      false,
+      `${fixturePath} must retain canonical LF bytes`,
+    );
+  }
+});
 
 test("raw Site production build rejects a missing publication snapshot before Astro starts", () => {
   const output = mkdtempSync(join(tmpdir(), "wisdom-site-raw-gate-"));
