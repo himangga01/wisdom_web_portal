@@ -9,6 +9,15 @@ const MIGRATION_SENSITIVE_SECRETS = new Set([
 ]);
 const AGE_IDENTITY_SERVICE = "com.jihye.portal.age-identity";
 
+export const defaultKeychainSecretDefinitions = Object.freeze([
+  Object.freeze({ environment: "ADMIN_SESSION_SECRET", service: "com.jihye.portal.admin-session", bytes: 32 }),
+  Object.freeze({ environment: "CONTROL_HMAC_SECRET", service: "com.jihye.portal.control-hmac", bytes: 32 }),
+  Object.freeze({ environment: "HERMES_HMAC_SECRET", service: "com.jihye.portal.hermes-hmac", bytes: 32 }),
+  Object.freeze({ environment: "MONITOR_HERMES_HMAC_SECRET", service: "com.jihye.portal.monitor-hermes-hmac", bytes: 32 }),
+  Object.freeze({ environment: "PII_ENCRYPTION_KEY", service: "com.jihye.portal.pii-key", bytes: 32 }),
+  Object.freeze({ environment: "WITHDRAWAL_TOKEN_SECRET", service: "com.jihye.portal.withdrawal-token", bytes: 32 }),
+]);
+
 function fail(code, message) {
   const error = new Error(message);
   error.code = code;

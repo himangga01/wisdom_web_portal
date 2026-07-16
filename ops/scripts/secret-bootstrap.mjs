@@ -1,15 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 
-import { installKeychainSecrets } from "../lib/keychain.mjs";
+import { defaultKeychainSecretDefinitions, installKeychainSecrets } from "../lib/keychain.mjs";
 
-const definitions = [
-  { environment: "ADMIN_SESSION_SECRET", service: "com.jihye.portal.admin-session", bytes: 32 },
-  { environment: "CONTROL_HMAC_SECRET", service: "com.jihye.portal.control-hmac", bytes: 32 },
-  { environment: "HERMES_HMAC_SECRET", service: "com.jihye.portal.hermes-hmac", bytes: 32 },
-  { environment: "PII_ENCRYPTION_KEY", service: "com.jihye.portal.pii-key", bytes: 32 },
-  { environment: "WITHDRAWAL_TOKEN_SECRET", service: "com.jihye.portal.withdrawal-token", bytes: 32 },
-];
+const definitions = defaultKeychainSecretDefinitions;
 
 function option(name) {
   const index = process.argv.indexOf(name);

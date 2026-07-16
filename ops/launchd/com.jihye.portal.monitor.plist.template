@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.jihye.portal.monitor</string>
+  <key>ProgramArguments</key><array>
+    <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/keychain-exec.mjs</string>
+    <string>--account</string><string>{{USER_NAME}}</string>
+    <string>--config</string><string>{{APP_ROOT}}/shared/runtime.env</string>
+    <string>--secret</string><string>MONITOR_HERMES_HMAC_SECRET=com.jihye.portal.monitor-hermes-hmac</string>
+    <string>--</string><string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/monitor.mjs</string>
+    <string>--config</string><string>{{APP_ROOT}}/shared/monitoring.json</string><string>--apply</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>{{LOG_ROOT}}/monitor.stdout.log</string>
+  <key>StandardErrorPath</key><string>{{LOG_ROOT}}/monitor.stderr.log</string>
+</dict></plist>

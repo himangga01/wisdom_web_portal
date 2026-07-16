@@ -5,10 +5,35 @@
     "expectedText": "ok",
     "source": "outside-mac-and-lan"
   },
-  "private": {
-    "backupFreshnessMinutes": 90,
-    "diskFreePercentMinimum": 15,
-    "notificationFailureBacklogMaximum": 0,
-    "tunnelAndServiceAlertsSeparate": true
+  "local": {
+    "backupRoot": "{{BACKUP_ROOT}}",
+    "databasePath": "{{DATA_ROOT}}/portal.sqlite",
+    "diskPath": "{{DATA_ROOT}}",
+    "controlReadyUrl": "http://127.0.0.1:{{CONTROL_PORT}}/health/ready",
+    "requiredRunningLaunchdLabels": [
+      "com.jihye.portal.caddy",
+      "com.jihye.portal.cloudflared",
+      "com.jihye.portal.control",
+      "com.jihye.portal.notification-worker",
+      "com.jihye.portal.content-worker"
+    ],
+    "thresholds": {
+      "backupFreshnessMinutes": 90,
+      "diskFreePercentMinimum": 15,
+      "notificationFailureBacklogMaximum": 0,
+      "publicationFailureBacklogMaximum": 0,
+      "indexNowFailureBacklogMaximum": 0
+    },
+    "timeouts": {
+      "overallMs": 15000,
+      "checkMs": 3000,
+      "hermesRequestMs": 2000
+    },
+    "hermes": {
+      "endpoint": "http://127.0.0.1:8788/monitor",
+      "keychainService": "com.jihye.portal.monitor-hermes-hmac",
+      "maximumAttempts": 2,
+      "retryDelayMs": 100
+    }
   }
 }

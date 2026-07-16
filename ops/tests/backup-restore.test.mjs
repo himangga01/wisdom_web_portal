@@ -357,15 +357,16 @@ test("backup freshness alerts after 90 minutes", async () => {
   await writeFile(artifact, "verified-ciphertext");
   await writeFile(path.join(backupRoot, "hourly-20260716T010000Z.json"), JSON.stringify({
     verified: true,
+    integrity: "ok",
     kind: "hourly",
-    createdAt: "2026-07-16T01:00:00.000Z",
+    createdAt: "2026-07-16T01:00:00.123Z",
     encryptedSha256: createHash("sha256").update("verified-ciphertext").digest("hex"),
     encryptedBytes: Buffer.byteLength("verified-ciphertext"),
   }));
   const status = await loadNewestBackupStatus(backupRoot);
 
-  assert.equal(backupFreshness(status, new Date("2026-07-16T02:29:59.000Z")).state, "healthy");
-  assert.equal(backupFreshness(status, new Date("2026-07-16T02:30:01.000Z")).state, "stale");
+  assert.equal(backupFreshness(status, new Date("2026-07-16T02:29:59.123Z")).state, "healthy");
+  assert.equal(backupFreshness(status, new Date("2026-07-16T02:30:01.123Z")).state, "stale");
   assert.equal(backupFreshness(undefined, new Date()).state, "missing");
 
   await writeFile(artifact, "tampered");

@@ -259,6 +259,7 @@ test("launchd templates keep executables absolute and secrets out of plists", as
     "com.jihye.portal.cloudflared.plist.template",
     "com.jihye.portal.content-worker.plist.template",
     "com.jihye.portal.control.plist.template",
+    "com.jihye.portal.monitor.plist.template",
     "com.jihye.portal.notification-worker.plist.template",
   ]);
 
@@ -330,7 +331,7 @@ test("backup schedule and log rotation are bounded", async () => {
   assert.doesNotMatch(newsyslog, /world|777/i);
 });
 
-test("monitoring template keeps external public checks separate from private alerts", async () => {
+test("monitoring template keeps external uptime separate from executable local checks", async () => {
   const monitoring = await render("monitoring/checks.json.template");
   const parsed = JSON.parse(monitoring);
 
@@ -340,10 +341,25 @@ test("monitoring template keeps external public checks separate from private ale
     expectedText: "ok",
     source: "outside-mac-and-lan",
   });
-  assert.equal(parsed.private.backupFreshnessMinutes, 90);
-  assert.equal(parsed.private.diskFreePercentMinimum, 15);
-  assert.equal(parsed.private.notificationFailureBacklogMaximum, 0);
-  assert.doesNotMatch(monitoring, /admin\.example\.test|health\/ready/);
+  assert.equal(parsed.local.thresholds.backupFreshnessMinutes, 90);
+  assert.equal(parsed.local.thresholds.diskFreePercentMinimum, 15);
+  assert.equal(parsed.local.thresholds.notificationFailureBacklogMaximum, 0);
+  assert.equal(parsed.local.thresholds.publicationFailureBacklogMaximum, 0);
+  assert.equal(parsed.local.thresholds.indexNowFailureBacklogMaximum, 0);
+  assert.equal(parsed.local.controlReadyUrl, "http://127.0.0.1:8787/health/ready");
+  assert.equal(parsed.local.hermes.keychainService, "com.jihye.portal.monitor-hermes-hmac");
+  assert.match(parsed.local.databasePath, /^\/Users\/wisdom\//u);
+  assert.doesNotMatch(monitoring, /admin\.example\.test|telegram|api[_-]?key|password/i);
+});
+
+test("monitor launchd job is bounded and loads only its independent HMAC key", async () => {
+  const monitor = await render("launchd/com.jihye.portal.monitor.plist.template");
+  assert.match(monitor, /<key>StartInterval<\/key><integer>300<\/integer>/);
+  assert.match(monitor, /MONITOR_HERMES_HMAC_SECRET=com\.jihye\.portal\.monitor-hermes-hmac/);
+  assert.match(monitor, /ops\/scripts\/monitor\.mjs/);
+  assert.match(monitor, /--config<\/string><string>\/Users\/wisdom\/portal\/shared\/monitoring\.json/);
+  assert.match(monitor, /--apply/);
+  assert.doesNotMatch(monitor, /HERMES_HMAC_SECRET=com\.jihye\.portal\.hermes-hmac|telegram/i);
 });
 
 test("operations runbooks document recovery limits and reversible host guidance", async () => {
@@ -359,4 +375,19 @@ test("operations runbooks document recovery limits and reversible host guidance"
     assert.match(incidents, new RegExp(scenario, "i"));
   }
   assert.doesNotMatch(`${deployment}\n${recovery}\n${incidents}`, /port forwarding|open router port/i);
+});
+
+test("runbooks and release gate require local monitor and independent external uptime drills", async () => {
+  const deployment = await readFile(path.join(opsRoot, "runbooks/deployment.md"), "utf8");
+  const incidents = await readFile(path.join(opsRoot, "runbooks/incidents.md"), "utf8");
+  const releaseCandidate = await readFile(path.resolve(opsRoot, "../docs/operations/release-candidate.md"), "utf8");
+
+  assert.match(deployment, /monitor\.mjs[\s\S]*--validate-only[\s\S]*--dry-run/i);
+  assert.match(deployment, /com\.jihye\.portal\.monitor-hermes-hmac/);
+  assert.match(deployment, /--monitor-config/);
+  assert.match(deployment, /launchctl[\s\S]*com\.jihye\.portal\.monitor/i);
+  assert.match(incidents, /HERMES_HANDOFF_FAILED[\s\S]*metadata/i);
+  assert.match(releaseCandidate, /실제 Mac mini[\s\S]*monitor.*dry-run/i);
+  assert.match(releaseCandidate, /Mac.*LAN 밖[\s\S]*별도/i);
+  assert.match(incidents, /Telegram bot[\s\S]*직접 호출하지 않는다/i);
 });

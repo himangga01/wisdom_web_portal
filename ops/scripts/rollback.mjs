@@ -24,6 +24,7 @@ async function main() {
     nodeBinary: path.resolve(option(argv, "--node")),
     npmBinary: path.resolve(option(argv, "--npm")),
     runtimeConfig: path.resolve(option(argv, "--runtime-config")),
+    monitoringConfig: path.resolve(option(argv, "--monitor-config")),
     dataRoot: path.resolve(option(argv, "--data-root")),
     caddyBinary: path.resolve(option(argv, "--caddy")),
     cloudflaredBinary: path.resolve(option(argv, "--cloudflared")),

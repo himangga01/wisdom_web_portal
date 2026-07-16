@@ -63,6 +63,7 @@ const minimalRuntimeFiles = [
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
   "ops/scripts/keychain-exec.mjs",
+  "ops/scripts/monitor.mjs",
   "ops/scripts/preflight.mjs",
   "ops/scripts/recover-lock.mjs",
   "ops/scripts/restore.mjs",
@@ -211,6 +212,19 @@ test("release manifest binds the required built artifacts and detects tampering"
   await verifyReleaseManifest(fixture.destination, fixture.releaseId);
   await writeFile(path.join(fixture.destination, "apps/control/dist/notification-worker.js"), "tampered");
   await assert.rejects(verifyReleaseManifest(fixture.destination, fixture.releaseId), { code: "RELEASE_MANIFEST_INVALID" });
+});
+
+test("release manifest requires the launchd-referenced monitor runner", async () => {
+  const fixture = await releaseFixture();
+  for (const relative of minimalRuntimeFiles.filter((value) => value !== "ops/scripts/monitor.mjs")) {
+    const absolute = path.join(fixture.destination, relative);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, relative);
+  }
+  await assert.rejects(
+    createReleaseManifest(fixture.destination, fixture.releaseId),
+    { code: "RELEASE_MANIFEST_INVALID" },
+  );
 });
 
 test("release manifest seals JavaScript dependencies, native addons, workspace code, and exact inventory", async (t) => {

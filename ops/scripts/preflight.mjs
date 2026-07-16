@@ -10,6 +10,7 @@ import { runPreflight } from "../lib/preflight.mjs";
 import { createMacServiceAdapter } from "../lib/mac-services.mjs";
 import { verifyPublicCurrent } from "../lib/public-release.mjs";
 import { ensureRealDirectory } from "../lib/safe-paths.mjs";
+import { loadMonitoringConfigFile } from "../lib/monitoring.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -19,6 +20,7 @@ function option(name) {
 }
 
 async function main() {
+  const monitoringConfig = await loadMonitoringConfigFile(option("--monitor-config"));
   let Database;
   const adapter = {
     platform: process.platform,
@@ -70,7 +72,11 @@ async function main() {
     publicCurrentLink: option("--public-current"),
     allowBootstrapLocalStaging: process.argv.includes("--allow-bootstrap-local-staging"),
   }, adapter);
-  process.stdout.write(`${JSON.stringify({ ...report, host: os.hostname() })}\n`);
+  process.stdout.write(`${JSON.stringify({
+    ...report,
+    monitoringConfigValidated: monitoringConfig.local.hermes.keychainService === "com.jihye.portal.monitor-hermes-hmac",
+    host: os.hostname(),
+  })}\n`);
 }
 
 main().catch((error) => {

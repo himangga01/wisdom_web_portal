@@ -16,6 +16,7 @@
 | Google·Naver·AI 발견성 | canonical/hreflang/x-default, JSON-LD, sitemap/RSS/robots, IndexNow | DOM·feed·crawler·3-browser 검사 | 구현 완료 |
 | Mac mini 무도커 운영 | Caddy, Cloudflare Tunnel, launchd, Keychain, release scripts | 운영 구성·dry-run·release 테스트 | 구현 완료 |
 | 백업과 복구 | 시간별 age 암호화 SQLite online backup, 24 hourly/14 daily | 실제 SQLite fake-age backup/guarded restore drill | 구현 완료 |
+| 로컬 운영 감시 | 5분 launchd runner, backup/disk/services/ready/queue 집계, 독립 HMAC Hermes handoff | fixture failure 1회 handoff·healthy 0회, config/preflight 테스트 | 구현 완료 |
 
 ## 공개 전 필수 입력 게이트
 
@@ -35,6 +36,9 @@
 - [ ] Google Search Console·Naver Search Advisor 소유권 확인 값과 실제 제출
 - [ ] FileVault 재부팅 후 사람의 volume unlock 절차, UPS·유선 LAN·전원 복구 시험
 - [ ] 실제 외부 네트워크의 공개 live 감시와 운영 알림 목적지
+- [ ] 실제 Mac mini에서 monitoring config `--validate-only`와 monitor `--dry-run`을 실행하고, backup·disk·launchd·ready·queue가 healthy인지 기록
+- [ ] 실제 Mac mini에서 안전한 실패를 한 번 주입해 loopback Hermes handoff가 정확히 1회 도착하고 body에 metadata/error code 외 값이 없는지 확인한 뒤 원복
+- [ ] Mac/LAN 밖의 외부 uptime 계정과 알림 목적지는 로컬 monitor와 별도로 구성하고, Mac 전원 차단 드릴에서 외부 경보가 도착하는지 확인
 
 ## 화면 크기와 실제 브라우저 점검
 

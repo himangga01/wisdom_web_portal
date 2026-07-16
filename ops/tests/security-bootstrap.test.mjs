@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  defaultKeychainSecretDefinitions,
   importAgeIdentity,
   importCodexApiCredential,
   importIndexNowKey,
@@ -30,6 +31,21 @@ const rotatableDefinition = {
   service: "com.jihye.portal.admin-session",
   bytes: 32,
 };
+
+test("default secret set gives monitor handoff an independent rotatable HMAC", () => {
+  const monitor = defaultKeychainSecretDefinitions.find(
+    ({ environment }) => environment === "MONITOR_HERMES_HMAC_SECRET",
+  );
+  assert.deepEqual(monitor, {
+    environment: "MONITOR_HERMES_HMAC_SECRET",
+    service: "com.jihye.portal.monitor-hermes-hmac",
+    bytes: 32,
+  });
+  assert.notEqual(
+    monitor.service,
+    defaultKeychainSecretDefinitions.find(({ environment }) => environment === "HERMES_HMAC_SECRET").service,
+  );
+});
 
 test("Keychain bootstrap dry-run neither generates nor reveals secret values", async () => {
   let randomCalls = 0;
@@ -438,6 +454,7 @@ test("bootstrap staging fails closed when tunnel state is running, loaded, or un
 test("mac release adapter rejects an unproved bootstrap preflight report", () => {
   const valid = {
     ok: true,
+    monitoringConfigValidated: true,
     tunnelReady: false,
     tunnelDisabledVerified: true,
     publicSite: {
@@ -452,6 +469,7 @@ test("mac release adapter rejects an unproved bootstrap preflight report", () =>
     valid,
   );
   for (const invalid of [
+    { ...valid, monitoringConfigValidated: false },
     { ...valid, tunnelDisabledVerified: false },
     { ...valid, tunnelReady: true },
     { ...valid, ok: false },
@@ -529,7 +547,7 @@ test("preflight rejects case-folded and canonical filesystem aliases", async () 
   })), { code: "PREFLIGHT_PATH_INVALID" });
 });
 
-test("mac release preflight forwards the application current pointer", async () => {
+test("mac release preflight forwards application and monitoring config paths", async () => {
   const tempRoot = path.join(path.parse(process.cwd()).root, "fixture", "preflight-adapter");
   const currentLink = path.join(tempRoot, "portal", "current");
   assert.equal(typeof macReleaseAdapter.buildMacPreflightArguments, "function");
@@ -544,9 +562,14 @@ test("mac release preflight forwards the application current pointer", async () 
     ageBinary: process.execPath,
     publicReleaseRoot: path.join(tempRoot, "portal", "public-releases"),
     publicCurrentLink: path.join(tempRoot, "portal", "public-current"),
+    monitoringConfig: path.join(tempRoot, "portal", "shared", "monitoring.json"),
   });
 
   assert.equal(args[args.indexOf("--current") + 1], currentLink);
+  assert.equal(
+    args[args.indexOf("--monitor-config") + 1],
+    path.join(tempRoot, "portal", "shared", "monitoring.json"),
+  );
   assert.equal(args.includes("--allow-bootstrap-local-staging"), true);
 });
 

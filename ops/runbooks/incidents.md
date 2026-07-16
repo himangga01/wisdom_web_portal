@@ -26,6 +26,12 @@ Cloudflare DNS hostname, tunnel ingress, 인증서 상태를 확인한다. apex,
 
 실패 수, oldest age, 채널만 확인한다. 수신자나 본문을 로그에 남기지 않는다. 설정/Keychain/SMTP 또는 Hermes loopback 상태를 고친 뒤 제한적으로 requeue한다.
 
+## local monitor 또는 Hermes handoff
+
+`monitor.stdout.log`의 bounded JSON에서 실패한 check ID, 안전한 오류 코드, 숫자 값만 확인한다. `HERMES_HANDOFF_FAILED`이면 등록된 loopback Hermes 프로세스 상태와 `com.jihye.portal.monitor-hermes-hmac` Keychain 접근을 각각 확인한다. Hermes에는 metadata와 오류 코드만 전달하며 raw HTTP response, endpoint query, credential, 상담 데이터는 수집하거나 재전송하지 않는다. 복구 뒤 `monitor.mjs --validate-only`, 이어서 `--dry-run`으로 검사하고, 정상 상태에서 handoff가 발생하지 않는지 확인한 다음 launchd job을 한 번 kickstart한다. 이 경로는 Telegram bot이나 목적지를 직접 호출하지 않는다.
+
+Mac 자체·전원·LAN 전체 장애는 로컬 monitor가 전달할 수 없다. Mac/LAN 밖의 external public uptime 경보를 별도 확인하고, 두 경보가 모두 없을 때도 실제 장비 전원과 네트워크를 독립 점검한다.
+
 ## rollback
 
 보존된 release ID를 명시하고 manifest/migration compatibility/canary health를 다시 검증한다. 원자적 pointer 전환과 launchd 재시작 후 public/control active health를 확인한다. 실패하면 이전 pointer와 서비스를 복구한다.

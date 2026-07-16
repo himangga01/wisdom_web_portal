@@ -50,7 +50,10 @@ export function parseMacPreflightReport(raw) {
   } catch {
     preflightReportInvalid();
   }
-  if (!report || typeof report !== "object" || Array.isArray(report) || report.ok !== true) {
+  if (
+    !report || typeof report !== "object" || Array.isArray(report) || report.ok !== true ||
+    report.monitoringConfigValidated !== true
+  ) {
     preflightReportInvalid();
   }
   const publicSite = report.publicSite;
@@ -96,7 +99,9 @@ export function resolveMacReleaseScripts({ opsRoot = DEFAULT_OPS_ROOT, destinati
 
 export function buildMacPreflightArguments(options) {
   const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
-  if (!path.isAbsolute(opsRoot)) throw Object.assign(new Error("opsRoot must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
+  if (!path.isAbsolute(opsRoot) || !path.isAbsolute(options.monitoringConfig ?? "")) {
+    throw Object.assign(new Error("opsRoot and monitoring config must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
+  }
   return [
     path.join(opsRoot, "scripts", "preflight.mjs"),
     "--release-root", options.releaseRoot,
@@ -107,6 +112,7 @@ export function buildMacPreflightArguments(options) {
     "--age", options.ageBinary,
     "--public-release-root", options.publicReleaseRoot,
     "--public-current", options.publicCurrentLink,
+    "--monitor-config", options.monitoringConfig,
     "--allow-bootstrap-local-staging",
   ];
 }

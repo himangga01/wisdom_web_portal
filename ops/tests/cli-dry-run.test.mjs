@@ -36,6 +36,59 @@ test("backup CLI dry-run needs no SQLite, age binary, identity, or filesystem wr
   assert.equal(result.retention.daily, 14);
 });
 
+test("monitor CLI validates an absolute config without checks, secrets, or sends", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-cli-"));
+  const configPath = path.join(root, "monitoring.json");
+  await writeFile(configPath, JSON.stringify({
+    externalPublic: {
+      url: "https://www.example.test/health/live",
+      expectedStatus: 200,
+      expectedText: "ok",
+      source: "outside-mac-and-lan",
+    },
+    local: {
+      backupRoot: path.join(root, "backups"),
+      databasePath: path.join(root, "data", "portal.sqlite"),
+      diskPath: path.join(root, "data"),
+      controlReadyUrl: "http://127.0.0.1:8787/health/ready",
+      requiredRunningLaunchdLabels: ["com.jihye.portal.control"],
+      thresholds: {
+        backupFreshnessMinutes: 90,
+        diskFreePercentMinimum: 15,
+        notificationFailureBacklogMaximum: 0,
+        publicationFailureBacklogMaximum: 0,
+        indexNowFailureBacklogMaximum: 0,
+      },
+      timeouts: { overallMs: 15_000, checkMs: 3_000, hermesRequestMs: 2_000 },
+      hermes: {
+        endpoint: "http://127.0.0.1:8788/monitor",
+        keychainService: "com.jihye.portal.monitor-hermes-hmac",
+        maximumAttempts: 2,
+        retryDelayMs: 50,
+      },
+    },
+  }), { mode: 0o600 });
+
+  const { stdout, stderr } = await execute(process.execPath, [
+    path.join(opsRoot, "scripts", "monitor.mjs"),
+    "--config", configPath,
+    "--validate-only",
+  ], {
+    cwd: path.dirname(opsRoot),
+    env: { PATH: process.env.PATH },
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(stderr, "");
+  assert.deepEqual(JSON.parse(stdout), {
+    schemaVersion: 1,
+    valid: true,
+    externalPublicSeparate: true,
+    keychainService: "com.jihye.portal.monitor-hermes-hmac",
+  });
+  assert.doesNotMatch(stdout, /127\.0\.0\.1|portal\.sqlite|backups|secret/i);
+});
+
 test("restore CLI is dry-run unless both apply and exact confirmation are supplied", async () => {
   const backupRoot = path.join(drive, "fixture", "backups");
   const result = await dryRun("restore.mjs", [
