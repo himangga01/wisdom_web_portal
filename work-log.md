@@ -97,3 +97,38 @@
 - 마케팅 철회는 DB에 capability hash만 저장하고 raw token을 깨끗한 4언어 확인 URL로 교환한 뒤 POST에서 동의 이벤트·pending 취소·감사를 원자 처리한다.
 - 로컬 관리자 CLI는 stdin-only 비밀번호와 Windows ACL/POSIX 0600 owner-only 등록 파일을 사용하고 reset/교체 시 세션·pre-auth를 무효화한다.
 - 전체 검증: 루트 Node 5/5, shared 33/33, control 183/183, site 22/22, 64페이지 빌드, Playwright 60/60 통과.
+
+## 2026-07-16 · 프로덕션 상세 Task 5 글·번역·발행
+
+- loopback HMAC Hermes 초안 접수와 idempotency, immutable revision, Markdown 안전성 검증, 관리자 review/reject/translate/locale 승인 workflow를 구현했다.
+- Codex CLI 번역은 관리자의 명시 요청에만 직렬 실행되며 고정 prompt/model, structured output, two-pass 검수, timeout, read-only/no-shell, 상담 PII 차단을 적용했다.
+- 승인된 글과 활성 동의문 8개를 하나의 immutable public snapshot으로 생성하고, temporary build와 exact manifest 검증 후 `public-current`를 원자 전환하도록 했다.
+- build·검증·pointer 전환 실패 시 기존 공개본을 유지하고, 보존된 검증 release로 rollback·reconcile할 수 있게 했다. 글이 없는 정책 변경도 policy-only release로 처리한다.
+- 발행 성공 뒤에만 IndexNow outbox를 만들고 실패·재시도·소유권 키 부재를 다른 서비스에서 격리했다.
+
+## 2026-07-16 · 프로덕션 상세 Task 6 검색·AI 발견성
+
+- 한국어 canonical과 영어·간체·번체 경로에 self-canonical, 상호 `hreflang`, `x-default`, 고유 title/description을 생성했다.
+- 화면에 표시한 사실과 일치하는 `ProfessionalService`, `Person`, `Service`, `Article`, `BreadcrumbList` JSON-LD를 구현했다. 근거 없는 후기·평점·Attorney·성과 보장 표현은 생성하지 않는다.
+- sitemap, RSS, robots, Google/Naver 소유권 확인과 IndexNow 표면을 public release에 포함하고 exact MIME·경로·noindex 정책을 검증하도록 했다.
+- 출처·검수자·날짜와 완성된 답변 구성을 publication quality gate로 사용하고, 관리자·API·token 표면은 검색 색인에서 제외했다.
+
+## 2026-07-16 · 프로덕션 상세 Task 7 Mac mini 무도커 운영
+
+- Caddy·Cloudflare Tunnel·launchd·newsyslog 템플릿과 Keychain bootstrap/import, preflight, deploy, rollback, stale lock quarantine을 구현했다.
+- application release와 public content release를 별도 pointer/manifest로 관리한다. application manifest v2는 workspace·Ops runtime·production dependency·native addon의 exact inventory와 안전한 내부 symlink만 허용한다.
+- SQLite online backup을 age로 암호화한 뒤 재복호화·hash·integrity·schema를 검사하고 검증본 24 hourly/14 daily를 보존하도록 했다. restore는 explicit target·destroy confirmation·기존 DB quarantine·readiness rollback을 요구한다.
+- local monitor는 5분마다 backup freshness·disk·launchd·loopback ready·안전한 queue 집계를 확인한다. 독립 HMAC의 loopback Hermes handoff, child DB hard timeout, 반복 incident cooldown과 경로/symlink 방어를 추가했다.
+- 실제 운영 절차는 `ops/runbooks/deployment.md`, `ops/runbooks/recovery.md`, `ops/runbooks/incidents.md`에 분리했다.
+
+## 2026-07-16 · 프로덕션 상세 Task 8 릴리스 후보와 인수인계
+
+- `docs/operations/release-candidate.md`에 기능별 구현 추적과 실제 공개 전 필수 외부 입력, 실기기·브라우저 점검, 운영 전환 순서를 정리했다.
+- 보안·개인정보, UX·접근성, 아키텍처·복구, SEO·AI·i18n, 콘텐츠·법적 표현, 운영·릴리스 관점의 두 차례 병렬 비판 검토와 whole-branch review에서 재현 가능한 지적을 구현에 반영했다.
+- `README.md`에 최종 시스템 구성과 콘텐츠·발행·Mac 운영 개요를 추가하고 설치 절차를 lockfile 기반 `npm ci`로 통일했다.
+- `docs/00-document-map.md`를 추가해 개발·동의·검색·배포·복구·장애 문서와 코드 영역을 한 곳에서 찾게 했다.
+- 구현 코드가 준비된 상태와 실제 외부 공개 상태를 분리했다. 도메인·Cloudflare credential·Kakao URL·SMTP·Hermes/Telegram·owner MFA·승인 정책 문구·보유 범위·전문 직함·검색 소유권·실제 Mac 훈련·외부 uptime은 운영자가 완료해야 하는 launch gate다.
+- broad whole-branch review에서 공개 동의 authority를 매 요청 전체 해시하던 비용과 보안 스캐너가 철회 GET을 먼저 소비할 수 있는 문제를 재현했다. `1f249ac`에서 immutable verified cache·cheap identity key·rate limit과 scanner-safe 반복 GET·one-shot POST로 수정했고, 최종 재리뷰는 Critical 0·Important 0이다.
+- clean install `npm.cmd ci` 뒤 `npm.cmd run verify`를 496.9초 동안 실행했다. root 9/9, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows fixture 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108 통과다.
+- 실제 로컬 브라우저에서 320·390·768·1440, 4개 언어, 모바일 메뉴, 서비스·상담·개인정보·철회, 18개·500ms C1, canonical/hreflang과 console error 0을 확인했다. `git diff -- prototypes`도 비어 있다.
+- 실제 공개 배포 완료를 뜻하지 않는다. Mac mini의 외부 입력·실기기·복구·경보 게이트는 `docs/operations/release-candidate.md`에서 계속 미완료로 관리한다.

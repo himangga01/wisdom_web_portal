@@ -2,6 +2,29 @@
 
 이 문서는 코드 완성과 실제 공개 개시를 구분한다. 저장소의 기능·테스트가 통과해도 아래 외부 입력과 실제 Mac mini 점검이 끝나기 전에는 공개 운영으로 전환하지 않는다.
 
+## 상태 판정 원칙
+
+- 아래 추적표의 **구현 완료**는 저장소에 기능·자동 검증·운영 절차가 존재한다는 뜻이다. 실제 도메인에서 서비스가 실행 중이라는 뜻이 아니다.
+- 실제 공개 준비 완료는 이 문서의 외부 입력 게이트, 대상 Mac의 preflight·backup/restore·failure injection, 실제 브라우저 점검과 외부 uptime 경보가 모두 증거와 함께 확인된 상태다.
+- Windows에서 통과한 Ops 테스트는 스크립트 계약의 증거지만 macOS Keychain, launchctl, FileVault unlock, 실제 `age`·Caddy·cloudflared 실행을 대신하지 않는다. macOS 전용 항목은 대상 장비에서 다시 수행한다.
+- 최종 clean install 검증 수치와 검증 기준 code commit은 아래 실제 실행 증거를 사용한다. 과거 중간 수치나 예상값으로 대체하지 않는다.
+- 검색·AI 발견성 구현은 크롤러가 이해할 수 있는 기술 기반을 제공할 뿐, Google·Naver 순위나 ChatGPT·Gemini 인용을 보장하지 않는다.
+
+## 2026-07-16 최종 검증 증거
+
+- 검증 기준 code commit: `1f249ac` (`fix: harden consent authority and withdrawal links`). 이후 이 문서·README·작업 로그만 갱신하며 런타임 코드는 변경하지 않았다.
+- clean install: `npm.cmd ci` 성공, lockfile 기준 447개 패키지 설치.
+- 전체 관문: `npm.cmd run verify` exit 0, 총 496.9초.
+- typecheck: shared·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
+- 테스트: root orchestration 9/9, shared 70/70, control 415/415, site 98/98.
+- Ops: 203 통과, 0 실패, Windows에서 symlink/POSIX 권한 fixture 6개만 platform skip.
+- 정적 빌드: fixture publication snapshot으로 4개 언어 68페이지 생성.
+- 브라우저 E2E: Chromium·Firefox·WebKit 합계 108/108 통과. 접근성, no-JavaScript, reduced motion, 320·390·768·1440 overflow, 상담·동의, SEO와 게시 글을 포함한다.
+- 수동 로컬 브라우저: 320·390·768·1440 홈, 모바일 메뉴, 서비스·상담·개인정보·철회 화면, `ko`·`en`·`zh-Hans`·`zh-Hant` 전환, 18개·500ms C1, canonical·5개 hreflang, console error 0을 확인했다. 실제 Samsung Internet·Safari·Kakao/Naver 앱은 아래 공개 전 게이트로 유지한다.
+- 동결 prototype: `git diff -- prototypes` 출력 없음.
+- 전체 브랜치와 최종 수정 재리뷰: Critical 0, Important 0. 대형 release의 주기 검증을 별도 worker로 옮기는 최적화와 shutdown 시 verifier interval 명시 정리만 Minor 후속 권고다.
+- `npm audit --omit=dev`: Critical 0, High 0, Moderate 0, Low 2. 두 항목은 Windows에서 Astro/esbuild 개발 서버를 실행할 때의 low advisory 한 계보이며, 운영 구조는 Mac의 빌드 결과를 Caddy가 정적으로 제공하고 개발 서버를 외부에 공개하지 않는다. Astro 7 major 전환은 호환성 검증과 함께 별도 유지보수 항목으로 관리한다.
+
 ## 요구사항 추적표
 
 | 영역 | 구현 근거 | 검증 관문 | 상태 |

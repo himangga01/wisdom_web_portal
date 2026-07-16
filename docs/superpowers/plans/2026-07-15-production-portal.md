@@ -29,11 +29,11 @@
 
 **Produces:** Typed locale/category/status/consent/notification/article contracts; consultation Zod schema; centralized design tokens; root `build`, `test`, `test:e2e`, and `verify` commands.
 
-- [ ] Add failing contract tests for accepted locales, category/status enums, required privacy consent, conditional email, message limits, and response/error shapes.
-- [ ] Scaffold npm workspaces on Node 24 and implement only enough shared code to pass those tests.
-- [ ] Add environment parsing that fails closed for missing production secrets while supporting safe test defaults.
-- [ ] Document Windows `npm.cmd` and macOS `npm` workflows, then run shared tests and root type checking.
-- [ ] Commit the independently working foundation.
+- [x] Add failing contract tests for accepted locales, category/status enums, required privacy consent, conditional email, message limits, and response/error shapes.
+- [x] Scaffold npm workspaces on Node 24 and implement only enough shared code to pass those tests.
+- [x] Add environment parsing that fails closed for missing production secrets while supporting safe test defaults.
+- [x] Document Windows `npm.cmd` and macOS `npm` workflows, then run shared tests and root type checking.
+- [x] Commit the independently working foundation.
 
 ### Task 2: Astro public site, content model, i18n, and approved motion
 
@@ -41,12 +41,12 @@
 
 **Produces:** Four-locale public routes, reusable layout/components, real navigation, service catalog, contact/location/privacy pages, and production motion behavior.
 
-- [ ] Write failing unit and browser tests for route generation, locale links, no missing core translations, semantic navigation, 18/500ms C1 motion, reduced motion, no-JavaScript visibility, and no horizontal overflow.
-- [ ] Build the Astro/Tailwind site with Korean canonical routes and `/en`, `/zh-hans`, `/zh-hant` alternates.
-- [ ] Seed the approved office identity, representative profile, six service groups and full service list, Naver Blog and Naver Map links; keep Kakao configurable.
-- [ ] Move the prototype visual language into small components and a single token source; do not import the low-resolution brochure portrait as a production asset.
-- [ ] Add responsive images, accessible forms/navigation, localized validation copy, and real 404 behavior.
-- [ ] Run unit, build, Playwright Chromium/WebKit/Firefox, and accessibility checks; commit.
+- [x] Write failing unit and browser tests for route generation, locale links, no missing core translations, semantic navigation, 18/500ms C1 motion, reduced motion, no-JavaScript visibility, and no horizontal overflow.
+- [x] Build the Astro/Tailwind site with Korean canonical routes and `/en`, `/zh-hans`, `/zh-hant` alternates.
+- [x] Seed the approved office identity, representative profile, six service groups and full service list, Naver Blog and Naver Map links; keep Kakao configurable.
+- [x] Move the prototype visual language into small components and a single token source; do not import the low-resolution brochure portrait as a production asset.
+- [x] Add responsive images, accessible forms/navigation, localized validation copy, and real 404 behavior.
+- [x] Run unit, build, Playwright Chromium/WebKit/Firefox, and accessibility checks; commit.
 
 ### Task 3: Durable consultation intake, consent ledger, encryption, and retention
 
@@ -54,12 +54,12 @@
 
 **Produces:** SQLite migrations/repositories, encrypted PII, public consent endpoint, idempotent consultation endpoint, abuse controls, purge jobs, and health endpoints.
 
-- [ ] Write failing repository/API tests for transactional commit, idempotent replay, key conflict, stale consent version, validation, rate limiting, storage failure, and raw-PII-free logs.
-- [ ] Add WAL SQLite tables for consultations, consent documents/events, idempotency, notification outbox/settings, admins/sessions, articles/revisions/jobs/releases, and redacted audit events.
-- [ ] Encrypt PII with AES-256-GCM and Keychain-supplied versioned keys; add HMAC exact-search indexes without free-text indexing messages.
-- [ ] Implement `GET /api/v1/consent-documents`, `POST /api/v1/consultations`, `GET /health/live`, and `GET /health/ready` with documented error codes.
-- [ ] Apply honeypot, minimum-fill-time, 32KB limit, 10-minute/day rate limits, and 12/24-month configured retention with safe purge behavior.
-- [ ] Verify migrations, API integration tests, restart recovery, and commit.
+- [x] Write failing repository/API tests for transactional commit, idempotent replay, key conflict, stale consent version, validation, rate limiting, storage failure, and raw-PII-free logs.
+- [x] Add WAL SQLite tables for consultations, consent documents/events, idempotency, notification outbox/settings, admins/sessions, articles/revisions/jobs/releases, and redacted audit events.
+- [x] Encrypt PII with AES-256-GCM and Keychain-supplied versioned keys; add HMAC exact-search indexes without free-text indexing messages.
+- [x] Implement `GET /api/v1/consent-documents`, `POST /api/v1/consultations`, `GET /health/live`, and `GET /health/ready` with documented error codes.
+- [x] Apply honeypot, minimum-fill-time, 32KB limit, 10-minute/day rate limits, and 12/24-month configured retention with safe purge behavior.
+- [x] Verify migrations, API integration tests, restart recovery, and commit.
 
 ### Task 4: Administrator authentication, consultation workflow, notifications, and withdrawal
 
@@ -67,12 +67,12 @@
 
 **Produces:** Separate-host admin login/dashboard, TOTP sessions, consultation workflow, selectable SMTP/Hermes channels, retries, and accountless marketing withdrawal.
 
-- [ ] Write failing tests for Argon2id login, TOTP and recovery codes, CSRF, session expiry, login throttling, status transitions, outbox retry schedule, token withdrawal, and requeue.
-- [ ] Build server-rendered Hono admin pages for dashboard, list/detail/status, notification settings/test, consent versions, failures, and health.
-- [ ] Seed the first owner through a local CLI; keep password reset and secret installation CLI-only.
-- [ ] Implement SMTP `receipt-only` and gated `full-inquiry` modes, plus a loopback HMAC Hermes adapter whose Telegram payload is metadata-only.
-- [ ] Implement hashed 256-bit withdrawal tokens with GET confirmation and POST mutation; cancel pending marketing work immediately.
-- [ ] Apply secure host-only cookies, CSRF, CSP, HSTS, noindex headers, audit events, and PII-safe rendering/logging; verify and commit.
+- [x] Write failing tests for Argon2id login, TOTP and recovery codes, CSRF, session expiry, login throttling, status transitions, outbox retry schedule, token withdrawal, and requeue.
+- [x] Build server-rendered Hono admin pages for dashboard, list/detail/status, notification settings/test, consent versions, failures, and health.
+- [x] Seed the first owner through a local CLI; keep password reset and secret installation CLI-only.
+- [x] Implement SMTP `receipt-only` and gated `full-inquiry` modes, plus a loopback HMAC Hermes adapter whose Telegram payload is metadata-only.
+- [x] Implement hashed 256-bit withdrawal tokens with GET confirmation and POST mutation; cancel pending marketing work immediately.
+- [x] Apply secure host-only cookies, CSRF, CSP, HSTS, noindex headers, audit events, and PII-safe rendering/logging; verify and commit.
 
 ### Task 5: Hermes article intake, Codex translation, review, publish, and rollback
 
@@ -80,12 +80,12 @@
 
 **Produces:** HMAC internal draft intake, admin review, serialized Codex jobs, deterministic static publication, IndexNow hook, and atomic rollback.
 
-- [ ] Write failing tests for HMAC/idempotency, Markdown sanitization, article state transitions, translation schema, no-PII guard, serialized jobs, failed build preservation, and rollback.
-- [ ] Implement `POST /internal/v1/article-drafts` on loopback only and store immutable revisions with source links.
-- [ ] Add administrator draft review/reject, explicit translate, per-locale approve, publish, and rollback actions.
-- [ ] Run Codex CLI with fixed prompts and structured output in an isolated public-content directory; record prompt/model/source versions and two-pass review output.
-- [ ] Export approved revisions, build in a temporary release directory, verify it, atomically switch `current`, retain three releases, and notify IndexNow only after success.
-- [ ] Verify failure paths and commit.
+- [x] Write failing tests for HMAC/idempotency, Markdown sanitization, article state transitions, translation schema, no-PII guard, serialized jobs, failed build preservation, and rollback.
+- [x] Implement `POST /internal/v1/article-drafts` on loopback only and store immutable revisions with source links.
+- [x] Add administrator draft review/reject, explicit translate, per-locale approve, publish, and rollback actions.
+- [x] Run Codex CLI with fixed prompts and structured output in an isolated public-content directory; record prompt/model/source versions and two-pass review output.
+- [x] Export approved revisions, build in a temporary release directory, verify it, atomically switch `current`, retain three releases, and notify IndexNow only after success.
+- [x] Verify failure paths and commit.
 
 ### Task 6: Search, AI discovery, structured data, and content quality gates
 
@@ -93,11 +93,11 @@
 
 **Produces:** Localized metadata/canonicals/hreflang, JSON-LD, sitemap/RSS/robots policies, crawler tests, and content quality rules.
 
-- [ ] Write failing snapshot/DOM tests for unique titles, descriptions, self-canonical, reciprocal hreflang, `x-default`, visible-content-matching JSON-LD, sitemap/RSS, robots, and noindex surfaces.
-- [ ] Generate `ProfessionalService`, `Person`, `Service`, `Article`, and `BreadcrumbList` data without Attorney, fake review, rating, or unsupported claims.
-- [ ] Allow Googlebot, Yeti, OAI-SearchBot and Google-Extended; disallow GPTBot and all admin/API/token surfaces; never emit `nosourceinfo`.
-- [ ] Require reviewer/date/sources and complete answer sections before a service detail or article can publish; do not create thin placeholder URLs.
-- [ ] Add DNS-verification configuration and an operator checklist for Search Console and Search Advisor; verify and commit.
+- [x] Write failing snapshot/DOM tests for unique titles, descriptions, self-canonical, reciprocal hreflang, `x-default`, visible-content-matching JSON-LD, sitemap/RSS, robots, and noindex surfaces.
+- [x] Generate `ProfessionalService`, `Person`, `Service`, `Article`, and `BreadcrumbList` data without Attorney, fake review, rating, or unsupported claims.
+- [x] Allow Googlebot, Yeti, OAI-SearchBot and Google-Extended; disallow GPTBot and all admin/API/token surfaces; never emit `nosourceinfo`.
+- [x] Require reviewer/date/sources and complete answer sections before a service detail or article can publish; do not create thin placeholder URLs.
+- [x] Add DNS-verification configuration and an operator checklist for Search Console and Search Advisor; verify and commit.
 
 ### Task 7: macOS no-Docker deployment, backup, monitoring, and recovery
 
@@ -105,12 +105,12 @@
 
 **Produces:** Caddy/Cloudflare host routing, launchd services, Keychain bootstrap, versioned releases, encrypted SQLite backup/restore, and operations runbooks.
 
-- [ ] Write failing configuration tests for loopback binding, separate public/admin hosts, security headers, static cache policy, API no-store, and health routing.
-- [ ] Add parameterized Caddy, cloudflared, launchd, release, rollback, backup, restore, log-rotation, and secret-bootstrap templates/scripts without embedding credentials.
-- [ ] Route apex to canonical `www`, public `/api/v1` to control, admin host to control, and both tunnel hostnames to loopback Caddy; expose no router ports.
-- [ ] Implement hourly encrypted online backups with 24 hourly/14 daily retention and a destructive-restore guard requiring an explicit target.
-- [ ] Document FileVault unlock limits, UPS/wired/sleep/autorestart settings, RPO/RTO, independent uptime alerting, and incident steps.
-- [ ] Validate scripts in dry-run/test directories, run a backup/restore drill, and commit.
+- [x] Write failing configuration tests for loopback binding, separate public/admin hosts, security headers, static cache policy, API no-store, and health routing.
+- [x] Add parameterized Caddy, cloudflared, launchd, release, rollback, backup, restore, log-rotation, and secret-bootstrap templates/scripts without embedding credentials.
+- [x] Route apex to canonical `www`, public `/api/v1` to control, admin host to control, and both tunnel hostnames to loopback Caddy; expose no router ports.
+- [x] Implement hourly encrypted online backups with 24 hourly/14 daily retention and a destructive-restore guard requiring an explicit target.
+- [x] Document FileVault unlock limits, UPS/wired/sleep/autorestart settings, RPO/RTO, independent uptime alerting, and incident steps.
+- [x] Validate scripts in dry-run/test directories, run a backup/restore drill, and commit.
 
 ### Task 8: Release-candidate hardening and two-round critical review
 
@@ -118,9 +118,9 @@
 
 **Produces:** Verified release candidate, requirements matrix, launch-input checklist, two independent review rounds, and final branch review.
 
-- [ ] Run complete unit, integration, E2E, accessibility, SEO, security, build, backup/restore, and prototype-regression suites from a clean install.
-- [ ] Perform manual 320/390/768/1440 checks and document Samsung Internet, Safari, Kakao/Naver in-app smoke steps.
-- [ ] Round 1: dispatch three parallel reviewers for security/privacy, UX/accessibility, and architecture/recovery; reproduce and fix valid findings.
-- [ ] Round 2: dispatch three parallel reviewers for SEO/AI/i18n, content/legal claims, and operations/release; reproduce and fix valid findings.
-- [ ] Verify all launch inputs are explicit configuration gates: domain, Cloudflare credentials, Kakao URL, original logo/portrait, SMTP, Hermes HMAC endpoint, admin enrollment, and approved privacy/marketing text.
-- [ ] Run a broad whole-branch code review, fix all Critical/Important findings, re-run fresh verification, update logs, and commit the release candidate.
+- [x] Run complete unit, integration, E2E, accessibility, SEO, security, build, backup/restore, and prototype-regression suites from a clean install.
+- [x] Perform manual 320/390/768/1440 checks and document Samsung Internet, Safari, Kakao/Naver in-app smoke steps.
+- [x] Round 1: dispatch three parallel reviewers for security/privacy, UX/accessibility, and architecture/recovery; reproduce and fix valid findings.
+- [x] Round 2: dispatch three parallel reviewers for SEO/AI/i18n, content/legal claims, and operations/release; reproduce and fix valid findings.
+- [x] Verify all launch inputs are explicit configuration gates: domain, Cloudflare credentials, Kakao URL, original logo/portrait, SMTP, Hermes HMAC endpoint, admin enrollment, and approved privacy/marketing text.
+- [x] Run a broad whole-branch code review, fix all Critical/Important findings, re-run fresh verification, update logs, and commit the release candidate.

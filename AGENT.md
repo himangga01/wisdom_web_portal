@@ -56,3 +56,21 @@
 - SMTP 목적지는 공개 FQDN·465/TLS로 제한하고 발송 시점 DNS 전체 검증, 공개 IP pinning, 원 FQDN TLS SNI로 SSRF와 DNS rebinding을 차단했다.
 - 마케팅 고객 메일마다 hash-only 철회 capability를 만들고 4개 언어의 깨끗한 확인 화면에서 계정 없이 동의를 철회하도록 구현했다.
 - owner bootstrap·비밀번호 재설정·MFA 교체는 로컬 CLI로만 제공하며 비밀번호는 stdin, 등록 정보는 owner-only 파일로만 전달한다.
+
+### 프로덕션 상세 Task 5~8
+
+- Task 5에서 Hermes의 loopback HMAC draft intake, immutable article revision, 관리자 검토·반려·번역 요청·언어별 승인·발행·rollback 흐름을 구현했다. Hermes와 Codex는 초안·번역 후보만 만들 수 있고 자동 발행 권한은 없다.
+- Codex 번역 worker는 고정 model·prompt 계약, 구조화 출력, 직렬 작업, timeout, read-only/no-shell 실행, 상담 PII guard를 적용했다. 한국어 원문과 검수 대상은 stdin으로만 넘기며 provenance와 2차 검수 결과를 revision에 남긴다.
+- 발행은 승인된 글과 활성 개인정보·마케팅 문서 8개를 같은 immutable snapshot으로 봉인한다. 임시 release 빌드·정확한 file inventory/hash 검증이 성공한 경우에만 `public-current`를 원자 전환하며 실패 시 기존 공개본을 유지한다.
+- 정책만 변경할 때도 글 없이 policy-only release를 만들 수 있게 했다. 새 consent bundle의 DB 활성화만으로 공개 페이지나 상담 authority가 바뀌지 않고, 검증된 public release 발행이 완료되어야 함께 전환된다.
+- Task 6에서 4개 언어 self-canonical·reciprocal `hreflang`·`x-default`, 고유 title/description, `ProfessionalService`·`Person`·`Service`·`Article`·`BreadcrumbList` JSON-LD, sitemap·RSS·robots와 Google/Naver verification 표면을 추가했다.
+- 관리자·API·token 표면은 noindex/disallow하고, 공개 구조화 데이터는 화면에 보이는 사실만 사용한다. 근거 없는 Attorney·평점·후기·성과 보장은 배제했으며 출처·검수자·날짜·답변 완성도 gate를 통과한 콘텐츠만 색인 후보가 된다.
+- 발행 성공 뒤에만 IndexNow outbox를 생성하고, Keychain 소유권 키가 없거나 잘못되면 검색 제출만 중지한다. 상담·번역·기존 공개 페이지는 계속 동작한다.
+- Task 7에서 Mac mini M4의 Docker 없는 운영을 위해 Caddy·cloudflared·launchd·newsyslog 템플릿, Keychain bootstrap/import, application/public 이중 release, deploy·rollback·preflight와 stale lock quarantine을 구현했다.
+- application release manifest v2는 control/site/shared, Ops runtime, production `node_modules`와 native addon의 exact inventory·size·hash·내부 symlink를 봉인한다. public release는 별도의 Wisdom manifest와 pointer를 사용하며 bootstrap manifest를 정상 발행의 fallback으로 쓰지 않는다.
+- SQLite 백업은 online backup과 checkpoint 후 age로 암호화하고 재복호화·hash·integrity·schema 검증을 통과한 결과만 24 hourly/14 daily로 유지한다. restore는 명시 target·동일 경로 재확인·서비스 정지·기존 DB quarantine·readiness rollback을 요구한다.
+- 5분 주기 로컬 monitor는 verified backup freshness, disk, launchd, loopback ready, 알림·발행·IndexNow queue 집계만 확인한다. 별도 Keychain HMAC으로 loopback Hermes에 안전한 코드와 숫자만 전달하며 child DB timeout, incident fingerprint cooldown, symlink/path swap 방어를 적용했다.
+- Task 8에서 요구사항 추적표와 외부 launch-input checklist를 정리하고 보안·개인정보, UX·접근성, 아키텍처·복구, SEO·AI·i18n, 콘텐츠·법적 표현, 운영·릴리스 관점의 병렬 비판 검토 결과를 재현·수정하는 release-candidate hardening을 수행했다.
+- 저장소의 구현 완료는 실제 공개 배포 완료를 뜻하지 않는다. 도메인·Cloudflare·Kakao·SMTP·Hermes/Telegram·owner 등록·승인된 정책 문구와 보유 범위·전문 직함·검색 소유권·실제 Mac 훈련·외부 uptime 감시는 `docs/operations/release-candidate.md`의 외부 게이트로 남긴다.
+- 최종 whole-branch review의 Important 2건을 `1f249ac`에서 수정했다. 공개 동의 조회는 verified release cache와 저비용 identity key·rate limit로 매 요청 전체 해시를 제거했고, 마케팅 철회는 scanner-safe 반복 GET과 원자적 one-shot POST로 분리했다. 독립 재리뷰는 Critical 0·Important 0이다.
+- clean install 이후 최종 검증은 root 9/9, shared 70/70, control 415/415, site 98/98, Ops 203 pass·6 Windows skip·0 fail, 68페이지 빌드, Playwright 108/108 통과다. 320·390·768·1440과 4개 언어 실제 로컬 브라우저 점검, prototype 무변경도 확인했다.
