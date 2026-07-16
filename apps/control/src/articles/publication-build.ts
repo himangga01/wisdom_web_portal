@@ -11,6 +11,7 @@ import {
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import {
+  parsePublicOrigin,
   parseSearchVerificationConfig,
   publishedManifestSchema,
   type Locale,
@@ -23,13 +24,6 @@ const MAX_RELEASE_MANIFEST_BYTES = 2 * 1_048_576;
 const MAX_RELEASE_FILE_BYTES = 16 * 1_048_576;
 const MAX_RELEASE_BYTES = 256 * 1_048_576;
 const LAUNCH_LOCALES = new Set<Locale>(["ko", "en", "zh-Hans", "zh-Hant"]);
-const NON_PRODUCTION_PUBLIC_HOSTS = new Set([
-  "example.com",
-  "www.example.com",
-  "localhost",
-  "127.0.0.1",
-  "::1",
-]);
 
 export interface PublicationProcessRequest {
   command: string;
@@ -75,29 +69,8 @@ function requireAbsolutePath(value: string, code: string): void {
 }
 
 function parsePublicationPublicOrigin(value: string): string {
-  if (!value || value.trim() !== value || value.endsWith("/")) {
-    throw new Error("PUBLICATION_ORIGIN_INVALID");
-  }
   try {
-    const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    const nonProduction = NON_PRODUCTION_PUBLIC_HOSTS.has(hostname)
-      || hostname.endsWith(".test")
-      || hostname.endsWith(".example")
-      || hostname.endsWith(".invalid")
-      || /(?:^|\.)(?:staging|stage|preview|dev|development)(?:\.|$)/.test(hostname);
-    if (
-      url.protocol !== "https:"
-      || url.username
-      || url.password
-      || url.pathname !== "/"
-      || url.search
-      || url.hash
-      || url.port
-      || url.origin !== value
-      || nonProduction
-    ) throw new Error("PUBLICATION_ORIGIN_INVALID");
-    return url.origin;
+    return parsePublicOrigin(value, { production: true });
   } catch {
     throw new Error("PUBLICATION_ORIGIN_INVALID");
   }
