@@ -41,6 +41,8 @@ function fixture(options: {
   faultInjector?: (point: IntakeFaultPoint) => void;
   peerAddress?: string;
   useDefaultLogger?: boolean;
+  indexNowKey?: string;
+  indexNowKeyProvider?: () => string | undefined;
 } = {}): Fixture {
   const database = createTestDatabase();
   cleanup.push(() => database.close());
@@ -59,6 +61,8 @@ function fixture(options: {
     peerAddress: () => options.peerAddress ?? "203.0.113.10",
     ...(options.useDefaultLogger ? {} : { logger: { write: (event: RedactedLogEvent) => logs.push(event) } }),
     ...(options.faultInjector ? { faultInjector: options.faultInjector } : {}),
+    ...(options.indexNowKey ? { indexNowKey: options.indexNowKey } : {}),
+    ...(options.indexNowKeyProvider ? { indexNowKeyProvider: options.indexNowKeyProvider } : {}),
   });
   return {
     app,
@@ -162,6 +166,32 @@ describe("public control API", () => {
     expect((await notReady.app.request("http://localhost/health/live")).status).toBe(200);
     expect((await notReady.app.request("http://localhost/health/ready")).status).toBe(503);
     expect((await notReady.app.request("http://localhost/api/v1/consent-documents?locale=en")).status).toBe(503);
+  });
+
+  it("serves the configured public IndexNow ownership key as exact noindex text", async () => {
+    const key = "abcdef12-ABCDEF34";
+    const configured = fixture({ indexNowKey: key });
+    const response = await configured.app.request("http://localhost/indexnow-key.txt");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(key);
+    expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow, noarchive");
+
+    const absent = fixture();
+    expect((await absent.app.request("http://localhost/indexnow-key.txt")).status).toBe(404);
+  });
+
+  it("exposes a recovered IndexNow key without restarting consultation intake", async () => {
+    let key: string | undefined;
+    const current = fixture({ indexNowKeyProvider: () => key });
+
+    expect((await current.app.request("http://localhost/indexnow-key.txt")).status).toBe(404);
+    key = "abcdef12-RECOVERED34";
+    const recovered = await current.app.request("http://localhost/indexnow-key.txt");
+    expect(recovered.status).toBe(200);
+    expect(await recovered.text()).toBe(key);
+    expect((await current.app.request("http://localhost/health/live")).status).toBe(200);
   });
 
   it("atomically stores encrypted intake and exactly replays an idempotent receipt", async () => {

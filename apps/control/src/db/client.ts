@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 
@@ -8,6 +9,7 @@ import {
   drizzleSchema,
   REQUIRED_INDEXES,
   REQUIRED_TABLES,
+  REQUIRED_TRIGGERS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -368,10 +370,575 @@ BEGIN
 END;
 `;
 
+const THIRD_MIGRATION = `
+DROP INDEX article_revisions_article_locale_idx;
+ALTER TABLE article_revisions RENAME TO article_revisions_v1;
+
+CREATE TABLE article_revisions (
+  id TEXT PRIMARY KEY,
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  locale TEXT NOT NULL CHECK (locale IN ('ko','en','zh-Hans','zh-Hant')),
+  revision_no INTEGER NOT NULL CHECK (revision_no > 0),
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  summary TEXT NOT NULL CHECK (length(summary) <= 500),
+  body_markdown TEXT NOT NULL,
+  content_sha256 BLOB NOT NULL CHECK (length(content_sha256) = 32),
+  source_revision_id TEXT,
+  parent_revision_id TEXT,
+  sources_json TEXT NOT NULL,
+  prompt_sha256 BLOB CHECK (prompt_sha256 IS NULL OR length(prompt_sha256) = 32),
+  schema_sha256 BLOB CHECK (schema_sha256 IS NULL OR length(schema_sha256) = 32),
+  source_sha256 BLOB NOT NULL CHECK (length(source_sha256) = 32),
+  model_id TEXT,
+  translation_metadata_json TEXT,
+  initial_review_state TEXT NOT NULL CHECK (initial_review_state IN ('draft','in_review','approved','rejected')),
+  created_at_ms INTEGER NOT NULL,
+  created_by_type TEXT NOT NULL CHECK (created_by_type IN ('admin','hermes','codex','system')),
+  created_by_id TEXT NOT NULL,
+  UNIQUE (article_id, locale, revision_no),
+  UNIQUE (id, article_id),
+  UNIQUE (id, article_id, locale),
+  FOREIGN KEY (source_revision_id, article_id)
+    REFERENCES article_revisions(id, article_id) ON DELETE RESTRICT,
+  FOREIGN KEY (parent_revision_id, article_id, locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT,
+  CHECK (source_revision_id IS NULL OR source_revision_id <> id),
+  CHECK (parent_revision_id IS NULL OR parent_revision_id <> id),
+  CHECK (
+    created_by_type <> 'codex'
+    OR (
+      source_revision_id IS NOT NULL
+      AND prompt_sha256 IS NOT NULL
+      AND schema_sha256 IS NOT NULL
+      AND model_id IS NOT NULL
+      AND length(trim(model_id)) > 0
+    )
+  )
+);
+CREATE INDEX article_revisions_article_locale_idx
+  ON article_revisions(article_id, locale, revision_no DESC);
+CREATE INDEX article_revisions_source_idx ON article_revisions(source_revision_id);
+
+INSERT INTO article_revisions (
+  id, article_id, locale, revision_no, title, summary, body_markdown,
+  content_sha256, source_revision_id, parent_revision_id, sources_json,
+  prompt_sha256, schema_sha256, source_sha256, model_id,
+  translation_metadata_json, initial_review_state,
+  created_at_ms, created_by_type, created_by_id
+)
+SELECT
+  r.id, r.article_id, r.locale, r.revision_no,
+  CASE
+    WHEN length(a.slug) BETWEEN 1 AND 200 AND a.slug NOT GLOB '*[^ -~]*'
+      THEN a.slug
+    ELSE 'Legacy article ' || lower(substr(hex(r.article_id), 1, 120))
+      || '-' || printf('%016x', a.rowid)
+  END,
+  '', r.body_markdown,
+  r.content_sha256, NULL, NULL, r.sources_json,
+  NULL, NULL, r.content_sha256, NULL,
+  r.translation_metadata_json, r.review_state,
+  r.created_at_ms,
+  'system',
+  r.created_by
+FROM article_revisions_v1 r
+JOIN articles a ON a.id = r.article_id;
+
+DROP TABLE article_revisions_v1;
+
+CREATE TRIGGER article_revisions_immutable_update
+BEFORE UPDATE ON article_revisions BEGIN
+  SELECT RAISE(ABORT, 'article revisions are immutable');
+END;
+CREATE TRIGGER article_revisions_immutable_delete
+BEFORE DELETE ON article_revisions BEGIN
+  SELECT RAISE(ABORT, 'article revisions are immutable');
+END;
+
+CREATE TABLE article_locale_heads (
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  locale TEXT NOT NULL CHECK (locale IN ('ko','en','zh-Hans','zh-Hant')),
+  slug TEXT NOT NULL CHECK (
+    length(slug) BETWEEN 1 AND 96
+    AND slug = lower(slug)
+    AND slug NOT GLOB '*[^a-z0-9-]*'
+    AND slug NOT LIKE '-%'
+    AND slug NOT LIKE '%-'
+    AND slug NOT LIKE '%--%'
+  ),
+  state TEXT NOT NULL CHECK (state IN ('draft','in_review','approved','published','rejected')),
+  head_revision_id TEXT NOT NULL,
+  approved_revision_id TEXT,
+  published_revision_id TEXT,
+  reviewed_by_admin_id TEXT REFERENCES admins(id) ON DELETE RESTRICT,
+  reviewed_at_ms INTEGER,
+  approved_by_admin_id TEXT REFERENCES admins(id) ON DELETE RESTRICT,
+  approved_at_ms INTEGER,
+  published_at_ms INTEGER,
+  row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version > 0),
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (article_id, locale),
+  UNIQUE (locale, slug),
+  FOREIGN KEY (head_revision_id, article_id, locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT,
+  FOREIGN KEY (approved_revision_id, article_id, locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT,
+  FOREIGN KEY (published_revision_id, article_id, locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT,
+  CHECK (reviewed_at_ms IS NULL OR reviewed_by_admin_id IS NOT NULL),
+  CHECK (
+    (state IN ('draft','in_review','rejected')
+      AND approved_revision_id IS NULL AND published_revision_id IS NULL
+      AND approved_by_admin_id IS NULL
+      AND approved_at_ms IS NULL AND published_at_ms IS NULL)
+    OR
+    (state = 'approved' AND approved_revision_id = head_revision_id
+      AND published_revision_id IS NULL AND approved_by_admin_id IS NOT NULL
+      AND approved_at_ms IS NOT NULL AND published_at_ms IS NULL)
+    OR
+    (state = 'published' AND approved_revision_id = head_revision_id
+      AND published_revision_id = head_revision_id
+      AND approved_by_admin_id IS NOT NULL
+      AND approved_at_ms IS NOT NULL AND published_at_ms IS NOT NULL)
+  )
+);
+CREATE INDEX article_locale_heads_state_idx ON article_locale_heads(state, updated_at_ms);
+CREATE INDEX article_locale_heads_published_idx
+  ON article_locale_heads(locale, published_at_ms) WHERE state = 'published';
+
+INSERT INTO article_locale_heads (
+  article_id, locale, slug, state, head_revision_id,
+  approved_revision_id, published_revision_id,
+  approved_at_ms, published_at_ms, row_version, updated_at_ms
+)
+SELECT
+  r.article_id, r.locale,
+  'legacy-v3-' || printf('%016x', a.rowid),
+  CASE
+    WHEN r.initial_review_state = 'approved' THEN 'in_review'
+    ELSE r.initial_review_state
+  END,
+  r.id,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  1, a.updated_at_ms
+FROM article_revisions r
+JOIN articles a ON a.id = r.article_id
+WHERE r.revision_no = (
+  SELECT MAX(latest.revision_no) FROM article_revisions latest
+  WHERE latest.article_id = r.article_id AND latest.locale = r.locale
+);
+
+CREATE TABLE article_translation_jobs (
+  id TEXT PRIMARY KEY,
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  source_revision_id TEXT NOT NULL,
+  target_locale TEXT NOT NULL CHECK (target_locale IN ('ko','en','zh-Hans','zh-Hant')),
+  state TEXT NOT NULL CHECK (state IN ('queued','running','succeeded','failed','cancelled')),
+  input_sha256 BLOB NOT NULL CHECK (length(input_sha256) = 32),
+  dedupe_key TEXT NOT NULL UNIQUE,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  available_at_ms INTEGER NOT NULL,
+  locked_at_ms INTEGER,
+  lease_expires_at_ms INTEGER,
+  heartbeat_at_ms INTEGER,
+  locked_by TEXT,
+  fencing_token BLOB CHECK (fencing_token IS NULL OR length(fencing_token) = 32),
+  result_revision_id TEXT,
+  last_error_code TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER,
+  UNIQUE (id, article_id, source_revision_id, target_locale),
+  FOREIGN KEY (source_revision_id, article_id)
+    REFERENCES article_revisions(id, article_id) ON DELETE RESTRICT,
+  FOREIGN KEY (result_revision_id, article_id, target_locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT,
+  CHECK (
+    (state = 'running' AND locked_at_ms IS NOT NULL AND lease_expires_at_ms IS NOT NULL
+      AND heartbeat_at_ms IS NOT NULL AND locked_by IS NOT NULL AND fencing_token IS NOT NULL)
+    OR
+    (state <> 'running' AND locked_at_ms IS NULL AND lease_expires_at_ms IS NULL
+      AND heartbeat_at_ms IS NULL AND locked_by IS NULL AND fencing_token IS NULL)
+  ),
+  CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms > locked_at_ms),
+  CHECK (
+    (state IN ('queued','running') AND result_revision_id IS NULL AND finished_at_ms IS NULL)
+    OR (state = 'succeeded' AND result_revision_id IS NOT NULL AND finished_at_ms IS NOT NULL)
+    OR (state IN ('failed','cancelled') AND result_revision_id IS NULL AND finished_at_ms IS NOT NULL)
+  ),
+  CHECK (finished_at_ms IS NULL OR finished_at_ms >= created_at_ms)
+);
+CREATE UNIQUE INDEX article_translation_jobs_one_running_uidx
+  ON article_translation_jobs((1)) WHERE state = 'running';
+CREATE INDEX article_translation_jobs_queue_idx
+  ON article_translation_jobs(state, available_at_ms, lease_expires_at_ms);
+CREATE INDEX article_translation_jobs_article_idx
+  ON article_translation_jobs(article_id, target_locale, created_at_ms);
+
+CREATE TABLE article_review_runs (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  locale TEXT NOT NULL CHECK (locale IN ('ko','en','zh-Hans','zh-Hant')),
+  source_revision_id TEXT NOT NULL,
+  pass_kind TEXT NOT NULL CHECK (pass_kind IN ('translation','review-1','review-2')),
+  state TEXT NOT NULL CHECK (state IN ('succeeded','failed')),
+  prompt_sha256 BLOB NOT NULL CHECK (length(prompt_sha256) = 32),
+  schema_sha256 BLOB NOT NULL CHECK (length(schema_sha256) = 32),
+  source_sha256 BLOB NOT NULL CHECK (length(source_sha256) = 32),
+  output_sha256 BLOB CHECK (output_sha256 IS NULL OR length(output_sha256) = 32),
+  model_id TEXT NOT NULL,
+  cli_version TEXT NOT NULL,
+  findings_json TEXT NOT NULL,
+  exit_code INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER NOT NULL,
+  UNIQUE (job_id, pass_kind),
+  FOREIGN KEY (job_id, article_id, source_revision_id, locale)
+    REFERENCES article_translation_jobs(id, article_id, source_revision_id, target_locale)
+    ON DELETE CASCADE,
+  FOREIGN KEY (source_revision_id, article_id)
+    REFERENCES article_revisions(id, article_id) ON DELETE RESTRICT,
+  CHECK (finished_at_ms >= created_at_ms),
+  CHECK (state <> 'succeeded' OR (exit_code = 0 AND output_sha256 IS NOT NULL))
+);
+CREATE INDEX article_review_runs_revision_idx
+  ON article_review_runs(source_revision_id, created_at_ms);
+CREATE TRIGGER article_review_runs_running_job_insert
+BEFORE INSERT ON article_review_runs
+WHEN NOT EXISTS (
+  SELECT 1 FROM article_translation_jobs job
+  WHERE job.id = NEW.job_id
+    AND job.article_id = NEW.article_id
+    AND job.source_revision_id = NEW.source_revision_id
+    AND job.target_locale = NEW.locale
+    AND job.state = 'running'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'article review runs require the exact running translation job');
+END;
+CREATE TRIGGER article_review_runs_immutable_update
+BEFORE UPDATE ON article_review_runs BEGIN
+  SELECT RAISE(ABORT, 'article review runs are immutable');
+END;
+CREATE TRIGGER article_review_runs_immutable_delete
+BEFORE DELETE ON article_review_runs BEGIN
+  SELECT RAISE(ABORT, 'article review runs are immutable');
+END;
+
+CREATE TABLE hermes_article_nonces (
+  nonce_hash BLOB PRIMARY KEY CHECK (length(nonce_hash) = 32),
+  signed_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  CHECK (expires_at_ms > signed_at_ms)
+) WITHOUT ROWID;
+CREATE INDEX hermes_article_nonces_expiry_idx ON hermes_article_nonces(expires_at_ms);
+
+CREATE TABLE hermes_article_idempotency (
+  key_hash BLOB PRIMARY KEY CHECK (length(key_hash) = 32),
+  payload_fingerprint BLOB NOT NULL CHECK (length(payload_fingerprint) = 32),
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  revision_id TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  FOREIGN KEY (revision_id, article_id)
+    REFERENCES article_revisions(id, article_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE INDEX hermes_article_idempotency_article_idx
+  ON hermes_article_idempotency(article_id, created_at_ms);
+
+ALTER TABLE releases ADD COLUMN verified_at_ms INTEGER;
+ALTER TABLE releases ADD COLUMN verification_sha256 BLOB
+  CHECK (verification_sha256 IS NULL OR length(verification_sha256) = 32);
+ALTER TABLE releases ADD COLUMN activation_generation INTEGER NOT NULL DEFAULT 0
+  CHECK (activation_generation >= 0);
+UPDATE releases SET state = 'retired' WHERE state = 'active';
+CREATE UNIQUE INDEX releases_identity_manifest_uidx ON releases(id, manifest_sha256);
+CREATE UNIQUE INDEX releases_one_active_uidx ON releases((1)) WHERE state = 'active';
+CREATE INDEX releases_state_created_idx ON releases(state, created_at_ms DESC);
+CREATE TRIGGER releases_active_invariant_insert
+BEFORE INSERT ON releases
+WHEN NEW.state = 'active' AND (
+  NEW.verified_at_ms IS NULL OR NEW.verification_sha256 IS NULL OR NEW.activated_at_ms IS NULL
+  OR NEW.verification_sha256 <> NEW.manifest_sha256
+)
+BEGIN
+  SELECT RAISE(ABORT, 'active release must be verified and activated');
+END;
+CREATE TRIGGER releases_active_invariant_update
+BEFORE UPDATE ON releases
+WHEN NEW.state = 'active' AND (
+  NEW.verified_at_ms IS NULL OR NEW.verification_sha256 IS NULL OR NEW.activated_at_ms IS NULL
+  OR NEW.verification_sha256 <> NEW.manifest_sha256
+)
+BEGIN
+  SELECT RAISE(ABORT, 'active release must be verified and activated');
+END;
+CREATE TRIGGER releases_delete_retired_only
+BEFORE DELETE ON releases
+WHEN OLD.state <> 'retired'
+BEGIN
+  SELECT RAISE(ABORT, 'only retired releases may be deleted');
+END;
+
+CREATE TABLE release_entries (
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE RESTRICT,
+  locale TEXT NOT NULL CHECK (locale IN ('ko','en','zh-Hans','zh-Hant')),
+  slug TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  content_sha256 BLOB NOT NULL CHECK (length(content_sha256) = 32),
+  route TEXT NOT NULL CHECK (route LIKE '/%'),
+  PRIMARY KEY (release_id, article_id, locale),
+  UNIQUE (release_id, route),
+  FOREIGN KEY (revision_id, article_id, locale)
+    REFERENCES article_revisions(id, article_id, locale) ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE INDEX release_entries_revision_idx ON release_entries(revision_id);
+CREATE TRIGGER release_entries_content_hash_insert
+BEFORE INSERT ON release_entries
+WHEN NOT EXISTS (
+  SELECT 1 FROM article_revisions revision
+  WHERE revision.id = NEW.revision_id
+    AND revision.article_id = NEW.article_id
+    AND revision.locale = NEW.locale
+    AND revision.content_sha256 = NEW.content_sha256
+)
+BEGIN
+  SELECT RAISE(ABORT, 'release entry content hash must match its revision');
+END;
+CREATE TRIGGER release_entries_immutable_update
+BEFORE UPDATE ON release_entries BEGIN
+  SELECT RAISE(ABORT, 'release entries are immutable');
+END;
+CREATE TRIGGER release_entries_immutable_delete
+BEFORE DELETE ON release_entries
+WHEN EXISTS (SELECT 1 FROM releases WHERE id = OLD.release_id)
+BEGIN
+  SELECT RAISE(ABORT, 'release entries are immutable');
+END;
+
+CREATE TABLE release_activations (
+  id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE RESTRICT,
+  previous_release_id TEXT REFERENCES releases(id) ON DELETE RESTRICT,
+  operation TEXT NOT NULL CHECK (operation IN ('publish','rollback','reconcile')),
+  state TEXT NOT NULL CHECK (state IN ('prepared','switched','committed','failed')),
+  manifest_sha256 BLOB NOT NULL CHECK (length(manifest_sha256) = 32),
+  target_path TEXT NOT NULL,
+  previous_path TEXT,
+  error_code TEXT,
+  created_at_ms INTEGER NOT NULL,
+  switched_at_ms INTEGER,
+  committed_at_ms INTEGER,
+  CHECK (state <> 'switched' OR switched_at_ms IS NOT NULL),
+  CHECK (state <> 'committed' OR (switched_at_ms IS NOT NULL AND committed_at_ms IS NOT NULL)),
+  FOREIGN KEY (release_id, manifest_sha256)
+    REFERENCES releases(id, manifest_sha256) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX release_activations_one_incomplete_uidx
+  ON release_activations((1)) WHERE state IN ('prepared','switched');
+CREATE INDEX release_activations_release_idx ON release_activations(release_id, created_at_ms);
+
+CREATE TABLE publication_outbox (
+  id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL CHECK (event_type = 'indexnow'),
+  manifest_sha256 BLOB NOT NULL CHECK (length(manifest_sha256) = 32),
+  payload_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','processing','sent','failed')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  available_at_ms INTEGER NOT NULL,
+  locked_at_ms INTEGER,
+  lease_expires_at_ms INTEGER,
+  locked_by TEXT,
+  fencing_token BLOB CHECK (fencing_token IS NULL OR length(fencing_token) = 32),
+  last_error_code TEXT,
+  provider_message_id TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  sent_at_ms INTEGER,
+  UNIQUE (release_id, event_type, manifest_sha256),
+  FOREIGN KEY (release_id, manifest_sha256)
+    REFERENCES releases(id, manifest_sha256) ON DELETE RESTRICT,
+  CHECK (
+    (state = 'processing' AND locked_at_ms IS NOT NULL AND lease_expires_at_ms IS NOT NULL
+      AND locked_by IS NOT NULL AND fencing_token IS NOT NULL)
+    OR
+    (state <> 'processing' AND locked_at_ms IS NULL AND lease_expires_at_ms IS NULL
+      AND locked_by IS NULL AND fencing_token IS NULL)
+  ),
+  CHECK (lease_expires_at_ms IS NULL OR lease_expires_at_ms > locked_at_ms)
+);
+CREATE INDEX publication_outbox_queue_idx
+  ON publication_outbox(state, available_at_ms, lease_expires_at_ms);
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
+  { version: 3, name: "article-publication-pipeline", sql: THIRD_MIGRATION },
 ] as const;
+
+export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
+  version: migration.version,
+  sha256: createHash("sha256").update(migration.sql).digest("hex"),
+}));
+
+function normalizeSchemaSql(sql: string): string {
+  return sql.trim().replace(/;\s*$/, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+const REQUIRED_SCHEMA_DEFINITIONS = [
+  {
+    type: "index",
+    name: "article_translation_jobs_one_running_uidx",
+    sql: "CREATE UNIQUE INDEX article_translation_jobs_one_running_uidx ON article_translation_jobs((1)) WHERE state = 'running'",
+  },
+  {
+    type: "index",
+    name: "releases_identity_manifest_uidx",
+    sql: "CREATE UNIQUE INDEX releases_identity_manifest_uidx ON releases(id, manifest_sha256)",
+  },
+  {
+    type: "index",
+    name: "releases_one_active_uidx",
+    sql: "CREATE UNIQUE INDEX releases_one_active_uidx ON releases((1)) WHERE state = 'active'",
+  },
+  {
+    type: "index",
+    name: "release_activations_one_incomplete_uidx",
+    sql: "CREATE UNIQUE INDEX release_activations_one_incomplete_uidx ON release_activations((1)) WHERE state IN ('prepared','switched')",
+  },
+  {
+    type: "trigger",
+    name: "article_revisions_immutable_update",
+    sql: `CREATE TRIGGER article_revisions_immutable_update
+      BEFORE UPDATE ON article_revisions BEGIN
+        SELECT RAISE(ABORT, 'article revisions are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "article_revisions_immutable_delete",
+    sql: `CREATE TRIGGER article_revisions_immutable_delete
+      BEFORE DELETE ON article_revisions BEGIN
+        SELECT RAISE(ABORT, 'article revisions are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "article_review_runs_running_job_insert",
+    sql: `CREATE TRIGGER article_review_runs_running_job_insert
+      BEFORE INSERT ON article_review_runs
+      WHEN NOT EXISTS (
+        SELECT 1 FROM article_translation_jobs job
+        WHERE job.id = NEW.job_id
+          AND job.article_id = NEW.article_id
+          AND job.source_revision_id = NEW.source_revision_id
+          AND job.target_locale = NEW.locale
+          AND job.state = 'running'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'article review runs require the exact running translation job');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "article_review_runs_immutable_update",
+    sql: `CREATE TRIGGER article_review_runs_immutable_update
+      BEFORE UPDATE ON article_review_runs BEGIN
+        SELECT RAISE(ABORT, 'article review runs are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "article_review_runs_immutable_delete",
+    sql: `CREATE TRIGGER article_review_runs_immutable_delete
+      BEFORE DELETE ON article_review_runs BEGIN
+        SELECT RAISE(ABORT, 'article review runs are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "release_entries_content_hash_insert",
+    sql: `CREATE TRIGGER release_entries_content_hash_insert
+      BEFORE INSERT ON release_entries
+      WHEN NOT EXISTS (
+        SELECT 1 FROM article_revisions revision
+        WHERE revision.id = NEW.revision_id
+          AND revision.article_id = NEW.article_id
+          AND revision.locale = NEW.locale
+          AND revision.content_sha256 = NEW.content_sha256
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'release entry content hash must match its revision');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "release_entries_immutable_update",
+    sql: `CREATE TRIGGER release_entries_immutable_update
+      BEFORE UPDATE ON release_entries BEGIN
+        SELECT RAISE(ABORT, 'release entries are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "release_entries_immutable_delete",
+    sql: `CREATE TRIGGER release_entries_immutable_delete
+      BEFORE DELETE ON release_entries
+      WHEN EXISTS (SELECT 1 FROM releases WHERE id = OLD.release_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'release entries are immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "releases_active_invariant_insert",
+    sql: `CREATE TRIGGER releases_active_invariant_insert
+      BEFORE INSERT ON releases
+      WHEN NEW.state = 'active' AND (
+        NEW.verified_at_ms IS NULL OR NEW.verification_sha256 IS NULL OR NEW.activated_at_ms IS NULL
+        OR NEW.verification_sha256 <> NEW.manifest_sha256
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'active release must be verified and activated');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "releases_active_invariant_update",
+    sql: `CREATE TRIGGER releases_active_invariant_update
+      BEFORE UPDATE ON releases
+      WHEN NEW.state = 'active' AND (
+        NEW.verified_at_ms IS NULL OR NEW.verification_sha256 IS NULL OR NEW.activated_at_ms IS NULL
+        OR NEW.verification_sha256 <> NEW.manifest_sha256
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'active release must be verified and activated');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "releases_delete_retired_only",
+    sql: `CREATE TRIGGER releases_delete_retired_only
+      BEFORE DELETE ON releases
+      WHEN OLD.state <> 'retired'
+      BEGIN
+        SELECT RAISE(ABORT, 'only retired releases may be deleted');
+      END`,
+  },
+] as const;
+
+const REQUIRED_SCHEMA_FINGERPRINTS = REQUIRED_SCHEMA_DEFINITIONS.map((definition) => ({
+  type: definition.type,
+  name: definition.name,
+  sha256: createHash("sha256").update(normalizeSchemaSql(definition.sql)).digest("hex"),
+}));
 
 function applyPragmas(sqlite: Database.Database): void {
   sqlite.pragma("foreign_keys = ON");
@@ -452,18 +1019,38 @@ export function isDatabaseReady(db: ControlDatabase): boolean {
     ) return false;
 
     const schemaObjects = db.sqlite.prepare(`
-      SELECT type, name FROM sqlite_master
-      WHERE type IN ('table', 'index')
-    `).all() as Array<{ type: "table" | "index"; name: string }>;
+      SELECT type, name, sql FROM sqlite_master
+      WHERE type IN ('table', 'index', 'trigger')
+    `).all() as Array<{
+      type: "table" | "index" | "trigger";
+      name: string;
+      sql: string | null;
+    }>;
     const tables = new Set(schemaObjects.filter((item) => item.type === "table").map((item) => item.name));
     const indexes = new Set(schemaObjects.filter((item) => item.type === "index").map((item) => item.name));
+    const triggers = new Set(schemaObjects.filter((item) => item.type === "trigger").map((item) => item.name));
     if (!REQUIRED_TABLES.every((name) => tables.has(name))) return false;
     if (!REQUIRED_INDEXES.every((name) => indexes.has(name))) return false;
+    if (!REQUIRED_TRIGGERS.every((name) => triggers.has(name))) return false;
+    const schemaByName = new Map(schemaObjects.map((item) => [item.name, item]));
+    if (!REQUIRED_SCHEMA_FINGERPRINTS.every((expected) => {
+      const actual = schemaByName.get(expected.name);
+      if (actual?.type !== expected.type || actual.sql === null) return false;
+      const actualSha256 = createHash("sha256")
+        .update(normalizeSchemaSql(actual.sql))
+        .digest("hex");
+      return actualSha256 === expected.sha256;
+    })) return false;
 
     const requiredColumns = {
       consultations: ["marketing_withdrawn_at_ms"],
       admins: ["totp_last_counter"],
       notification_outbox: ["lease_expires_at_ms", "purpose", "delivery_cycle"],
+      article_revisions: [
+        "title", "summary", "source_revision_id", "parent_revision_id", "source_sha256",
+        "translation_metadata_json", "initial_review_state", "created_by_type", "created_by_id",
+      ],
+      releases: ["verified_at_ms", "verification_sha256", "activation_generation"],
     } as const;
     return Object.entries(requiredColumns).every(([table, names]) => {
       const columns = db.sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;

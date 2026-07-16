@@ -264,8 +264,16 @@ export const REQUIRED_TABLES = [
   "marketing_withdrawal_capabilities",
   "articles",
   "article_revisions",
+  "article_locale_heads",
+  "article_review_runs",
+  "article_translation_jobs",
   "jobs",
   "releases",
+  "release_entries",
+  "release_activations",
+  "publication_outbox",
+  "hermes_article_idempotency",
+  "hermes_article_nonces",
   "audit_events",
 ] as const;
 
@@ -297,12 +305,42 @@ export const REQUIRED_INDEXES = [
   "notification_outbox_lease_idx",
   "marketing_withdrawal_consultation_idx",
   "article_revisions_article_locale_idx",
+  "article_revisions_source_idx",
+  "article_locale_heads_state_idx",
+  "article_locale_heads_published_idx",
+  "article_review_runs_revision_idx",
+  "article_translation_jobs_one_running_uidx",
+  "article_translation_jobs_queue_idx",
+  "article_translation_jobs_article_idx",
+  "hermes_article_nonces_expiry_idx",
+  "hermes_article_idempotency_article_idx",
   "jobs_queue_idx",
+  "releases_identity_manifest_uidx",
+  "releases_one_active_uidx",
+  "releases_state_created_idx",
+  "release_entries_revision_idx",
+  "release_activations_one_incomplete_uidx",
+  "release_activations_release_idx",
+  "publication_outbox_queue_idx",
   "audit_events_created_idx",
   "audit_events_target_idx",
 ] as const;
 
-export const SCHEMA_VERSION = 2;
+export const REQUIRED_TRIGGERS = [
+  "article_revisions_immutable_update",
+  "article_revisions_immutable_delete",
+  "article_review_runs_immutable_update",
+  "article_review_runs_immutable_delete",
+  "article_review_runs_running_job_insert",
+  "release_entries_content_hash_insert",
+  "release_entries_immutable_update",
+  "release_entries_immutable_delete",
+  "releases_active_invariant_insert",
+  "releases_active_invariant_update",
+  "releases_delete_retired_only",
+] as const;
+
+export const SCHEMA_VERSION = 3;
 
 export const drizzleSchema = {
   schemaMigrations,

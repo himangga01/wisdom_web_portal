@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { computePublishedArticleContentSha256 } from "@wisdom/shared";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { createControlApp, type RedactedLogEvent } from "../app.js";
@@ -21,6 +22,240 @@ const cleanups: Array<() => void> = [];
 
 afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()?.();
+});
+
+describe("administrator article review and explicit translation routes", () => {
+  it("lists immutable content and requires host, session, Origin, CSRF, and row version for every mutation", async () => {
+    const current = await fixture();
+    const articleId = "11111111-1111-4111-8111-111111111111";
+    const revisionId = "22222222-2222-4222-8222-222222222222";
+    const bodyMarkdown = "## Complete procurement answer\n\nOfficial guidance.\n";
+    const sources = [{
+      id: "official-source",
+      url: "https://example.com/official",
+      sourceTimestamp: "2026-07-16T00:00:00.000Z",
+    }];
+    const contentSha256 = Buffer.from(computePublishedArticleContentSha256({
+      title: "Procurement registration guide",
+      summary: "Reviewed source guidance.",
+      bodyMarkdown,
+      sources,
+      locale: "ko",
+    }), "hex");
+    current.database.db.sqlite.prepare(`
+      INSERT INTO articles (
+        id, slug, state, source_locale, current_revision_id,
+        created_by_type, created_at_ms, updated_at_ms
+      ) VALUES (?, 'procurement-registration', 'draft', 'ko', ?, 'hermes', 1, 1)
+    `).run(articleId, revisionId);
+    current.database.db.sqlite.prepare(`
+      INSERT INTO article_revisions (
+        id, article_id, locale, revision_no, title, summary, body_markdown,
+        content_sha256, sources_json, source_sha256, initial_review_state,
+        created_at_ms, created_by_type, created_by_id
+      ) VALUES (?, ?, 'ko', 1, 'Procurement registration guide',
+        'Reviewed source guidance.', ?, ?, ?, ?, 'draft', 1, 'hermes', 'hermes-draft')
+    `).run(
+      revisionId, articleId, bodyMarkdown, contentSha256,
+      JSON.stringify(sources), Buffer.alloc(32, 61),
+    );
+    current.database.db.sqlite.prepare(`
+      INSERT INTO article_locale_heads (
+        article_id, locale, slug, state, head_revision_id, row_version, updated_at_ms
+      ) VALUES (?, 'ko', 'procurement-registration', 'draft', ?, 1, 1)
+    `).run(articleId, revisionId);
+    const session = await login(current);
+
+    const list = await current.app.request(`${ADMIN_ORIGIN}/admin/articles`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(list.status).toBe(200);
+    sensitiveHeaders(list);
+    expect(await list.text()).toContain("Procurement registration guide");
+    expect((await current.app.request(`${PUBLIC_ORIGIN}/admin/articles`, {
+      headers: { cookie: session.cookie },
+    })).status).toBe(404);
+
+    const slug = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/locales/ko/slug`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          slug: "public-procurement-registration", rowVersion: "1", csrf: session.csrf,
+        }),
+      },
+    );
+    expect(slug.status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT slug, row_version FROM article_locale_heads
+      WHERE article_id = ? AND locale = 'ko'
+    `).get(articleId)).toEqual({ slug: "public-procurement-registration", row_version: 2 });
+
+    const missingCsrf = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/locales/ko/review`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ rowVersion: "2" }),
+      },
+    );
+    expect(missingCsrf.status).toBe(403);
+    const review = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/locales/ko/review`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ rowVersion: "2", csrf: session.csrf }),
+      },
+    );
+    expect(review.status).toBe(303);
+    const stale = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/locales/ko/approve`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ rowVersion: "2", csrf: session.csrf }),
+      },
+    );
+    expect(stale.status).toBe(409);
+    const approve = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/locales/ko/approve`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ rowVersion: "3", csrf: session.csrf }),
+      },
+    );
+    expect(approve.status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT state, row_version, approved_by_admin_id
+      FROM article_locale_heads WHERE article_id = ? AND locale = 'ko'
+    `).get(articleId)).toEqual({
+      state: "approved", row_version: 4, approved_by_admin_id: "admin-1",
+    });
+
+    const wrongOrigin = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/translations`,
+      {
+        method: "POST",
+        headers: {
+          origin: "https://evil.test",
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ targetLocale: "en", rowVersion: "4", csrf: session.csrf }),
+      },
+    );
+    expect(wrongOrigin.status).toBe(403);
+    const translate = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/articles/${articleId}/translations`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ targetLocale: "en", rowVersion: "4", csrf: session.csrf }),
+      },
+    );
+    expect(translate.status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT article_id, source_revision_id, target_locale, state
+      FROM article_translation_jobs
+    `).get()).toEqual({
+      article_id: articleId,
+      source_revision_id: revisionId,
+      target_locale: "en",
+      state: "queued",
+    });
+    const detail = await current.app.request(`${ADMIN_ORIGIN}/admin/articles/${articleId}`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(detail.status).toBe(200);
+    const html = await detail.text();
+    expect(html).toContain("Request translation");
+    expect(html).not.toContain("pii_envelope");
+    const preview = await current.app.request(`${ADMIN_ORIGIN}/admin/publish/preview`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).toContain("Procurement registration guide");
+    const staleRevisionId = "33333333-3333-4333-8333-333333333333";
+    current.database.db.sqlite.prepare(`
+      INSERT INTO article_revisions (
+        id, article_id, locale, revision_no, title, summary, body_markdown,
+        content_sha256, source_revision_id, sources_json, source_sha256,
+        prompt_sha256, schema_sha256, model_id, initial_review_state,
+        created_at_ms, created_by_type, created_by_id
+      ) VALUES (?, ?, 'en', 1, 'Stale English translation', 'Stale summary',
+        '## Stale English\n', ?, ?, ?, ?, ?, ?, 'fixed-model', 'in_review',
+        2, 'codex', 'job-stale')
+    `).run(
+      staleRevisionId, articleId, Buffer.alloc(32, 41), revisionId,
+      JSON.stringify(sources), Buffer.alloc(32, 42), Buffer.alloc(32, 43),
+      Buffer.alloc(32, 44),
+    );
+    current.database.db.sqlite.prepare(`
+      INSERT INTO article_locale_heads (
+        article_id, locale, slug, state, head_revision_id, approved_revision_id,
+        reviewed_by_admin_id, reviewed_at_ms, approved_by_admin_id, approved_at_ms,
+        row_version, updated_at_ms
+      ) VALUES (?, 'en', 'procurement-registration', 'approved', ?, ?,
+        'admin-1', ?, 'admin-1', ?, 2, ?)
+    `).run(articleId, staleRevisionId, staleRevisionId, current.now, current.now, current.now);
+    current.database.db.sqlite.prepare(`
+      UPDATE article_locale_heads SET state = 'in_review', approved_revision_id = NULL,
+        approved_by_admin_id = NULL, approved_at_ms = NULL, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'ko'
+    `).run(articleId);
+    const stalePreview = await current.app.request(`${ADMIN_ORIGIN}/admin/publish/preview`, {
+      headers: { cookie: session.cookie },
+    });
+    const stalePreviewHtml = await stalePreview.text();
+    expect(stalePreviewHtml.split("<h2>Excluded locale heads</h2>")[0]).not.toContain(
+      "Stale English translation",
+    );
+    expect(stalePreviewHtml).toContain("Stale English translation / approved");
+    const releases = await current.app.request(`${ADMIN_ORIGIN}/admin/releases`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(releases.status).toBe(200);
+    expect(await releases.text()).toContain("Preview approved content");
+    const unavailablePublish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
+      method: "POST",
+      headers: {
+        origin: ADMIN_ORIGIN,
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        confirmation: "publish-approved", csrf: session.csrf,
+      }),
+    });
+    expect(unavailablePublish.status).toBe(503);
+  });
 });
 
 interface Fixture {

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "locale": "ko",
+  "slug": "jodal-entry-guide",
+  "revisionId": "11111111-1111-4111-8111-111111111111",
+  "contentSha256": "651ac706df756a6060bc68b99b2ae8c593659fc653e37aa2e8fd610d552d3995",
+  "route": "/insights/jodal-entry-guide",
+  "title": "검수된 조달 진입 안내",
+  "summary": "공공조달 진입 전 확인할 절차와 준비 자료를 검수된 정보로 안내합니다.",
+  "bodyMarkdown": "## 준비 전에 확인할 사항\n\n증빙을 준비하기 전에 조달 진입 경로를 먼저 확인합니다.\n\n- 신청 목적과 대상 품목을 정리합니다.\n- 적용되는 확인 및 인증 요건을 검토합니다.\n\n[공식 안내 확인](https://example.test/procurement)\n",
+  "bodyHtml": "<h2>준비 전에 확인할 사항</h2>\n<p>증빙을 준비하기 전에 조달 진입 경로를 먼저 확인합니다.</p>\n<ul>\n<li>신청 목적과 대상 품목을 정리합니다.</li>\n<li>적용되는 확인 및 인증 요건을 검토합니다.</li>\n</ul>\n<p><a href=\"https://example.test/procurement\">공식 안내 확인</a></p>",
+  "revisionCreatedAt": "2026-07-01T00:00:00.000Z",
+  "approvedAt": "2026-07-02T00:00:00.000Z",
+  "firstPublishedAt": "2026-07-03T00:00:00.000Z",
+  "modifiedAt": "2026-07-03T00:00:00.000Z",
+  "reviewer": {
+    "name": "강지혜",
+    "role": "대표행정사"
+  },
+  "sources": [
+    {
+      "id": "official-guidance",
+      "url": "https://example.test/procurement",
+      "sourceTimestamp": "2026-06-30T00:00:00.000Z"
+    }
+  ]
+}

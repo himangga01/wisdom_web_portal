@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "locale": "ko",
+      "slug": "jodal-entry-guide",
+      "revisionId": "11111111-1111-4111-8111-111111111111",
+      "contentSha256": "651ac706df756a6060bc68b99b2ae8c593659fc653e37aa2e8fd610d552d3995",
+      "route": "/insights/jodal-entry-guide",
+      "contentFile": "articles/11111111-1111-4111-8111-111111111111.json",
+      "contentFileSha256": "b80fcd5c21dc3a2c7161ba28e98dc5acc9b572ba771258940622cc54e25493a3"
+    },
+    {
+      "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "locale": "en",
+      "slug": "procurement-entry-guide",
+      "revisionId": "22222222-2222-4222-8222-222222222222",
+      "contentSha256": "abae63514f0bd39d625133302869c39bc40cd4f3b94f755a39d30b40e850c509",
+      "route": "/en/insights/procurement-entry-guide",
+      "contentFile": "articles/22222222-2222-4222-8222-222222222222.json",
+      "contentFileSha256": "7bffae6d432500205aae8f8c700d9a8525d248adfe663669bf9026e2dd7309b4"
+    },
+    {
+      "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "locale": "zh-Hant",
+      "slug": "caigou-ruzhu-zhinan",
+      "revisionId": "33333333-3333-4333-8333-333333333333",
+      "contentSha256": "06c45b30faa0fafe311b86cec87197f6a7984318ae946ce9be432f0edb914bf5",
+      "route": "/zh-hant/insights/caigou-ruzhu-zhinan",
+      "contentFile": "articles/33333333-3333-4333-8333-333333333333.json",
+      "contentFileSha256": "53a76ec1c8570c62f5973eb72cc091191076e09199f25540d47818ed1edd8a74"
+    },
+    {
+      "articleId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "locale": "en",
+      "slug": "visa-extension-checklist",
+      "revisionId": "44444444-4444-4444-8444-444444444444",
+      "contentSha256": "99467d8442e3c5a49a0ce3502e1da5886c6247f09248a2122ea23493d64100ab",
+      "route": "/en/insights/visa-extension-checklist",
+      "contentFile": "articles/44444444-4444-4444-8444-444444444444.json",
+      "contentFileSha256": "288e2d90ff2748e879e8d13f16e7e348fd91dbdac647958c5a68373b3b92a81c"
+    }
+  ]
+}

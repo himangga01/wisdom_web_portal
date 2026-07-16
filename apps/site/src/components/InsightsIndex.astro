@@ -1,0 +1,42 @@
+---
+import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
+
+interface Props {
+  locale: Locale;
+  articles: readonly PublishedArticleDocument[];
+  emptyMessage: string;
+}
+
+const { locale, articles, emptyMessage } = Astro.props;
+const exactLocaleArticles = articles.filter((article) => article.locale === locale);
+const labels: Record<Locale, { updated: string; read: string; empty: string }> = {
+  ko: { updated: "최종 검수", read: "안내 읽기", empty: "아직 공개된 실무 안내가 없습니다." },
+  en: { updated: "Last reviewed", read: "Read guidance", empty: "No practical guidance has been published yet." },
+  "zh-Hans": { updated: "最后审查", read: "阅读指南", empty: "尚未发布实务指南。" },
+  "zh-Hant": { updated: "最後審查", read: "閱讀指南", empty: "尚未發布實務指南。" },
+};
+const copy = labels[locale];
+---
+
+{exactLocaleArticles.length > 0 ? (
+  <ol class="insights-list">
+    {exactLocaleArticles.map((article) => (
+      <li>
+        <article class="insight-card">
+          <p class="insight-meta">
+            {copy.updated} <time datetime={article.modifiedAt}>{article.modifiedAt.slice(0, 10)}</time>
+          </p>
+          <h2><a href={article.route}>{article.title}</a></h2>
+          <p>{article.summary}</p>
+          <a class="insight-read-link" href={article.route}>{copy.read}<span aria-hidden="true"> →</span></a>
+        </article>
+      </li>
+    ))}
+  </ol>
+) : (
+  <div class="insight-notice">
+    <span aria-hidden="true">知</span>
+    <h2>{copy.empty}</h2>
+    <p>{emptyMessage}</p>
+  </div>
+)}

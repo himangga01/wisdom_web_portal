@@ -1,0 +1,78 @@
+---
+import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
+
+import BaseLayout from "../layouts/BaseLayout.astro";
+import type { ArticleLocaleLink } from "../lib/article-routes.js";
+import type { SearchDocument } from "../search/types.js";
+
+interface Props {
+  article: PublishedArticleDocument;
+  localeLinks: readonly ArticleLocaleLink[];
+  xDefaultHref?: string;
+  searchDocument: SearchDocument;
+}
+
+const { article, localeLinks, searchDocument } = Astro.props;
+const labels: Record<Locale, {
+  authoredBy: string;
+  firstPublished: string;
+  modified: string;
+  reviewedBy: string;
+  sources: string;
+}> = {
+  ko: { authoredBy: "작성", firstPublished: "최초 공개", modified: "최종 수정", reviewedBy: "검수", sources: "출처" },
+  en: { authoredBy: "Authored by", firstPublished: "First published", modified: "Last modified", reviewedBy: "Reviewed by", sources: "Sources" },
+  "zh-Hans": { authoredBy: "撰写", firstPublished: "首次发布", modified: "最后修改", reviewedBy: "审查", sources: "来源" },
+  "zh-Hant": { authoredBy: "撰寫", firstPublished: "首次發布", modified: "最後修改", reviewedBy: "審查", sources: "來源" },
+};
+const copy = labels[article.locale];
+---
+
+<BaseLayout
+  locale={article.locale}
+  route={article.route}
+  searchDocument={searchDocument}
+  localeLinks={localeLinks}
+>
+  <section class="page-hero article-hero">
+    <div class="shell narrow-shell">
+      <p class="eyebrow">JIHYE INSIGHTS</p>
+      <h1>{article.title}</h1>
+      <p>{article.summary}</p>
+      <dl class="article-dates">
+        <div>
+          <dt>{copy.firstPublished}</dt>
+          <dd><time datetime={article.firstPublishedAt}>{article.firstPublishedAt.slice(0, 10)}</time></dd>
+        </div>
+        <div>
+          <dt>{copy.modified}</dt>
+          <dd><time datetime={article.modifiedAt}>{article.modifiedAt.slice(0, 10)}</time></dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="page-content section article-section">
+    <div class="shell narrow-shell">
+      <article class="published-article">
+        <div class="published-article-body" set:html={article.bodyHtml} />
+
+        <footer class="article-provenance">
+          <p><strong>{copy.authoredBy}</strong> {article.reviewer.name} · {article.reviewer.role}</p>
+          <p><strong>{copy.reviewedBy}</strong> {article.reviewer.name} · {article.reviewer.role}</p>
+          <section aria-labelledby="article-sources-heading">
+            <h2 id="article-sources-heading">{copy.sources}</h2>
+            <ol>
+              {article.sources.map((source) => (
+                <li>
+                  <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
+                  <time datetime={source.sourceTimestamp}>{source.sourceTimestamp.slice(0, 10)}</time>
+                </li>
+              ))}
+            </ol>
+          </section>
+        </footer>
+      </article>
+    </div>
+  </section>
+</BaseLayout>

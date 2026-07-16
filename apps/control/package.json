@@ -20,6 +20,7 @@
     "consent:activate": "tsx src/cli/consent-activate.ts",
     "retention:purge": "tsx src/cli/purge.ts",
     "notifications:worker": "tsx src/notification-worker.ts",
+    "content:worker": "tsx src/content-worker.ts",
     "admin:bootstrap": "tsx src/admin/cli.ts bootstrap",
     "admin:password-reset": "tsx src/admin/cli.ts password-reset",
     "admin:mfa-replace": "tsx src/admin/cli.ts mfa-replace"

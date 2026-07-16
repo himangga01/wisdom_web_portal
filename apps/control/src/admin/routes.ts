@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  localeSchema,
   consultationStatusSchema,
+  type ArticleState,
+  type Locale,
   type NotificationChannel,
 } from "@wisdom/shared";
 import { Hono, type Context } from "hono";
@@ -22,6 +25,12 @@ import {
 } from "../auth/session.js";
 import { getActiveConsentBundle } from "../consent/service.js";
 import { changeConsultationStatus } from "../consultations/workflow.js";
+import {
+  changeArticleLocaleState,
+  changeArticleLocaleSlug,
+  enqueueArticleTranslation,
+  type ArticleReviewState,
+} from "../articles/workflow.js";
 import { decryptPii, type KeyProvider } from "../crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "../db/client.js";
 import { requeueFailedNotification } from "../notifications/outbox.js";
@@ -43,6 +52,26 @@ export interface Task4RouteDependencies extends AdminAuthContext {
   withdrawalSecret: Uint8Array;
   now: () => number;
   peerAddress: (context: Context<AdminEnvironment>) => string;
+  articlePublication?: AdminArticlePublicationActions;
+}
+
+export interface AdminArticlePublicationActionInput {
+  actorAdminId: string;
+  requestId: string;
+  nowMs: number;
+}
+
+export interface AdminArticlePublicationResult {
+  releaseId: string;
+  version: string;
+  manifestSha256: string;
+}
+
+export interface AdminArticlePublicationActions {
+  publish(input: AdminArticlePublicationActionInput): Promise<AdminArticlePublicationResult>;
+  rollback(
+    input: AdminArticlePublicationActionInput & { releaseId: string },
+  ): Promise<AdminArticlePublicationResult>;
 }
 
 const GENERIC_AUTH_FAILURE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed</title></head><body><main><h1>Sign-in failed</h1><p>The credentials could not be verified.</p><a href="/admin/login">Try again</a></main></body></html>`;
@@ -55,7 +84,7 @@ function page(title: string, body: string, lang = "en", csrfToken?: string): str
   const logout = csrfToken === undefined
     ? ""
     : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">Sign out</button></form>`;
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
+  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -370,6 +399,304 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT status, count(*) count FROM consultations GROUP BY status ORDER BY status
     `).all() as Array<{ status: string; count: number }>;
     return context.html(page("Dashboard", `<h1>Dashboard</h1><ul>${counts.map((row) => `<li>${escapeHtml(row.status)}: ${row.count}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.get("/admin/articles", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const rows = dependencies.db.sqlite.prepare(`
+      SELECT article.id, article.source_locale, head.locale, head.slug,
+        head.state, head.row_version, revision.title, head.updated_at_ms
+      FROM articles article
+      JOIN article_locale_heads head ON head.article_id = article.id
+      JOIN article_revisions revision ON revision.id = head.head_revision_id
+      ORDER BY head.updated_at_ms DESC, article.id, head.locale
+      LIMIT 500
+    `).all() as Array<{
+      id: string;
+      source_locale: Locale;
+      locale: Locale;
+      slug: string;
+      state: ArticleState;
+      row_version: number;
+      title: string;
+      updated_at_ms: number;
+    }>;
+    return context.html(page("Articles", `<h1>Articles</h1><ul>${rows.map((row) =>
+      `<li><a href="/admin/articles/${encodeURIComponent(row.id)}">${escapeHtml(row.title)}</a> / ${escapeHtml(row.locale)} / ${escapeHtml(row.state)} / v${row.row_version}</li>`
+    ).join("")}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.get("/admin/articles/:id", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const article = dependencies.db.sqlite.prepare(`
+      SELECT id, source_locale, created_at_ms, updated_at_ms
+      FROM articles WHERE id = ?
+    `).get(context.req.param("id")) as {
+      id: string; source_locale: Locale; created_at_ms: number; updated_at_ms: number;
+    } | undefined;
+    if (!article) return context.html(page("Article not found", "<h1>Article not found</h1>"), 404);
+    const heads = dependencies.db.sqlite.prepare(`
+      SELECT head.locale, head.slug, head.state, head.row_version,
+        head.head_revision_id, revision.title, revision.summary,
+        revision.body_markdown, revision.sources_json,
+        revision.created_at_ms, revision.created_by_type
+      FROM article_locale_heads head
+      JOIN article_revisions revision ON revision.id = head.head_revision_id
+      WHERE head.article_id = ? ORDER BY head.locale
+    `).all(article.id) as Array<{
+      locale: Locale;
+      slug: string;
+      state: ArticleState;
+      row_version: number;
+      head_revision_id: string;
+      title: string;
+      summary: string;
+      body_markdown: string;
+      sources_json: string;
+      created_at_ms: number;
+      created_by_type: string;
+    }>;
+    const revisions = dependencies.db.sqlite.prepare(`
+      SELECT id, locale, revision_no, title, created_at_ms, created_by_type
+      FROM article_revisions WHERE article_id = ?
+      ORDER BY locale, revision_no DESC
+    `).all(article.id) as Array<{
+      id: string; locale: Locale; revision_no: number; title: string;
+      created_at_ms: number; created_by_type: string;
+    }>;
+    const actionForms = (head: typeof heads[number]): string => {
+      const actions: Array<{ action: string; label: string }> = [];
+      if (head.state === "draft") actions.push(
+        { action: "review", label: "Request review" },
+        { action: "reject", label: "Reject" },
+      );
+      if (head.state === "in_review") actions.push(
+        { action: "return", label: "Return to draft" },
+        { action: "approve", label: "Approve locale" },
+        { action: "reject", label: "Reject" },
+      );
+      if (head.state === "approved") actions.push({ action: "review", label: "Re-open review" });
+      const slugForm = head.state === "draft" || head.state === "in_review"
+        ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/slug"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><label>Public slug <input name="slug" value="${escapeHtml(head.slug)}" maxlength="96" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label><button type="submit">Save slug</button></form>`
+        : "";
+      return slugForm + actions.map(({ action, label }) =>
+        `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/${action}"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><button type="submit">${escapeHtml(label)}</button></form>`
+      ).join("");
+    };
+    const targetLocales = (["ko", "en", "zh-Hans", "zh-Hant"] as const)
+      .filter((locale) => locale !== article.source_locale)
+      .map((locale) => `<option value="${escapeHtml(locale)}">${escapeHtml(locale)}</option>`)
+      .join("");
+    const sourceHead = heads.find(({ locale }) => locale === article.source_locale);
+    const translate = sourceHead && ["approved", "published"].includes(sourceHead.state)
+      ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/translations"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${sourceHead.row_version}"><label>Target locale <select name="targetLocale">${targetLocales}</select></label><button type="submit">Request translation</button></form>`
+      : "";
+    const revisionItems = revisions.map((revision, index) => {
+      const previous = revisions.slice(index + 1).find(({ locale }) => locale === revision.locale);
+      const diff = previous
+        ? ` <a href="/admin/articles/${encodeURIComponent(article.id)}/revisions/${encodeURIComponent(revision.id)}/diff?against=${encodeURIComponent(previous.id)}">Compare with #${previous.revision_no}</a>`
+        : "";
+      return `<li>${escapeHtml(revision.locale)} #${revision.revision_no} ${escapeHtml(revision.title)} (${escapeHtml(revision.created_by_type)})${diff}</li>`;
+    }).join("");
+    return context.html(page("Article detail", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1><p>Source locale: ${escapeHtml(article.source_locale)}</p>${translate}<h2>Locales</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>Markdown</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>Sources</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>Immutable revisions</h2><ul>${revisionItems}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.get("/admin/articles/:id/revisions/:revisionId/diff", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const against = context.req.query("against") ?? "";
+    const rows = dependencies.db.sqlite.prepare(`
+      SELECT id, locale, title, summary, body_markdown
+      FROM article_revisions
+      WHERE article_id = ? AND id IN (?, ?)
+      ORDER BY id
+    `).all(context.req.param("id"), context.req.param("revisionId"), against) as Array<{
+      id: string; locale: Locale; title: string; summary: string; body_markdown: string;
+    }>;
+    const current = rows.find(({ id }) => id === context.req.param("revisionId"));
+    const previous = rows.find(({ id }) => id === against);
+    if (!current || !previous || current.locale !== previous.locale) {
+      return context.html(page("Revision diff not found", "<h1>Revision diff not found</h1>"), 404);
+    }
+    return context.html(page("Revision diff", `<h1>Revision diff</h1><h2>Previous</h2><pre>${escapeHtml(`${previous.title}\n${previous.summary}\n\n${previous.body_markdown}`)}</pre><h2>Current</h2><pre>${escapeHtml(`${current.title}\n${current.summary}\n\n${current.body_markdown}`)}</pre>`, "en", auth.csrfToken));
+  });
+
+  const articleStateActions: Readonly<Record<string, ArticleReviewState>> = {
+    review: "in_review",
+    return: "draft",
+    approve: "approved",
+    reject: "rejected",
+  };
+  app.post("/admin/articles/:id/locales/:locale/slug", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const locale = localeSchema.safeParse(context.req.param("locale"));
+    const rowVersion = Number(auth.form.rowVersion);
+    if (!locale.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
+      return context.html(page("Invalid slug update", "<h1>Invalid slug update</h1>"), 422);
+    }
+    const result = changeArticleLocaleSlug(dependencies.db, {
+      articleId: context.req.param("id"),
+      locale: locale.data,
+      slug: auth.form.slug ?? "",
+      expectedRowVersion: rowVersion,
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    if (result.kind === "updated" || result.kind === "unchanged") {
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+    }
+    return context.html(page("Slug not changed", `<h1>${escapeHtml(result.kind)}</h1>`), result.httpStatus);
+  });
+  app.post("/admin/articles/:id/locales/:locale/:action", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const locale = localeSchema.safeParse(context.req.param("locale"));
+    const targetState = articleStateActions[context.req.param("action")];
+    const rowVersion = Number(auth.form.rowVersion);
+    if (!locale.success || !targetState || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
+      return context.html(page("Invalid article action", "<h1>Invalid article action</h1>"), 422);
+    }
+    const result = changeArticleLocaleState(dependencies.db, {
+      articleId: context.req.param("id"),
+      locale: locale.data,
+      targetState,
+      expectedRowVersion: rowVersion,
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    if (result.kind === "updated" || result.kind === "unchanged") {
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+    }
+    return context.html(
+      page(result.kind === "conflict" ? "Conflict" : "Article state not changed", `<h1>${escapeHtml(result.kind)}</h1>`),
+      result.httpStatus,
+    );
+  });
+
+  app.post("/admin/articles/:id/translations", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const targetLocale = localeSchema.safeParse(auth.form.targetLocale);
+    const rowVersion = Number(auth.form.rowVersion);
+    if (!targetLocale.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
+      return context.html(page("Invalid translation request", "<h1>Invalid translation request</h1>"), 422);
+    }
+    const result = enqueueArticleTranslation(dependencies.db, dependencies.keyProvider, {
+      articleId: context.req.param("id"),
+      targetLocale: targetLocale.data,
+      expectedSourceRowVersion: rowVersion,
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    if (["queued", "requeued", "existing"].includes(result.kind)) {
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+    }
+    return context.html(
+      page("Translation not queued", `<h1>${escapeHtml(result.kind)}</h1>`),
+      result.httpStatus,
+    );
+  });
+
+  app.get("/admin/publish/preview", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const rows = dependencies.db.sqlite.prepare(`
+      SELECT head.article_id, head.locale, head.slug, head.state,
+        head.head_revision_id, revision.title, revision.summary,
+        CASE
+          WHEN head.locale = article.source_locale THEN 1
+          WHEN revision.source_revision_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM article_locale_heads source_head
+            WHERE source_head.article_id = head.article_id
+              AND source_head.locale = article.source_locale
+              AND source_head.state IN ('approved','published')
+              AND source_head.head_revision_id = revision.source_revision_id
+              AND source_head.approved_revision_id = revision.source_revision_id
+          ) THEN 1
+          ELSE 0
+        END AS source_binding_valid
+      FROM article_locale_heads head
+      JOIN article_revisions revision ON revision.id = head.head_revision_id
+      JOIN articles article ON article.id = head.article_id
+      ORDER BY head.article_id, head.locale
+    `).all() as Array<{
+      article_id: string;
+      locale: Locale;
+      slug: string;
+      state: ArticleState;
+      head_revision_id: string;
+      title: string;
+      summary: string;
+      source_binding_valid: 0 | 1;
+    }>;
+    const eligible = rows.filter(({ state, source_binding_valid: sourceBindingValid }) => (
+      (state === "approved" || state === "published") && sourceBindingValid === 1
+    ));
+    const blocked = rows.filter(({ state, source_binding_valid: sourceBindingValid }) => (
+      (state !== "approved" && state !== "published") || sourceBindingValid !== 1
+    ));
+    return context.html(page("Publication preview", `<h1>Publication preview</h1><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="publish-approved"><button type="submit"${eligible.length === 0 ? " disabled" : ""}>Build, verify, and publish approved content</button></form>`, "en", auth.csrfToken));
+  });
+
+  app.post("/admin/publish", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    if (auth.form.confirmation !== "publish-approved") {
+      return context.html(page("Publish confirmation required", "<h1>Publish confirmation required</h1>"), 422);
+    }
+    if (!dependencies.articlePublication) {
+      return context.html(page("Publishing unavailable", "<h1>Publishing is not configured</h1>"), 503);
+    }
+    await dependencies.articlePublication.publish({
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
+  });
+
+  app.get("/admin/releases", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const rows = dependencies.db.sqlite.prepare(`
+      SELECT id, version, state, manifest_sha256, verified_at_ms,
+        activated_at_ms, rolled_back_at_ms, created_at_ms
+      FROM releases ORDER BY created_at_ms DESC, id DESC LIMIT 100
+    `).all() as Array<{
+      id: string;
+      version: string;
+      state: string;
+      manifest_sha256: Buffer;
+      verified_at_ms: number | null;
+      activated_at_ms: number | null;
+      rolled_back_at_ms: number | null;
+      created_at_ms: number;
+    }>;
+    return context.html(page("Publication releases", `<h1>Publication releases</h1><p><a href="/admin/publish/preview">Preview approved content</a></p><ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} / ${escapeHtml(row.manifest_sha256.toString("hex"))}${row.state === "retired" ? `<form method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="rollback-retained-release"><button type="submit">Verify and roll back</button></form>` : ""}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.post("/admin/releases/:id/rollback", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    if (auth.form.confirmation !== "rollback-retained-release") {
+      return context.html(page("Rollback confirmation required", "<h1>Rollback confirmation required</h1>"), 422);
+    }
+    if (!dependencies.articlePublication) {
+      return context.html(page("Rollback unavailable", "<h1>Rollback is not configured</h1>"), 503);
+    }
+    await dependencies.articlePublication.rollback({
+      releaseId: context.req.param("id"),
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
   });
 
   app.get("/admin/consultations", (context) => {

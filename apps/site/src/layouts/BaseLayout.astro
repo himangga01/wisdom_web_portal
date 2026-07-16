@@ -3,19 +3,35 @@ import { designTokens, type Locale } from "@wisdom/shared";
 
 import SiteFooter from "../components/SiteFooter.astro";
 import SiteHeader from "../components/SiteHeader.astro";
+import type { ArticleLocaleLink } from "../lib/article-routes.js";
 import { localeLinksForPath, type PublicRoute } from "../lib/routes.js";
+import { absolutePublicUrl } from "../search/origin.js";
+import { safeJsonLdStringify } from "../search/json-ld.js";
+import type { SearchDocument } from "../search/types.js";
+import { parseSearchVerificationConfig } from "../search/verification.js";
 import "../styles/global.css";
 
 interface Props {
   locale: Locale;
-  route: PublicRoute;
-  title: string;
-  description: string;
-  noindex?: boolean;
+  route: PublicRoute | string;
+  searchDocument: SearchDocument;
+  localeLinks?: readonly ArticleLocaleLink[];
 }
 
-const { locale, route, title, description, noindex = false } = Astro.props;
-const alternateLinks = localeLinksForPath(Astro.url.pathname);
+const {
+  locale,
+  route,
+  searchDocument,
+  localeLinks,
+} = Astro.props;
+const navigationLocaleLinks = localeLinks ?? localeLinksForPath(Astro.url.pathname);
+const jsonLd = safeJsonLdStringify(searchDocument.jsonLd);
+const verification = parseSearchVerificationConfig({
+  GOOGLE_SITE_VERIFICATION_DNS: import.meta.env.GOOGLE_SITE_VERIFICATION_DNS,
+  NAVER_SITE_VERIFICATION_META: import.meta.env.NAVER_SITE_VERIFICATION_META,
+  NAVER_SITE_VERIFICATION_FILE: import.meta.env.NAVER_SITE_VERIFICATION_FILE,
+});
+const rssHref = absolutePublicUrl(new URL(searchDocument.canonicalUrl).origin, "/rss.xml");
 const colors = designTokens.color;
 const motion = designTokens.motion.homepageReveal;
 const tokenStyle = [
@@ -39,17 +55,27 @@ const tokenStyle = [
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={description} />
-    {noindex && <meta name="robots" content="noindex" />}
+    <meta name="description" content={searchDocument.description} />
+    {searchDocument.policy === "noindex" && <meta name="robots" content="noindex, follow" />}
+    {verification.naverMetaToken && (
+      <meta name="naver-site-verification" content={verification.naverMetaToken} />
+    )}
     <meta name="theme-color" content={colors.ivory} />
-    <title>{title}</title>
-    {alternateLinks.map(({ locale: alternateLocale, href }) => (
-      <link rel="alternate" hreflang={alternateLocale} href={href} />
+    <title>{searchDocument.title}</title>
+    <link rel="canonical" href={searchDocument.canonicalUrl} />
+    {searchDocument.alternates.map(({ locale: alternateLocale, url }) => (
+      <link rel="alternate" hreflang={alternateLocale} href={url} />
     ))}
-    <link rel="alternate" hreflang="x-default" href={alternateLinks[0].href} />
+    {searchDocument.xDefaultUrl && (
+      <link rel="alternate" hreflang="x-default" href={searchDocument.xDefaultUrl} />
+    )}
+    <link rel="alternate" type="application/rss+xml" title="JIHYE Insights RSS" href={rssHref} />
+    {searchDocument.jsonLd["@graph"].length > 0 && (
+      <script is:inline type="application/ld+json" set:html={jsonLd} />
+    )}
   </head>
   <body>
-    <SiteHeader locale={locale} route={route} />
+    <SiteHeader locale={locale} route={route} localeLinks={navigationLocaleLinks} />
     <main id="main" tabindex="-1">
       <slot />
     </main>

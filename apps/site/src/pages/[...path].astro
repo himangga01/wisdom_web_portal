@@ -1,24 +1,30 @@
 ---
-import type { Locale } from "@wisdom/shared";
-
+import PublishedArticle from "../components/PublishedArticle.astro";
 import PublicPage from "../components/PublicPage.astro";
-import { PUBLIC_ROUTE_ENTRIES, type PublicRoute } from "../lib/routes.js";
+import { createPublicStaticPaths, type PublicStaticPathProps } from "../lib/static-paths.js";
+import { createSearchBuildState } from "../search/build.js";
 
 export function getStaticPaths() {
-  return PUBLIC_ROUTE_ENTRIES
-    .filter(({ pathname }) => pathname !== "/404")
-    .map(({ locale, route, pathname }) => ({
-      params: { path: pathname === "/" ? undefined : pathname.slice(1) },
-      props: { locale, route },
-    }));
+  const state = createSearchBuildState();
+  return createPublicStaticPaths(state.content, state.index);
 }
 
-interface Props {
-  locale: Locale;
-  route: PublicRoute;
-}
-
-const { locale, route } = Astro.props;
+type Props = PublicStaticPathProps;
+const props = Astro.props;
 ---
 
-<PublicPage locale={locale} route={route} />
+{props.kind === "base" ? (
+  <PublicPage
+    locale={props.locale}
+    route={props.route}
+    articles={props.articles}
+    searchDocument={props.searchDocument}
+  />
+) : (
+  <PublishedArticle
+    article={props.article}
+    localeLinks={props.localeLinks}
+    xDefaultHref={props.xDefaultHref}
+    searchDocument={props.searchDocument}
+  />
+)}

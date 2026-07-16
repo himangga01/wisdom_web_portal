@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import { issueFormToken } from "./abuse/form-token.js";
 import { resolveClientIp } from "./abuse/rate-limit.js";
+import { registerHermesArticleRoutes } from "./articles/hermes-http.js";
 import { getActiveConsentBundle, getPublicConsentDocuments } from "./consent/service.js";
 import {
   acceptConsultation,
@@ -18,7 +19,10 @@ import {
 } from "./consultations/service.js";
 import type { KeyProvider } from "./crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "./db/client.js";
-import { registerTask4Routes } from "./admin/routes.js";
+import {
+  registerTask4Routes,
+  type AdminArticlePublicationActions,
+} from "./admin/routes.js";
 
 const MAX_BODY_BYTES = 32_768;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{16,128}$/;
@@ -55,6 +59,10 @@ export interface ControlAppDependencies {
   authSecret?: Uint8Array;
   withdrawalSecret?: Uint8Array;
   dummyPasswordHash?: string;
+  hermesHmacSecret?: Uint8Array;
+  articlePublication?: AdminArticlePublicationActions;
+  indexNowKey?: string;
+  indexNowKeyProvider?: () => string | undefined;
 }
 
 class PayloadTooLargeError extends Error {}
@@ -114,6 +122,8 @@ function effectiveRequestOrigin(
 
 function isSensitivePath(path: string): boolean {
   return path === "/admin" || path.startsWith("/admin/") ||
+    path === "/internal/v1/article-drafts" ||
+    path === "/indexnow-key.txt" ||
     path === "/marketing/withdraw" || path.startsWith("/marketing/withdraw/") ||
     /^\/(?:en|zh-hans|zh-hant)\/marketing\/withdraw(?:\/|$)/.test(path);
 }
@@ -182,6 +192,13 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   const now = dependencies.now ?? Date.now;
   const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
   const logger = dependencies.logger ?? defaultLogger();
+  if (dependencies.indexNowKey !== undefined
+    && !/^[A-Za-z0-9-]{8,128}$/.test(dependencies.indexNowKey)) {
+    throw new Error("IndexNow public key is invalid");
+  }
+  if (dependencies.indexNowKey !== undefined && dependencies.indexNowKeyProvider !== undefined) {
+    throw new Error("Configure only one IndexNow public key source");
+  }
 
   const safeLog = (event: RedactedLogEvent): void => {
     try {
@@ -216,6 +233,10 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       throw new Error("Both public and administrator origins are required for host routing");
     }
     app.use("*", async (context, next) => {
+      if (context.req.path === "/internal/v1/article-drafts") {
+        await next();
+        return;
+      }
       const origin = effectiveRequestOrigin(context, dependencies);
       if (origin !== dependencies.publicOrigin && origin !== dependencies.adminOrigin) {
         return context.text("Misdirected Request", 421);
@@ -225,9 +246,10 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         context.req.path.startsWith("/marketing/withdraw/") ||
         /^\/(?:en|zh-hans|zh-hant)\/marketing\/withdraw(?:\/|$)/.test(context.req.path);
       const publicApiPath = context.req.path.startsWith("/api/");
+      const publicOwnershipPath = context.req.path === "/indexnow-key.txt";
       if (
         (adminPath && origin !== dependencies.adminOrigin) ||
-        ((withdrawalPath || publicApiPath) && origin !== dependencies.publicOrigin)
+        ((withdrawalPath || publicApiPath || publicOwnershipPath) && origin !== dependencies.publicOrigin)
       ) {
         return context.text("Not Found", 404);
       }
@@ -261,6 +283,26 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       ? context.json({ status: "ready" }, 200)
       : apiError(context, 503, "NOT_READY", "The service is not ready.");
   });
+
+  const indexNowKeyProvider = dependencies.indexNowKeyProvider ?? (
+    dependencies.indexNowKey ? () => dependencies.indexNowKey : undefined
+  );
+  if (indexNowKeyProvider) {
+    app.get("/indexnow-key.txt", (context) => {
+      let indexNowKey: string | undefined;
+      try {
+        indexNowKey = indexNowKeyProvider();
+      } catch {
+        return context.text("Not Found", 404);
+      }
+      if (!indexNowKey || !/^[A-Za-z0-9-]{8,128}$/.test(indexNowKey)) {
+        return context.text("Not Found", 404);
+      }
+      context.header("Content-Type", "text/plain; charset=utf-8");
+      context.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+      return context.body(indexNowKey, 200);
+    });
+  }
 
   app.get("/api/v1/consent-documents", (context) => {
     const locale = localeSchema.safeParse(context.req.query("locale"));
@@ -376,6 +418,17 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     }
   });
 
+  if (dependencies.hermesHmacSecret) {
+    registerHermesArticleRoutes(app, {
+      db: dependencies.db,
+      keyProvider: dependencies.keyProvider,
+      hermesSecret: dependencies.hermesHmacSecret,
+      now,
+      randomUUID,
+      peerAddress: dependencies.peerAddress ?? (() => "unknown"),
+    });
+  }
+
   const task4Dependencies = [
     dependencies.publicOrigin,
     dependencies.adminOrigin,
@@ -403,6 +456,9 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       dummyPasswordHash: dependencies.dummyPasswordHash,
       now,
       peerAddress: dependencies.peerAddress ?? (() => "unknown"),
+      ...(dependencies.articlePublication
+        ? { articlePublication: dependencies.articlePublication }
+        : {}),
     });
   }
 

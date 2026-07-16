@@ -1,16 +1,49 @@
-import type { Locale } from "@wisdom/shared";
+import {
+  computePublishedArticleContentSha256,
+  type Locale,
+  type PublishedArticleDocument,
+} from "@wisdom/shared";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { describe, expect, it } from "vitest";
 
 import PublicPage from "./PublicPage.astro";
 import { siteContent } from "../content/site-content.js";
 import type { PublicRoute } from "../lib/routes.js";
+import type { PublishedContent } from "../content/published-articles.js";
+import { buildSearchIndex } from "../search/search-index.js";
 
-async function renderPage(locale: Locale, route: PublicRoute): Promise<string> {
+const searchOrigin = "https://www.jihye-office.kr";
+
+function publishedContent(articles: readonly PublishedArticleDocument[]): PublishedContent {
+  const byArticleId = new Map<string, PublishedArticleDocument[]>();
+  for (const article of articles) {
+    byArticleId.set(article.articleId, [...(byArticleId.get(article.articleId) ?? []), article]);
+  }
+  return {
+    manifest: { schemaVersion: 1, entries: [] },
+    articles,
+    byRoute: new Map(articles.map((article) => [article.route, article])),
+    byArticleId,
+  };
+}
+
+async function renderPage(
+  locale: Locale,
+  route: PublicRoute,
+  articles: readonly PublishedArticleDocument[] = [],
+): Promise<string> {
   const container = await AstroContainer.create();
+  const prefix = locale === "ko" ? ""
+    : locale === "en" ? "/en"
+      : locale === "zh-Hans" ? "/zh-hans" : "/zh-hant";
+  const localizedRoute = route === "/" ? prefix || "/" : `${prefix}${route}`;
+  const searchDocument = buildSearchIndex(searchOrigin, publishedContent(articles)).byRoute.get(
+    localizedRoute,
+  );
+  if (!searchDocument) throw new Error("Missing test search document");
   return container.renderToString(PublicPage, {
     partial: false,
-    props: { locale, route },
+    props: { locale, route, articles, searchDocument },
     request: new Request(`https://example.test${route}`),
   });
 }
@@ -27,6 +60,12 @@ describe("public Astro page DOM", () => {
     expect(html).toContain('href="/zh-hant"');
     expect(html).toContain('href="/en/consultation"');
     expect(html.match(/data-reveal(?:=|\s)/g)).toHaveLength(18);
+    expect(html.match(/rel="canonical"/g)).toHaveLength(1);
+    expect(html).toContain(`rel="canonical" href="${searchOrigin}/en"`);
+    expect(html).toContain(`rel="alternate" hreflang="ko" href="${searchOrigin}/"`);
+    expect(html).toContain(`rel="alternate" hreflang="x-default" href="${searchOrigin}/"`);
+    expect(html).toContain('type="application/ld+json"');
+    expect(html.toLowerCase()).not.toContain("nosourceinfo");
     expect(html).not.toMatch(/representative-brochure|https?:\/\/[^"']+\.(?:avif|webp|jpe?g|png)/i);
   });
 
@@ -43,6 +82,26 @@ describe("public Astro page DOM", () => {
     ]) {
       expect(html).toContain(service);
     }
+    for (const answerSection of ["scope", "preparation", "process"]) {
+      expect(html).toContain(`data-answer-section="${answerSection}"`);
+    }
+    expect(html).toContain("Jihye Kang");
+    expect(html).toContain("Representative Administrative Attorney");
+    expect(html).toContain('datetime="2026-07-16T00:00:00.000Z"');
+    expect(html).toContain('href="https://www.pps.go.kr/"');
+    const jsonLd = html.match(/<script type="application\/ld\+json">([^<]+)<\/script>/)?.[1];
+    expect(jsonLd).toBeDefined();
+    const graph = JSON.parse(jsonLd!)["@graph"] as Array<Record<string, unknown>>;
+    const serviceNode = graph.find((node) => node["@type"] === "Service");
+    expect(serviceNode).toMatchObject({
+      name: "Public Procurement",
+      description: "Production, product, and registration support for entering public procurement.",
+      reviewedBy: {
+        name: "Jihye Kang",
+        jobTitle: "Representative Administrative Attorney",
+      },
+      citation: ["https://www.pps.go.kr/"],
+    });
   });
 
   it("localizes homepage labels and representative facts without Korean leakage", async () => {
@@ -114,7 +173,64 @@ describe("public Astro page DOM", () => {
     for (const locale of ["en", "zh-Hans", "zh-Hant"] as const) {
       expect(siteContent[locale].policies.launchGate).not.toMatch(/[가-힣]/);
     }
-    expect(missing).toContain('name="robots" content="noindex"');
+    expect(missing).toContain('name="robots" content="noindex, follow"');
+    expect(privacy).toContain('name="robots" content="noindex, follow"');
+    expect(withdrawal).toContain('name="robots" content="noindex, follow"');
+    expect(privacy).not.toContain('rel="alternate" hreflang=');
     expect(missing).toContain('href="/zh-hans"');
+  });
+
+  it("lists only articles published for the exact page locale", async () => {
+    const common = {
+      schemaVersion: 1 as const,
+      articleId: "11111111-1111-4111-8111-111111111111",
+      slug: "guide",
+      contentSha256: "0".repeat(64),
+      bodyMarkdown: "## Guide\n\nSafe body.",
+      bodyHtml: "<h2>Guide</h2>\n<p>Safe body.</p>\n",
+      revisionCreatedAt: "2026-07-01T00:00:00.000Z",
+      approvedAt: "2026-07-02T00:00:00.000Z",
+      firstPublishedAt: "2026-07-03T00:00:00.000Z",
+      modifiedAt: "2026-07-03T00:00:00.000Z",
+      reviewer: { name: "Reviewer", role: "Administrative Attorney" },
+      sources: [{
+        id: "source-1",
+        url: "https://example.test/source",
+        sourceTimestamp: "2026-06-30T00:00:00.000Z",
+      }],
+    };
+    const english: PublishedArticleDocument = {
+      ...common,
+      locale: "en",
+      revisionId: "22222222-2222-4222-8222-222222222222",
+      route: "/en/insights/guide",
+      title: "Reviewed procurement guide",
+      summary: "English summary visible only on the English listing.",
+    };
+    const korean: PublishedArticleDocument = {
+      ...common,
+      locale: "ko",
+      revisionId: "33333333-3333-4333-8333-333333333333",
+      route: "/insights/guide",
+      title: "검수된 조달 안내",
+      summary: "한국어 목록에서만 보이는 요약입니다.",
+    };
+    for (const article of [english, korean]) {
+      article.contentSha256 = computePublishedArticleContentSha256({
+        title: article.title,
+        summary: article.summary,
+        bodyMarkdown: article.bodyMarkdown,
+        sources: article.sources,
+        locale: article.locale,
+      });
+    }
+
+    const html = await renderPage("en", "/insights", [korean, english]);
+
+    expect(html).toContain("Reviewed procurement guide");
+    expect(html).toContain("English summary visible only on the English listing.");
+    expect(html).toContain('href="/en/insights/guide"');
+    expect(html).not.toContain("검수된 조달 안내");
+    expect(html).not.toContain("한국어 목록에서만 보이는 요약입니다.");
   });
 });

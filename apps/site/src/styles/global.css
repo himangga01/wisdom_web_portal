@@ -800,6 +800,56 @@ p {
   gap: 2rem;
 }
 
+.service-evidence-stack,
+.service-answer-sections {
+  display: grid;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.service-answer-sections > section {
+  padding: clamp(1.25rem, 3vw, 2rem);
+  border: 1px solid var(--wisdom-sand);
+  background: color-mix(in srgb, var(--wisdom-white) 74%, transparent);
+}
+
+.service-answer-sections h2,
+.service-evidence h2 {
+  margin: 0 0 0.75rem;
+  font-family: var(--wisdom-font-serif);
+}
+
+.service-answer-sections p,
+.service-answer-sections ul,
+.service-evidence p,
+.service-evidence ul {
+  margin-block: 0.65rem 0;
+}
+
+.service-answer-sections li + li {
+  margin-top: 0.4rem;
+}
+
+.service-evidence {
+  display: grid;
+  gap: 1.25rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--wisdom-bronze);
+}
+
+.service-evidence a {
+  color: var(--wisdom-brown);
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.service-evidence time {
+  margin-left: 0.75rem;
+  color: color-mix(in srgb, var(--wisdom-ink) 62%, transparent);
+  font-size: 0.82rem;
+}
+
 .service-list,
 .process-list,
 .withdrawal-steps {
@@ -856,6 +906,185 @@ p {
   font-family: var(--wisdom-font-serif);
   font-size: clamp(4rem, 12vw, 8rem);
   line-height: 1;
+}
+
+.insights-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.insight-card {
+  display: grid;
+  min-height: 100%;
+  gap: 1rem;
+  padding: clamp(1.5rem, 4vw, 2.5rem);
+  border: 1px solid var(--wisdom-sand);
+  background: color-mix(in srgb, var(--wisdom-white) 74%, transparent);
+}
+
+.insight-card h2 {
+  margin: 0;
+  font-family: var(--wisdom-font-serif);
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  line-height: 1.35;
+}
+
+.insight-card h2 a:hover,
+.insight-read-link:hover {
+  color: var(--wisdom-brown);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+.insight-meta {
+  margin: 0;
+  color: var(--wisdom-bronze);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.insight-card > p:not(.insight-meta) {
+  margin: 0;
+  color: color-mix(in srgb, var(--wisdom-ink) 78%, transparent);
+}
+
+.insight-read-link {
+  align-self: end;
+  color: var(--wisdom-brown);
+  font-weight: 850;
+}
+
+.article-hero {
+  background:
+    linear-gradient(130deg, var(--wisdom-ivory) 0 62%, color-mix(in srgb, var(--wisdom-sand) 52%, transparent) 62%);
+}
+
+.article-hero h1 {
+  max-width: 18ch;
+  font-size: clamp(2.35rem, 6vw, 4.6rem);
+}
+
+.article-hero .narrow-shell > p:not(.eyebrow) {
+  max-width: 48rem;
+  font-size: clamp(1rem, 2vw, 1.2rem);
+}
+
+.article-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  margin: 2rem 0 0;
+}
+
+.article-dates div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.article-dates dt {
+  color: var(--wisdom-bronze);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.article-dates dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.published-article {
+  max-width: 52rem;
+  margin-inline: auto;
+}
+
+.published-article-body {
+  font-size: clamp(1rem, 1.4vw, 1.08rem);
+  line-height: 1.9;
+}
+
+.published-article-body h2,
+.published-article-body h3 {
+  margin: 2.75rem 0 1rem;
+  font-family: var(--wisdom-font-serif);
+  line-height: 1.4;
+}
+
+.published-article-body h2 {
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--wisdom-sand);
+  font-size: clamp(1.65rem, 3vw, 2.2rem);
+}
+
+.published-article-body h3 {
+  font-size: clamp(1.25rem, 2.5vw, 1.55rem);
+}
+
+.published-article-body a,
+.article-provenance a {
+  color: var(--wisdom-brown);
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+}
+
+.published-article-body blockquote {
+  margin: 2rem 0;
+  padding: 1rem 1.5rem;
+  border-left: 3px solid var(--wisdom-bronze);
+  background: color-mix(in srgb, var(--wisdom-sand) 24%, transparent);
+}
+
+.published-article-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 1rem;
+  background: var(--wisdom-ink);
+  color: var(--wisdom-white);
+}
+
+.published-article-body :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 0.2rem;
+  background: color-mix(in srgb, var(--wisdom-sand) 42%, transparent);
+}
+
+.article-provenance {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 4rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--wisdom-bronze);
+}
+
+.article-provenance h2 {
+  margin: 0 0 0.75rem;
+  font-family: var(--wisdom-font-serif);
+  font-size: 1.35rem;
+}
+
+.article-provenance ol {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.article-provenance li {
+  overflow-wrap: anywhere;
+}
+
+.article-provenance time {
+  margin-left: 0.75rem;
+  color: color-mix(in srgb, var(--wisdom-ink) 62%, transparent);
+  font-size: 0.78rem;
 }
 
 .consultation-form {
@@ -1248,7 +1477,8 @@ p {
   }
 
   .three-column-grid,
-  .service-grid {
+  .service-grid,
+  .insights-list {
     grid-template-columns: 1fr;
   }
 

@@ -2,15 +2,17 @@
 import type { Locale } from "@wisdom/shared";
 
 import { OFFICE, siteContent } from "../content/site-content.js";
+import type { ArticleLocaleLink } from "../lib/article-routes.js";
 import { localeLinksForPath, toLocalizedPath, type ContentRoute, type PublicRoute } from "../lib/routes.js";
 import { getKakaoChatUrl } from "../lib/site-config.js";
 
 interface Props {
   locale: Locale;
-  route: PublicRoute;
+  route: PublicRoute | string;
+  localeLinks?: readonly ArticleLocaleLink[];
 }
 
-const { locale, route } = Astro.props;
+const { locale, route, localeLinks } = Astro.props;
 const content = siteContent[locale];
 const kakaoUrl = getKakaoChatUrl(import.meta.env.PUBLIC_KAKAO_CHAT_URL);
 const languageNames: Record<Locale, string> = {
@@ -28,8 +30,10 @@ const navigation = [
   { key: "location", route: "/location" },
 ] as const satisfies readonly { key: keyof typeof content.navigation; route: ContentRoute }[];
 const isActive = (itemRoute: ContentRoute): boolean =>
-  route === itemRoute || (itemRoute === "/services" && route.startsWith("/services/"));
-const languageLinks = localeLinksForPath(toLocalizedPath(locale, route));
+  route === itemRoute
+  || (itemRoute === "/services" && route.startsWith("/services/"))
+  || (itemRoute === "/insights" && /\/(?:insights)\//.test(route));
+const languageLinks = localeLinks ?? localeLinksForPath(toLocalizedPath(locale, route as PublicRoute));
 ---
 
 <a class="skip-link" href="#main">{content.accessibility.skipToContent}</a>

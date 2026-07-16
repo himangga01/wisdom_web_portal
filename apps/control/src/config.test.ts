@@ -9,6 +9,13 @@ const secrets = {
   WITHDRAWAL_TOKEN_SECRET: "c".repeat(32),
   HERMES_HMAC_SECRET: "d".repeat(32),
   ADMIN_DUMMY_PASSWORD_HASH: "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY",
+  PUBLIC_RELEASE_ROOT: "/srv/wisdom/public-releases",
+  PUBLIC_CURRENT_LINK: "/srv/wisdom/public-current",
+  SITE_SOURCE_ROOT: "/srv/wisdom/app-current",
+  NODE_BINARY: "/opt/homebrew/bin/node",
+  NPM_BINARY: "/opt/homebrew/bin/npm",
+  INDEXNOW_KEYCHAIN_SERVICE: "com.jihye.portal.indexnow",
+  INDEXNOW_KEY_LOCATION: "https://www.example.test/indexnow-key.txt",
 };
 
 const origins = {
@@ -83,6 +90,20 @@ describe("control environment", () => {
     expect(config.allowedOrigins).toEqual([origins.PUBLIC_ORIGIN]);
     expect(config.keyProvider.active().id).toBe("pii-v2");
     expect(config.keyProvider.get("pii-v1")).toBeDefined();
+    expect(config.publication).toMatchObject({
+      releaseRoot: secrets.PUBLIC_RELEASE_ROOT,
+      currentLink: secrets.PUBLIC_CURRENT_LINK,
+      siteSourceRoot: secrets.SITE_SOURCE_ROOT,
+      npmBinary: secrets.NPM_BINARY,
+      nodeBinary: secrets.NODE_BINARY,
+      publicOrigin: origins.PUBLIC_ORIGIN,
+    });
+    expect(config.indexNow).toEqual({
+      endpoint: "https://api.indexnow.org/indexnow",
+      keychainService: secrets.INDEXNOW_KEYCHAIN_SERVICE,
+      keyLocation: secrets.INDEXNOW_KEY_LOCATION,
+      timeoutMs: 10_000,
+    });
   });
 
   it("fails production closed when any independent secret is missing, reused, or test-only", () => {
@@ -99,6 +120,13 @@ describe("control environment", () => {
       "WITHDRAWAL_TOKEN_SECRET",
       "HERMES_HMAC_SECRET",
       "ADMIN_DUMMY_PASSWORD_HASH",
+      "PUBLIC_RELEASE_ROOT",
+      "PUBLIC_CURRENT_LINK",
+      "SITE_SOURCE_ROOT",
+      "NODE_BINARY",
+      "NPM_BINARY",
+      "INDEXNOW_KEYCHAIN_SERVICE",
+      "INDEXNOW_KEY_LOCATION",
     ] as const) {
       expect(() => parseControlConfig({ ...base, [name]: undefined }), name).toThrow();
     }
@@ -110,6 +138,23 @@ describe("control environment", () => {
       ...base,
       HERMES_HMAC_SECRET: "test-only-hermes-secret-00000001",
     })).toThrow(/test-only/i);
+  });
+
+  it("requires absolute, distinct publication paths and a bounded production build timeout", () => {
+    const base = {
+      NODE_ENV: "production",
+      DATABASE_PATH: "./data/wisdom.sqlite",
+      ...secrets,
+      ...origins,
+    };
+    expect(() => parseControlConfig({ ...base, PUBLIC_RELEASE_ROOT: "relative/releases" })).toThrow(/PUBLIC_RELEASE_ROOT/);
+    expect(() => parseControlConfig({ ...base, PUBLIC_CURRENT_LINK: secrets.PUBLIC_RELEASE_ROOT })).toThrow(/distinct/i);
+    expect(() => parseControlConfig({ ...base, NPM_BINARY: secrets.NODE_BINARY })).toThrow(/distinct/i);
+    expect(() => parseControlConfig({ ...base, PUBLICATION_BUILD_TIMEOUT_MS: "999" })).toThrow(/timeout/i);
+    expect(parseControlConfig({
+      ...base,
+      PUBLICATION_BUILD_TIMEOUT_MS: "180000",
+    }).publication?.buildTimeoutMs).toBe(180_000);
   });
 
   it("requires the production dummy password hash to match the frozen Argon2id policy", () => {

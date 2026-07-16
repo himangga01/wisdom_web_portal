@@ -1,18 +1,22 @@
 ---
-import type { Locale } from "@wisdom/shared";
+import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
 
 import ConsultationForm from "./ConsultationForm.astro";
 import HomePage from "./HomePage.astro";
+import InsightsIndex from "./InsightsIndex.astro";
 import { OFFICE, siteContent, type ServiceCategorySlug } from "../content/site-content.js";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { toLocalizedPath, type PublicRoute } from "../lib/routes.js";
+import type { SearchDocument } from "../search/types.js";
 
 interface Props {
   locale: Locale;
   route: PublicRoute;
+  articles?: readonly PublishedArticleDocument[];
+  searchDocument: SearchDocument;
 }
 
-const { locale, route } = Astro.props;
+const { locale, route, articles = [], searchDocument } = Astro.props;
 const content = siteContent[locale];
 const serviceSlug = route.startsWith("/services/")
   ? (route.slice("/services/".length) as ServiceCategorySlug)
@@ -20,36 +24,22 @@ const serviceSlug = route.startsWith("/services/")
 const selectedService = serviceSlug
   ? content.services.categories.find((category) => category.slug === serviceSlug)
   : undefined;
-const pageKey = route === "/"
-  ? "home"
-  : route === "/about"
-    ? "about"
-    : route === "/services" || selectedService
-      ? "services"
-      : route === "/process"
-        ? "process"
-        : route === "/insights"
-          ? "insights"
-          : route === "/consultation"
-            ? "consultation"
-            : route === "/location"
-              ? "location"
-              : route === "/privacy"
-                ? "privacy"
-                : route === "/marketing/withdraw"
-                  ? "marketingWithdraw"
-                  : "notFound";
-const meta = content.meta[pageKey];
-const heading = selectedService?.title ?? content.headings[pageKey];
+const heading = searchDocument.h1;
 const backToServices = toLocalizedPath(locale, "/services");
+const servicePublication = searchDocument.service;
+const serviceEvidenceLabels: Record<Locale, { reviewed: string; sources: string }> = {
+  ko: { reviewed: "검수", sources: "공식 출처" },
+  en: { reviewed: "Reviewed", sources: "Official sources" },
+  "zh-Hans": { reviewed: "审查", sources: "官方来源" },
+  "zh-Hant": { reviewed: "審查", sources: "官方來源" },
+};
+const evidenceLabels = serviceEvidenceLabels[locale];
 ---
 
 <BaseLayout
   locale={locale}
   route={route}
-  title={selectedService ? `${selectedService.title} | ${content.office.name}` : meta.title}
-  description={selectedService?.summary ?? meta.description}
-  noindex={route === "/404"}
+  searchDocument={searchDocument}
 >
   {route === "/" && <HomePage locale={locale} />}
 
@@ -107,13 +97,41 @@ const backToServices = toLocalizedPath(locale, "/services");
             </div>
           )}
 
-          {selectedService && (
+          {selectedService && servicePublication && (
             <div class="category-detail">
-              <ol class="service-list">
-                {selectedService.items.map((item, index) => (
-                  <li><span>{String(index + 1).padStart(2, "0")}</span><strong>{item}</strong></li>
-                ))}
-              </ol>
+              <div class="service-evidence-stack">
+                <div class="service-answer-sections">
+                  {servicePublication.answerSections.map((section) => (
+                    <section id={`answer-${section.id}`} data-answer-section={section.id}>
+                      <h2>{section.heading}</h2>
+                      <p>{section.body}</p>
+                      {section.items.length > 0 && (
+                        <ul>{section.items.map((item) => <li>{item}</li>)}</ul>
+                      )}
+                    </section>
+                  ))}
+                </div>
+                <footer class="service-evidence">
+                  <p>
+                    <strong>{evidenceLabels.reviewed}</strong>{" "}
+                    {servicePublication.reviewer.name} · {servicePublication.reviewer.role}{" "}
+                    <time datetime={servicePublication.reviewedAt}>
+                      {servicePublication.reviewedAt.slice(0, 10)}
+                    </time>
+                  </p>
+                  <section aria-labelledby="service-sources-heading">
+                    <h2 id="service-sources-heading">{evidenceLabels.sources}</h2>
+                    <ul>
+                      {servicePublication.sources.map((source) => (
+                        <li>
+                          <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
+                          <time datetime={source.sourceTimestamp}>{source.sourceTimestamp.slice(0, 10)}</time>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                </footer>
+              </div>
               <aside class="content-cta">
                 <p>{content.pages.consultationIntro}</p>
                 <a class="button button-primary" href={toLocalizedPath(locale, "/consultation")}>{content.buttons.consultation}</a>
@@ -130,12 +148,7 @@ const backToServices = toLocalizedPath(locale, "/services");
           )}
 
           {route === "/insights" && (
-            <div class="insight-notice">
-              <span aria-hidden="true">知</span>
-              <h2>{content.headings.insights}</h2>
-              <p>{content.pages.insights.note}</p>
-              <a class="button button-secondary" href={toLocalizedPath(locale, "/services")}>{content.buttons.exploreServices}</a>
-            </div>
+            <InsightsIndex locale={locale} articles={articles} emptyMessage={content.pages.insights.note} />
           )}
 
           {route === "/consultation" && <ConsultationForm locale={locale} />}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "locale": "zh-Hant",
+  "slug": "caigou-ruzhu-zhinan",
+  "revisionId": "33333333-3333-4333-8333-333333333333",
+  "contentSha256": "06c45b30faa0fafe311b86cec87197f6a7984318ae946ce9be432f0edb914bf5",
+  "route": "/zh-hant/insights/caigou-ruzhu-zhinan",
+  "title": "經審查的採購市場進入指南",
+  "summary": "說明進入公共採購市場前應確認的程序與證明資料。",
+  "bodyMarkdown": "## 準備前先確認\n\n準備證明資料前，先確認適用的採購進入途徑。\n\n- 整理申請目的與目標品項。\n- 檢查適用的確認與認證要件。\n\n[查看官方指南](https://example.test/procurement)\n",
+  "bodyHtml": "<h2>準備前先確認</h2>\n<p>準備證明資料前，先確認適用的採購進入途徑。</p>\n<ul>\n<li>整理申請目的與目標品項。</li>\n<li>檢查適用的確認與認證要件。</li>\n</ul>\n<p><a href=\"https://example.test/procurement\">查看官方指南</a></p>",
+  "revisionCreatedAt": "2026-07-01T00:00:00.000Z",
+  "approvedAt": "2026-07-02T00:00:00.000Z",
+  "firstPublishedAt": "2026-07-03T00:00:00.000Z",
+  "modifiedAt": "2026-07-03T00:00:00.000Z",
+  "reviewer": {
+    "name": "姜智慧",
+    "role": "行政士"
+  },
+  "sources": [
+    {
+      "id": "official-guidance",
+      "url": "https://example.test/procurement",
+      "sourceTimestamp": "2026-06-30T00:00:00.000Z"
+    }
+  ]
+}

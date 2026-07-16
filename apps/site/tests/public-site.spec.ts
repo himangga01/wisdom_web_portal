@@ -5,6 +5,8 @@ import { expect, test } from "@playwright/test";
 import { PUBLIC_ROUTE_ENTRIES } from "../src/lib/routes.js";
 import { siteContent } from "../src/content/site-content.js";
 
+const publicOrigin = "https://www.jihye-office.kr";
+
 function physicalViewportSize(browserName: string, width: number, height: number) {
   const windowsWebKitScale = browserName === "webkit" && process.platform === "win32" ? 1.25 : 1;
   return {
@@ -555,4 +557,204 @@ test("keeps the Korean 404 fallback when JavaScript is disabled", async ({ brows
   await expect(page.locator("html")).toHaveAttribute("lang", "ko");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(siteContent.ko.headings.notFound);
   await context.close();
+});
+
+test.describe("search discovery surface", () => {
+  test("emits one self-canonical and a reciprocal absolute locale graph", async ({ page }) => {
+    const expected = [
+      `${publicOrigin}/services/procurement`,
+      `${publicOrigin}/en/services/procurement`,
+      `${publicOrigin}/zh-hans/services/procurement`,
+      `${publicOrigin}/zh-hant/services/procurement`,
+    ];
+    for (const pathname of [
+      "/services/procurement",
+      "/en/services/procurement",
+      "/zh-hans/services/procurement",
+      "/zh-hant/services/procurement",
+    ]) {
+      await page.goto(pathname);
+      await expect(page.locator('link[rel="canonical"]')).toHaveCount(1);
+      await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+        "href",
+        `${publicOrigin}${pathname}`,
+      );
+      const alternates = await page.locator('link[rel="alternate"][hreflang]:not([hreflang="x-default"])')
+        .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      expect(alternates).toEqual(expected);
+      await expect(page.locator('link[rel="alternate"][hreflang="x-default"]'))
+        .toHaveAttribute("href", `${publicOrigin}/services/procurement`);
+    }
+  });
+
+  test("keeps visible service evidence equal to the JSON-LD claims", async ({ page }) => {
+    await page.goto("/en/services/procurement");
+
+    await expect(page.locator("[data-answer-section]")).toHaveCount(3);
+    await expect(page.locator('[data-answer-section="scope"]')).toContainText(
+      "Direct production certificate",
+    );
+    await expect(page.locator(".service-evidence")).toContainText("Jihye Kang");
+    await expect(page.locator(".service-evidence")).toContainText(
+      "Representative Administrative Attorney",
+    );
+    await expect(page.locator('.service-evidence a[href="https://www.pps.go.kr/"]')).toHaveCount(1);
+
+    const graph = await page.locator('script[type="application/ld+json"]').evaluate((script) => (
+      JSON.parse(script.textContent ?? "")["@graph"] as Array<Record<string, unknown>>
+    ));
+    const service = graph.find((node) => node["@type"] === "Service");
+    expect(service).toMatchObject({
+      name: await page.locator("h1").textContent(),
+      description: await page.locator(".page-hero p").last().textContent(),
+      reviewedBy: {
+        name: "Jihye Kang",
+        jobTitle: "Representative Administrative Attorney",
+      },
+      citation: ["https://www.pps.go.kr/"],
+    });
+    expect(JSON.stringify(graph)).not.toMatch(/"@type":"(?:Attorney|Review|AggregateRating)"|nosourceinfo/);
+  });
+
+  test("serves exact sitemap, RSS, and crawler controls", async ({ request }) => {
+    const sitemapResponse = await request.get("/sitemap.xml");
+    expect(sitemapResponse.status()).toBe(200);
+    expect(sitemapResponse.headers()["content-type"]).toMatch(/^(?:application|text)\/xml/);
+    const sitemap = await sitemapResponse.text();
+    const sitemapUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]);
+    expect(sitemapUrls).toHaveLength(52);
+    expect(new Set(sitemapUrls).size).toBe(52);
+    expect(sitemap).not.toMatch(/admin|api\/|consultation|marketing\/withdraw|verification|naver[^<]*\.html/i);
+
+    const rssResponse = await request.get("/rss.xml");
+    expect(rssResponse.status()).toBe(200);
+    expect(rssResponse.headers()["content-type"])
+      .toMatch(/^(?:application\/(?:rss\+xml|xml)|text\/xml)/);
+    const rss = await rssResponse.text();
+    expect(rss.match(/<item>/g)).toHaveLength(4);
+    expect(rss).not.toMatch(/<script|javascript:|private canary|draft canary/i);
+
+    const robotsResponse = await request.get("/robots.txt");
+    expect(robotsResponse.status()).toBe(200);
+    expect(robotsResponse.headers()["content-type"]).toContain("text/plain");
+    const robots = await robotsResponse.text();
+    for (const agent of ["Googlebot", "Yeti", "OAI-SearchBot", "Google-Extended", "ChatGPT-User", "GPTBot"]) {
+      expect(robots).toContain(`User-agent: ${agent}`);
+    }
+    expect(robots).toContain(`Sitemap: ${publicOrigin}/sitemap.xml`);
+    expect(robots.toLowerCase()).not.toContain("nosourceinfo");
+  });
+
+  test("keeps accessible utility pages out of hreflang and marks them noindex", async ({ page }) => {
+    for (const pathname of [
+      "/consultation",
+      "/en/privacy",
+      "/zh-hans/marketing/withdraw",
+    ]) {
+      const response = await page.goto(pathname);
+      expect(response?.status(), pathname).toBe(200);
+      await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, follow");
+      await expect(page.locator('link[rel="canonical"]')).toHaveCount(1);
+      await expect(page.locator('link[rel="alternate"][hreflang]')).toHaveCount(0);
+      expect((await page.content()).toLowerCase()).not.toContain("nosourceinfo");
+    }
+  });
+});
+
+test.describe("published insight fixture", () => {
+  test.skip(
+    !process.env.WISDOM_PUBLISHED_CONTENT_DIR,
+    "Run with the tracked immutable published-content fixture.",
+  );
+
+  test("lists exact-locale articles and renders availability-aware alternates", async ({ page, request }) => {
+    await page.goto("/en/insights");
+    await expect(page.getByRole("heading", { name: "Reviewed procurement entry guide" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Visa extension preparation checklist" })).toBeVisible();
+    await expect(page.getByText("검수된 조달 진입 안내", { exact: true })).toHaveCount(0);
+
+    await page.goto("/en/insights/procurement-entry-guide");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "Reviewed procurement entry guide",
+    );
+    await expect(page.locator("article.published-article")).toHaveCount(1);
+    await expect(page.locator(".published-article-body")).toContainText(
+      "Confirm the procurement route before preparing evidence.",
+    );
+    await expect(page.locator('link[rel="alternate"][hreflang="ko"]')).toHaveAttribute(
+      "href",
+      `${publicOrigin}/insights/jodal-entry-guide`,
+    );
+    await expect(page.locator('link[rel="alternate"][hreflang="en"]')).toHaveAttribute(
+      "href",
+      `${publicOrigin}/en/insights/procurement-entry-guide`,
+    );
+    await expect(page.locator('link[rel="alternate"][hreflang="zh-Hant"]')).toHaveCount(1);
+    await expect(page.locator('link[rel="alternate"][hreflang="zh-Hans"]')).toHaveCount(0);
+    await expect(page.locator('link[rel="alternate"][hreflang="x-default"]')).toHaveAttribute(
+      "href",
+      `${publicOrigin}/insights/jodal-entry-guide`,
+    );
+    await expect(page.locator('.language-links a[hreflang="zh-Hans"]')).toHaveCount(0);
+
+    const missingLocale = await request.get(
+      "/zh-hans/insights/procurement-entry-guide",
+      { maxRedirects: 0 },
+    );
+    expect(missingLocale.status()).toBe(404);
+  });
+
+  test("omits x-default for an English-only article", async ({ page }) => {
+    await page.goto("/en/insights/visa-extension-checklist");
+
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      "Visa extension preparation checklist",
+    );
+    await expect(page.locator('link[rel="alternate"][hreflang="en"]')).toHaveCount(1);
+    await expect(page.locator('link[rel="alternate"][hreflang="x-default"]')).toHaveCount(0);
+    await expect(page.locator('.language-links a[hreflang="ko"]')).toHaveCount(0);
+  });
+
+  test("keeps published guidance visible and navigable without JavaScript", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    const response = await page.goto(
+      "http://127.0.0.1:4321/en/insights/procurement-entry-guide",
+    );
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.locator(".published-article-body")).toContainText(
+      "Confirm the procurement route before preparing evidence.",
+    );
+    await context.close();
+  });
+
+  for (const width of [320, 390, 768, 1440]) {
+    test(`has no published-page overflow at ${width}px`, async ({ browserName, page }) => {
+      await page.setViewportSize(physicalViewportSize(browserName, width, 900));
+      for (const pathname of [
+        "/en/insights",
+        "/en/insights/procurement-entry-guide",
+      ]) {
+        await page.goto(pathname);
+        expect(await page.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        })), pathname).toEqual({ clientWidth: width, scrollWidth: width });
+      }
+    });
+  }
+
+  for (const pathname of [
+    "/en/insights",
+    "/en/insights/procurement-entry-guide",
+  ]) {
+    test(`has no serious published-page accessibility violations on ${pathname}`, async ({ page }) => {
+      await page.goto(pathname);
+      const results = await new AxeBuilder({ page }).analyze();
+      expect(results.violations.filter(({ impact }) => impact === "critical" || impact === "serious"))
+        .toEqual([]);
+    });
+  }
 });

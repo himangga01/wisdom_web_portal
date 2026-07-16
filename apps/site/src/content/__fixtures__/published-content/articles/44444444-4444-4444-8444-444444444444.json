@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "articleId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "locale": "en",
+  "slug": "visa-extension-checklist",
+  "revisionId": "44444444-4444-4444-8444-444444444444",
+  "contentSha256": "99467d8442e3c5a49a0ce3502e1da5886c6247f09248a2122ea23493d64100ab",
+  "route": "/en/insights/visa-extension-checklist",
+  "title": "Visa extension preparation checklist",
+  "summary": "A reviewed checklist of the basic facts and documents to confirm before a visa extension request.",
+  "bodyMarkdown": "## Preparation checklist\n\nCheck the current status and filing deadline before collecting documents.\n\n- Confirm the current status of stay.\n- Check the filing period and required evidence.\n- Keep source documents consistent.\n\n[Read the official guidance](https://example.test/visa)\n",
+  "bodyHtml": "<h2>Preparation checklist</h2>\n<p>Check the current status and filing deadline before collecting documents.</p>\n<ul>\n<li>Confirm the current status of stay.</li>\n<li>Check the filing period and required evidence.</li>\n<li>Keep source documents consistent.</li>\n</ul>\n<p><a href=\"https://example.test/visa\">Read the official guidance</a></p>",
+  "revisionCreatedAt": "2026-07-01T00:00:00.000Z",
+  "approvedAt": "2026-07-02T00:00:00.000Z",
+  "firstPublishedAt": "2026-07-03T00:00:00.000Z",
+  "modifiedAt": "2026-07-03T00:00:00.000Z",
+  "reviewer": {
+    "name": "Jihye Kang",
+    "role": "Administrative Attorney"
+  },
+  "sources": [
+    {
+      "id": "official-guidance",
+      "url": "https://example.test/visa",
+      "sourceTimestamp": "2026-06-30T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "articleId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "locale": "en",
+  "slug": "procurement-entry-guide",
+  "revisionId": "22222222-2222-4222-8222-222222222222",
+  "contentSha256": "abae63514f0bd39d625133302869c39bc40cd4f3b94f755a39d30b40e850c509",
+  "route": "/en/insights/procurement-entry-guide",
+  "title": "Reviewed procurement entry guide",
+  "summary": "Reviewed practical guidance on the route and evidence to check before entering public procurement.",
+  "bodyMarkdown": "## What to confirm first\n\nConfirm the procurement route before preparing evidence.\n\n- Define the application objective and target items.\n- Review the applicable confirmation and certification requirements.\n\n[Read the official guidance](https://example.test/procurement)\n",
+  "bodyHtml": "<h2>What to confirm first</h2>\n<p>Confirm the procurement route before preparing evidence.</p>\n<ul>\n<li>Define the application objective and target items.</li>\n<li>Review the applicable confirmation and certification requirements.</li>\n</ul>\n<p><a href=\"https://example.test/procurement\">Read the official guidance</a></p>",
+  "revisionCreatedAt": "2026-07-01T00:00:00.000Z",
+  "approvedAt": "2026-07-02T00:00:00.000Z",
+  "firstPublishedAt": "2026-07-03T00:00:00.000Z",
+  "modifiedAt": "2026-07-03T00:00:00.000Z",
+  "reviewer": {
+    "name": "Jihye Kang",
+    "role": "Administrative Attorney"
+  },
+  "sources": [
+    {
+      "id": "official-guidance",
+      "url": "https://example.test/procurement",
+      "sourceTimestamp": "2026-06-30T00:00:00.000Z"
+    }
+  ]
+}

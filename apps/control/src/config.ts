@@ -1,9 +1,15 @@
 import { isIP } from "node:net";
+import { isAbsolute } from "node:path";
 
 import { parseEnvironment, type EnvironmentSource } from "@wisdom/shared";
 
 import { createStaticKeyProvider, type KeyMaterial, type KeyProvider } from "./crypto/index.js";
 import { isFrozenAdminPasswordHash } from "./auth/password.js";
+import type { PublicationReleaseConfig } from "./articles/publication-release.js";
+import {
+  parseIndexNowSenderConfig,
+  type IndexNowSenderConfig,
+} from "./articles/indexnow-sender.js";
 
 export interface ControlConfig {
   nodeEnv: "development" | "test" | "production";
@@ -21,9 +27,87 @@ export interface ControlConfig {
   dummyPasswordHash: string;
   hermesEndpoint: URL;
   emailPayloadMode: "receipt-only" | "full-inquiry";
+  publication: PublicationReleaseConfig | undefined;
+  indexNow: IndexNowSenderConfig | undefined;
 }
 
 const TEST_DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY";
+
+const PUBLIC_CONTENT_ROUTES = [
+  "/",
+  "/about",
+  "/services",
+  "/services/procurement",
+  "/services/credibility",
+  "/services/safety-esg",
+  "/services/business-certification",
+  "/services/licensing-entity",
+  "/services/immigration-visa",
+  "/process",
+  "/insights",
+  "/consultation",
+  "/location",
+  "/privacy",
+  "/marketing/withdraw",
+] as const;
+
+const REQUIRED_PUBLICATION_ROUTES = ["", "/en", "/zh-hans", "/zh-hant"].flatMap(
+  (prefix) => PUBLIC_CONTENT_ROUTES.map((route) => route === "/" ? (prefix || "/") : `${prefix}${route}`),
+);
+
+function publicationPath(
+  source: EnvironmentSource,
+  name: "PUBLIC_RELEASE_ROOT" | "PUBLIC_CURRENT_LINK" | "SITE_SOURCE_ROOT" | "NODE_BINARY" | "NPM_BINARY",
+): string {
+  const value = source[name];
+  if (!value || /[\0\r\n]/u.test(value) || !isAbsolute(value)) {
+    throw new Error(`${name} must be an absolute single-line path`);
+  }
+  return value;
+}
+
+function parsePublicationConfig(
+  source: EnvironmentSource,
+  production: boolean,
+  publicOrigin: string | undefined,
+): PublicationReleaseConfig | undefined {
+  const names = [
+    "PUBLIC_RELEASE_ROOT",
+    "PUBLIC_CURRENT_LINK",
+    "SITE_SOURCE_ROOT",
+    "NODE_BINARY",
+    "NPM_BINARY",
+  ] as const;
+  const configured = names.some((name) => source[name] !== undefined);
+  if (!production && !configured) return undefined;
+  if (!publicOrigin) throw new Error("PUBLIC_ORIGIN is required for publication");
+  const releaseRoot = publicationPath(source, "PUBLIC_RELEASE_ROOT");
+  const currentLink = publicationPath(source, "PUBLIC_CURRENT_LINK");
+  const siteSourceRoot = publicationPath(source, "SITE_SOURCE_ROOT");
+  const nodeBinary = publicationPath(source, "NODE_BINARY");
+  const npmBinary = publicationPath(source, "NPM_BINARY");
+  if (new Set([releaseRoot, currentLink, siteSourceRoot]).size !== 3) {
+    throw new Error("Publication roots and current link must be distinct");
+  }
+  if (nodeBinary === npmBinary) throw new Error("NODE_BINARY and NPM_BINARY must be distinct");
+  const buildTimeoutMs = source.PUBLICATION_BUILD_TIMEOUT_MS === undefined
+    ? 5 * 60_000
+    : Number(source.PUBLICATION_BUILD_TIMEOUT_MS);
+  if (!Number.isSafeInteger(buildTimeoutMs) || buildTimeoutMs < 1_000 || buildTimeoutMs > 30 * 60_000) {
+    throw new Error("PUBLICATION_BUILD_TIMEOUT_MS must be between 1000 and 1800000");
+  }
+  return Object.freeze({
+    releaseRoot,
+    currentLink,
+    siteSourceRoot,
+    nodeBinary,
+    npmBinary,
+    buildTimeoutMs,
+    requiredCoreRoutes: Object.freeze([...REQUIRED_PUBLICATION_ROUTES]),
+    forbiddenCanaries: Object.freeze(["DRAFT_PRIVATE_CANARY", "CONSULTATION_PRIVATE_CANARY"]),
+    publicOrigin,
+  });
+}
 
 function parsePort(value: string | undefined): number {
   const port = value === undefined ? 8787 : Number(value);
@@ -153,6 +237,13 @@ export function parseControlConfig(source: EnvironmentSource): ControlConfig {
     id: activeId,
     secret: Buffer.from(shared.piiEncryptionKey, "utf8"),
   }, previousKeys, Buffer.from(controlHmacSecret, "utf8"));
+  const publication = parsePublicationConfig(source, production, publicOrigin);
+  const indexNowConfigured = source.INDEXNOW_KEYCHAIN_SERVICE !== undefined
+    || source.INDEXNOW_KEY_LOCATION !== undefined
+    || source.INDEXNOW_TIMEOUT_MS !== undefined;
+  const indexNow = publication || indexNowConfigured
+    ? parseIndexNowSenderConfig(source, publicOrigin ?? "")
+    : undefined;
   return {
     nodeEnv: shared.nodeEnv,
     databasePath: shared.databasePath,
@@ -169,5 +260,7 @@ export function parseControlConfig(source: EnvironmentSource): ControlConfig {
     dummyPasswordHash,
     hermesEndpoint: parseHermesEndpoint(source.HERMES_ENDPOINT),
     emailPayloadMode: shared.emailPayloadMode,
+    publication,
+    indexNow,
   };
 }
