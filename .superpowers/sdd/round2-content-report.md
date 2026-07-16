@@ -94,6 +94,19 @@ All those regression tests are GREEN in the final commands below.
 - `git diff --check` — passed.
 - `git diff --exit-code -- prototypes` — no prototype changes.
 
+### Follow-up fresh verification
+
+- `npm.cmd test` — exit 0: orchestration/Astro/build gates 9/9, Shared 70/70,
+  Control 393/393, Site 98/98, and Ops 123/123.
+- `npm.cmd run typecheck` — exit 0: Shared and Control passed; Astro checked 60
+  files with 0 errors, 0 warnings, and 0 hints.
+- `npm.cmd run build` — exit 0: Shared and Control compiled and the explicit Site
+  fixture build generated 68 static pages.
+- `npm.cmd run test:e2e` — exit 0: 108/108 Playwright tests passed across Chromium,
+  Firefox, and WebKit.
+- The root gate includes missing and relative production snapshot rejection, an explicit
+  real fixture build, and the Control-writer-to-real-Site-build-and-seal boundary test.
+
 ## Self-review
 
 - Confirmed the publication path fails closed before writing or sealing when any of 8 documents is missing or inconsistent.
