@@ -24,6 +24,8 @@
 6. receipt와 ciphertext가 보존되었는지만 확인한다. 훈련 중 PII를 복호화하거나 출력하지 않는다.
 7. 성공 후 quarantine 삭제는 별도 승인 작업으로 수행한다.
 
+애플리케이션 pointer 복구나 rollback을 함께 수행할 때는 대상 release의 `.ops-release.json` format v2를 먼저 검증한다. workspace 전체와 production `node_modules`/native addon의 exact inventory, 파일 size/hash, 내부 상대 symlink가 모두 일치해야 한다. 오래된 format v1 release나 추가·누락·변경 파일, runtime root 밖 symlink가 있는 release는 복구 대상으로 실행하지 않고 새로 검증된 release를 배포한다.
+
 서비스를 중지한 뒤 wrong key, ciphertext hash, integrity 또는 schema 검사가 DB 교체 전에 실패하면 도구는 변경되지 않은 원래 DB를 그대로 두고 기존 서비스를 다시 시작한 뒤 readiness를 확인한다. 이 재시작까지 실패하면 `RESTORE_ORIGINAL_RESTART_FAILED`를 반환하며, 검증 실패와 복구 실패 원인을 모두 내부 cause로 보존하되 오류 메시지에는 secret이나 사설 실행 세부정보를 출력하지 않는다. DB 교체 뒤 실패한 경우에는 기존 timestamped DB quarantine을 되돌리고 서비스를 재확인하는 기존 rollback 절차를 적용한다. rollback 자체도 실패하면 `RESTORE_ROLLBACK_FAILED`로 구분한다.
 
 ## stale lock 복구

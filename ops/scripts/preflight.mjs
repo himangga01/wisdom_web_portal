@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { runPreflight } from "../lib/preflight.mjs";
+import { createMacServiceAdapter } from "../lib/mac-services.mjs";
 import { verifyPublicCurrent } from "../lib/public-release.mjs";
 import { ensureRealDirectory } from "../lib/safe-paths.mjs";
 
@@ -50,6 +51,9 @@ async function main() {
       }
     },
     verifyPublicCurrent,
+    assertTunnelDisabled: async () => createMacServiceAdapter({
+      labels: ["com.jihye.portal.cloudflared"],
+    }).assertUnloaded(),
   };
   const report = await runPreflight({
     releaseRoot: option("--release-root"),

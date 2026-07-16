@@ -11,7 +11,7 @@
 
 1. `ops/config/runtime.env.template`, Caddy, cloudflared, launchd 템플릿을 운영값으로 렌더링한다. 렌더 결과는 immutable application release 밖의 `shared` 경로에 두고 소유자만 쓸 수 있게 한다.
 2. 최초 정적 빌드를 만든 뒤 `seed-public.mjs`를 먼저 dry-run하고 `--apply`한다. 이 명령은 별도 `public-releases/<release-id>`에 bootstrap 전용 전체 파일 hash manifest를 만들고 검증한 후 `public-current`를 원자적으로 전환한다. application `current`와 혼용하지 않는다. 정상 발행이 한 번이라도 존재하면 bootstrap release로 되돌아갈 수 없다.
-3. bootstrap 단계에서는 `ops/scripts/preflight.mjs --allow-bootstrap-local-staging`으로 verified bootstrap `public-current`, `arm64`, Node 24, Caddy, cloudflared, 정확히 age 1.3.1, `better-sqlite3`, SQLite 버전과 쓰기 가능한 경로를 확인한다. 결과는 `tunnelReady: false`여야 하며 tunnel을 시작하지 않는다. `age --version` 결과가 고정 버전과 다르거나 해석할 수 없으면 배포를 중지한다.
+3. bootstrap 단계에서는 cloudflared LaunchAgent를 먼저 `launchctl bootout`하여 완전히 unload한 뒤 `ops/scripts/preflight.mjs --allow-bootstrap-local-staging`으로 verified bootstrap `public-current`, `arm64`, Node 24, Caddy, cloudflared, 정확히 age 1.3.1, `better-sqlite3`, SQLite 버전과 쓰기 가능한 경로를 확인한다. 결과는 `tunnelReady: false`, `tunnelDisabledVerified: true`여야 하며 tunnel을 시작하지 않는다. preflight는 cloudflared가 실행 중이거나 정지됐지만 여전히 loaded인 경우, 또는 launchctl 상태를 확정할 수 없는 경우 모두 실패한다. 이 검사는 서비스를 자동으로 중지하지 않는다. `age --version` 결과가 고정 버전과 다르거나 해석할 수 없으면 배포를 중지한다.
 4. `secret-bootstrap.mjs`를 먼저 dry-run하고 `--apply`로 독립된 애플리케이션 비밀을 Keychain에 설치한다. 회전은 한 번에 하나만 `--mode rotate --only <ENVIRONMENT>`로 요청하며 PII/control/철회 키는 전용 migration 절차 없이 회전할 수 없다.
 5. `age-keygen`으로 운영자가 보관할 age 키를 별도로 만든다. 공개 recipient만 백업 설정에 기록한다. private identity 파일에서 한 줄을 표준입력으로 `secret-import.mjs --account <user> --apply`에 전달하여 `com.jihye.portal.age-identity`에 신규 설치하고, 명령 인자·로그·셸 변수에는 넣지 않는다.
 6. content worker용 Codex credential도 표준입력으로 `secret-import.mjs --account <user> --kind codex-api --service <CODEX_KEYCHAIN_SERVICE> --apply`에 신규 설치한다. `runtime.env`에는 API key가 아니라 service reference만 둔다. `CODEX_BINARY`, `GIT_BINARY`, 고정 `CODEX_MODEL`, 서로 다른 non-symlink `CODEX_HOME`/`CODEX_TEMP_ROOT`, bounded `CODEX_TIMEOUT_MS`를 실제 Mac 절대경로로 설정한다. 시작 점검에서 현재 Codex CLI가 `--disable shell_tool`을 지원하지 않으면 worker는 fail-closed로 종료되어야 한다. 번역 원문과 검수 후보는 작업 파일이나 명령행 인자가 아니라 표준입력으로만 전달하며, 실행 인자는 `read-only`, no approval, no web search, no shell inheritance를 고정한다.
@@ -20,13 +20,13 @@
 9. cloudflared credential 파일은 소유자 읽기 전용으로 설치한다. 템플릿이나 저장소에 토큰/credential 본문을 넣지 않는다.
 10. launchd plist를 `plutil -lint`로 확인하고 사용자 LaunchAgents로 설치한다. bootstrap public release 동안에는 tunnel agent를 시작하지 않는다. application과 정상 Wisdom public release를 게시한 뒤 플래그 없는 외부 preflight가 `tunnelReady: true`를 반환해야만 tunnel을 `launchctl bootstrap`한다. 그 후 Caddy, tunnel, control, worker의 상태와 공개 live 응답을 확인한다.
 
-이후 application 배포는 `deploy.mjs`의 dry-run을 확인한 다음 `--apply`한다. 새 release에서 Mac native dependency 설치, build, migration, canary live/ready, manifest 검증을 모두 통과해야 pointer를 전환한다. 전환 후 launchd와 active health가 실패하면 이전 pointer와 서비스를 복구한다. public 정적 산출물은 동일 release ID를 사용해도 별도 public release/pointer 계약으로 게시한다.
+이후 application 배포는 `deploy.mjs`의 dry-run을 확인한 다음 `--apply`한다. 새 release에서 Mac native dependency 설치, build, migration을 실행한 뒤 `npm prune --omit=dev --workspaces --include-workspace-root --ignore-scripts`로 실행용 의존성만 남긴다. 운영 CLI와 worker는 `tsx`가 아니라 빌드된 `dist/*.js`를 실행한다. canary live/ready와 manifest 검증을 모두 통과해야 pointer를 전환한다. 전환 후 launchd와 active health가 실패하면 이전 pointer와 서비스를 복구한다. public 정적 산출물은 동일 release ID를 사용해도 별도 public release/pointer 계약으로 게시한다.
 
-앱 배포 내부 preflight만 `--allow-bootstrap-local-staging`을 사용한다. 이 경우 검증된 bootstrap public release를 허용하지만 결과는 반드시 `tunnelReady: false`이며 Cloudflare Tunnel은 꺼진 상태여야 한다. 정상 Wisdom 발행과 승인된 동의 snapshot을 게시한 뒤, tunnel을 시작하기 직전에 `preflight.mjs`를 이 플래그 없이 다시 실행하여 `tunnelReady: true`를 확인한다. 플래그 없는 외부 공개 preflight는 bootstrap을 거부한다.
+앱 배포 내부 preflight만 `--allow-bootstrap-local-staging`을 사용한다. 이 경우 검증된 bootstrap public release를 허용하지만 결과는 반드시 `tunnelReady: false`, `tunnelDisabledVerified: true`이며 Cloudflare Tunnel LaunchAgent는 unloaded 상태여야 한다. Mac 배포 어댑터는 preflight JSON을 직접 파싱하고 이 증명이 빠지거나 모순되면 배포를 중단한다. 정상 Wisdom 발행과 승인된 동의 snapshot을 게시한 뒤, tunnel을 시작하기 직전에 `preflight.mjs`를 이 플래그 없이 다시 실행하여 `tunnelReady: true`를 확인한다. 플래그 없는 외부 공개 preflight는 bootstrap을 거부한다.
 
 ## application pointer와 릴리스 복구 경계
 
-- 기존 `current`는 `releases`의 직접 자식인 `<UTC timestamp>-<git hash>` 형식 디렉터리를 가리키는 symlink여야 한다. 대상의 `.ops-release.json` exact inventory와 모든 hash가 다시 검증되어야만 배포·rollback·실패 복구에서 실행한다.
+- 기존 `current`는 `releases`의 직접 자식인 `<UTC timestamp>-<git hash>` 형식 디렉터리를 가리키는 symlink여야 한다. 대상의 `.ops-release.json` format v2는 control/site/shared workspace 전체, Ops runtime, production `node_modules`와 native addon을 exact inventory로 봉인한다. 파일 size/hash와 내부 상대 symlink를 정렬된 canonical JSON으로 기록하며, 추가·누락·변경 파일과 runtime root 밖으로 탈출하는 symlink를 모두 거부한다. 파일 수·개별/전체 byte·symlink 수·manifest 크기 상한을 넘는 release도 거부한다. 이 manifest가 다시 검증되어야만 배포·rollback·실패 복구에서 실행한다.
 - `current`가 release root 밖, 중첩 디렉터리, 잘못된 release ID, symlink 대상 또는 변조된 manifest를 가리키면 운영자가 임의로 pointer를 보존하거나 실행하지 않는다. 원인을 조사하고 검증된 보존 release로 명시적 복구한다.
 - pointer 전환 직전과 실패 복구 직전에도 destination/previous manifest를 다시 검사한다. 검증 실패 시 서비스 재시작이나 pointer 복구를 추측해서 계속하지 않는다.
 

@@ -26,6 +26,7 @@ function createAdapter(overrides = {}) {
       installDependencies: async () => calls.push("npm-ci"),
       build: async () => calls.push("build"),
       migrate: async () => calls.push("migrate"),
+      prepareRuntime: async () => calls.push("prune-runtime"),
       writeManifest: async () => calls.push("manifest"),
       verify: async () => calls.push("verify"),
       startCanary: async () => {
@@ -60,6 +61,7 @@ test("release planning is dry-run by default and names every guarded phase", asy
     "npm-ci-on-arm64-host",
     "build",
     "migrate",
+    "prune-to-production-runtime",
     "start-loopback-canary",
     "check-live-and-ready",
     "verify-release",
@@ -83,6 +85,7 @@ test("successful release switches only after install, migration, health, and ver
     "npm-ci",
     "build",
     "migrate",
+    "prune-runtime",
     "manifest",
     "verify",
     "start-canary",

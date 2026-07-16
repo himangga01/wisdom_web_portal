@@ -7,6 +7,7 @@ const DEPLOY_STEPS = Object.freeze([
   "npm-ci-on-arm64-host",
   "build",
   "migrate",
+  "prune-to-production-runtime",
   "start-loopback-canary",
   "check-live-and-ready",
   "verify-release",
@@ -109,6 +110,7 @@ async function deployReleaseLocked(input, adapter, plan) {
     await adapter.installDependencies(plan.destination);
     await adapter.build(plan.destination);
     await adapter.migrate(plan.destination);
+    await adapter.prepareRuntime(plan.destination);
     await adapter.writeManifest(plan.destination, { releaseId: input.releaseId });
     await adapter.verify(plan.destination, { releaseId: input.releaseId });
     canary = await adapter.startCanary(plan.destination, input.canaryPort);

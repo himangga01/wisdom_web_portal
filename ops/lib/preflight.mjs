@@ -174,6 +174,18 @@ export async function runPreflight(config, adapter) {
   if (!wisdomReady && !bootstrapStagingReady) {
     fail("PUBLIC_CURRENT_NOT_READY", "Tunnel launch requires a verified Wisdom release with an approved policy snapshot");
   }
+  let tunnelDisabledVerified = false;
+  if (bootstrapStagingReady) {
+    if (typeof adapter.assertTunnelDisabled !== "function") {
+      fail("PUBLIC_TUNNEL_NOT_DISABLED", "Bootstrap staging requires a fail-closed tunnel state inspection");
+    }
+    try {
+      await adapter.assertTunnelDisabled();
+      tunnelDisabledVerified = true;
+    } catch {
+      fail("PUBLIC_TUNNEL_NOT_DISABLED", "Bootstrap staging requires cloudflared to be stopped and unloaded");
+    }
+  }
 
   return {
     ok: true,
@@ -183,6 +195,7 @@ export async function runPreflight(config, adapter) {
     ageVersion,
     checkedBinaries,
     tunnelReady: wisdomReady,
+    ...(bootstrapStagingReady ? { tunnelDisabledVerified } : {}),
     publicSite,
   };
 }

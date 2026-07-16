@@ -64,8 +64,24 @@ export function createMacServiceAdapter({
       }
     }
   };
+  const assertUnloaded = async () => {
+    for (const label of labels) {
+      try {
+        await execute("/bin/launchctl", ["print", `${domain}/${label}`], { encoding: "utf8", maxBuffer: 128 * 1024 });
+        throw Object.assign(new Error(`${label} remains loaded`), { code: "SERVICE_STILL_LOADED" });
+      } catch (error) {
+        if (error.code === "SERVICE_STILL_LOADED") throw error;
+        if (!isKnownMissingService(error)) {
+          throw Object.assign(new Error(`Unable to prove ${label} is unloaded`, { cause: error }), {
+            code: "SERVICE_INSPECTION_FAILED",
+          });
+        }
+      }
+    }
+  };
   return {
     assertStopped,
+    assertUnloaded,
     assertRunning,
     stop: async () => {
       for (const label of labels) {

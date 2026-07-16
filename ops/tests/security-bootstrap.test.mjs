@@ -304,6 +304,7 @@ function successfulPreflightAdapter(overrides = {}) {
       consentBundleVerified: true,
       consentBundleId: "bundle-2026-07-16",
     }),
+    assertTunnelDisabled: async () => undefined,
     ...overrides,
   };
 }
@@ -384,6 +385,7 @@ test("preflight refuses bootstrap and any Wisdom release without an approved pol
 
 test("application deployment preflight permits verified bootstrap only as tunnel-disabled local staging", async () => {
   let verificationOptions;
+  let tunnelInspections = 0;
   const report = await runPreflight({
     ...preflightConfig,
     allowBootstrapLocalStaging: true,
@@ -397,12 +399,68 @@ test("application deployment preflight permits verified bootstrap only as tunnel
         releaseId: "20260716T010203Z-abcdef1",
       };
     },
+    assertTunnelDisabled: async () => { tunnelInspections++; },
   }));
 
   assert.equal(verificationOptions.requireWisdom, false);
+  assert.equal(tunnelInspections, 1);
   assert.equal(report.ok, true);
   assert.equal(report.tunnelReady, false);
+  assert.equal(report.tunnelDisabledVerified, true);
   assert.equal(report.publicSite.format, "ops-bootstrap");
+});
+
+test("bootstrap staging fails closed when tunnel state is running, loaded, or unknown", async (t) => {
+  for (const [name, code] of [
+    ["running", "SERVICE_RUNNING"],
+    ["loaded", "SERVICE_STILL_LOADED"],
+    ["unknown", "SERVICE_INSPECTION_FAILED"],
+  ]) {
+    await t.test(name, async () => {
+      await assert.rejects(runPreflight({
+        ...preflightConfig,
+        allowBootstrapLocalStaging: true,
+      }, successfulPreflightAdapter({
+        verifyPublicCurrent: async () => ({
+          manifestVerified: true,
+          indexVerified: true,
+          format: "ops-bootstrap",
+          releaseId: "20260716T010203Z-abcdef1",
+        }),
+        assertTunnelDisabled: async () => {
+          throw Object.assign(new Error("private launchctl detail"), { code });
+        },
+      })), { code: "PUBLIC_TUNNEL_NOT_DISABLED" });
+    });
+  }
+});
+
+test("mac release adapter rejects an unproved bootstrap preflight report", () => {
+  const valid = {
+    ok: true,
+    tunnelReady: false,
+    tunnelDisabledVerified: true,
+    publicSite: {
+      manifestVerified: true,
+      indexVerified: true,
+      format: "ops-bootstrap",
+      releaseId: "20260716T010203Z-abcdef1",
+    },
+  };
+  assert.deepEqual(
+    macReleaseAdapter.parseMacPreflightReport(`${JSON.stringify(valid)}\n`),
+    valid,
+  );
+  for (const invalid of [
+    { ...valid, tunnelDisabledVerified: false },
+    { ...valid, tunnelReady: true },
+    { ...valid, ok: false },
+  ]) {
+    assert.throws(
+      () => macReleaseAdapter.parseMacPreflightReport(JSON.stringify(invalid)),
+      { code: "RELEASE_PREFLIGHT_REPORT_INVALID" },
+    );
+  }
 });
 
 test("preflight fails closed for the wrong architecture, Node, or SQLite runtime", async (t) => {
@@ -514,6 +572,22 @@ test("mac release migration requires the rollback compatibility gate", () => {
     "--",
     "--require-rollback-compatible",
   ]);
+});
+
+test("mac release normalizes node_modules to production dependencies before sealing", () => {
+  const fixtureRoot = path.join(path.parse(process.cwd()).root, "fixture", "runtime-prune-adapter");
+  const npmBinary = path.join(fixtureRoot, "bin", "npm");
+  assert.equal(typeof macReleaseAdapter.buildMacRuntimePruneArguments, "function");
+  assert.deepEqual(macReleaseAdapter.buildMacRuntimePruneArguments(), [
+    "prune",
+    "--omit=dev",
+    "--workspaces",
+    "--include-workspace-root",
+    "--ignore-scripts",
+    "--audit=false",
+    "--fund=false",
+  ]);
+  assert.ok(path.isAbsolute(npmBinary));
 });
 
 test("preflight CLI maps --current into path validation", async () => {

@@ -559,9 +559,9 @@ describe("local administrator CLI service", () => {
       "utf8",
     )) as { scripts: Record<string, string> };
     expect(packageJson.scripts).toMatchObject({
-      "admin:bootstrap": "tsx src/admin/cli.ts bootstrap",
-      "admin:password-reset": "tsx src/admin/cli.ts password-reset",
-      "admin:mfa-replace": "tsx src/admin/cli.ts mfa-replace",
+      "admin:bootstrap": "node dist/admin/cli.js bootstrap",
+      "admin:password-reset": "node dist/admin/cli.js password-reset",
+      "admin:mfa-replace": "node dist/admin/cli.js mfa-replace",
     });
   });
 });

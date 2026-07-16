@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { createMacServiceAdapter } from "./mac-services.mjs";
 import { acquireReleaseOperationLock } from "./release-operation-lock.mjs";
@@ -25,6 +26,7 @@ const SECRET_MAPPINGS = [
   "WITHDRAWAL_TOKEN_SECRET=com.jihye.portal.withdrawal-token",
 ];
 const DEFAULT_OPS_ROOT = path.resolve(import.meta.dirname, "..");
+const execFile = promisify(execFileCallback);
 
 function run(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -32,6 +34,54 @@ function run(executable, args, options = {}) {
     child.once("error", reject);
     child.once("exit", (code, signal) => code === 0 ? resolve() : reject(Object.assign(new Error("Command failed"), { code: "RELEASE_COMMAND_FAILED", exitCode: code, signal })));
   });
+}
+
+function preflightReportInvalid() {
+  throw Object.assign(new Error("Mac release preflight report is invalid"), {
+    code: "RELEASE_PREFLIGHT_REPORT_INVALID",
+  });
+}
+
+export function parseMacPreflightReport(raw) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw) > 128 * 1024) preflightReportInvalid();
+  let report;
+  try {
+    report = JSON.parse(raw);
+  } catch {
+    preflightReportInvalid();
+  }
+  if (!report || typeof report !== "object" || Array.isArray(report) || report.ok !== true) {
+    preflightReportInvalid();
+  }
+  const publicSite = report.publicSite;
+  if (!publicSite || typeof publicSite !== "object" || publicSite.manifestVerified !== true || publicSite.indexVerified !== true) {
+    preflightReportInvalid();
+  }
+  if (publicSite.format === "ops-bootstrap") {
+    if (report.tunnelReady !== false || report.tunnelDisabledVerified !== true) preflightReportInvalid();
+  } else if (publicSite.format === "wisdom") {
+    if (
+      report.tunnelReady !== true || publicSite.consentBundleVerified !== true ||
+      typeof publicSite.consentBundleId !== "string" || publicSite.consentBundleId.trim().length === 0
+    ) preflightReportInvalid();
+  } else preflightReportInvalid();
+  return report;
+}
+
+async function runMacPreflight(executable, args) {
+  let stdout;
+  try {
+    ({ stdout } = await execFile(executable, args, {
+      encoding: "utf8",
+      maxBuffer: 128 * 1024,
+      windowsHide: true,
+    }));
+  } catch (error) {
+    throw Object.assign(new Error("Mac release preflight command failed", { cause: error }), {
+      code: "RELEASE_COMMAND_FAILED",
+    });
+  }
+  return parseMacPreflightReport(stdout);
 }
 
 export function resolveMacReleaseScripts({ opsRoot = DEFAULT_OPS_ROOT, destination }) {
@@ -87,6 +137,18 @@ export function buildMacMigrationArguments(options, destination) {
       "--require-rollback-compatible",
     ],
   );
+}
+
+export function buildMacRuntimePruneArguments() {
+  return [
+    "prune",
+    "--omit=dev",
+    "--workspaces",
+    "--include-workspace-root",
+    "--ignore-scripts",
+    "--audit=false",
+    "--fund=false",
+  ];
 }
 
 export async function stopCanaryProcess(child, { graceMs = 5_000, killWaitMs = 2_000 } = {}) {
@@ -156,7 +218,10 @@ export function createMacReleaseAdapter(options) {
     exists: async (candidate) => {
       try { await realpath(candidate); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; }
     },
-    preflight: async () => run(options.nodeBinary, buildMacPreflightArguments({ ...options, opsRoot })),
+    preflight: async () => runMacPreflight(
+      options.nodeBinary,
+      buildMacPreflightArguments({ ...options, opsRoot }),
+    ),
     copySource: copyReleaseSource,
     installDependencies: (destination) => run(options.npmBinary, ["ci"], { cwd: destination }),
     build: (destination) => run(options.npmBinary, ["run", "build"], { cwd: destination }),
@@ -165,6 +230,7 @@ export function createMacReleaseAdapter(options) {
       buildMacMigrationArguments({ ...options, opsRoot }, destination),
       { cwd: destination },
     ),
+    prepareRuntime: (destination) => run(options.npmBinary, buildMacRuntimePruneArguments(), { cwd: destination }),
     writeManifest: (destination, { releaseId }) => createReleaseManifest(destination, releaseId),
     verify: (destination, { releaseId }) => verifyReleaseManifest(destination, releaseId),
     startCanary: async (destination, port) => {

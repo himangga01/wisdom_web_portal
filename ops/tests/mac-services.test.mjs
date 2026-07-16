@@ -38,6 +38,51 @@ test("service inspection rejects running launch agents", async () => {
   await assert.rejects(adapter.assertStopped(), { code: "SERVICES_RUNNING" });
 });
 
+test("tunnel disable inspection requires the launch agent to be fully unloaded", async (t) => {
+  for (const [name, stdout] of [
+    ["running", "state = running\n"],
+    ["loaded but stopped", "state = exited\n"],
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      const adapter = createMacServiceAdapter({
+        labels: ["com.jihye.portal.cloudflared"],
+        userId: 501,
+        execute: async (_file, args) => {
+          calls.push(args);
+          return { stdout, stderr: "" };
+        },
+      });
+      await assert.rejects(adapter.assertUnloaded(), { code: "SERVICE_STILL_LOADED" });
+      assert.deepEqual(calls, [["print", "gui/501/com.jihye.portal.cloudflared"]]);
+    });
+  }
+
+  await t.test("unloaded", async () => {
+    const adapter = createMacServiceAdapter({
+      labels: ["com.jihye.portal.cloudflared"],
+      userId: 501,
+      execute: async () => {
+        throw Object.assign(new Error("missing"), {
+          stderr: 'Could not find service "com.jihye.portal.cloudflared" in domain for user gui: 501\n',
+        });
+      },
+    });
+    await adapter.assertUnloaded();
+  });
+
+  await t.test("unknown inspection error", async () => {
+    const adapter = createMacServiceAdapter({
+      labels: ["com.jihye.portal.cloudflared"],
+      userId: 501,
+      execute: async () => {
+        throw Object.assign(new Error("denied"), { stderr: "Operation not permitted\n" });
+      },
+    });
+    await assert.rejects(adapter.assertUnloaded(), { code: "SERVICE_INSPECTION_FAILED" });
+  });
+});
+
 test("post-restart service verification requires every launch agent to remain running", async () => {
   const adapter = createMacServiceAdapter({
     labels: ["com.example.control", "com.example.worker"],

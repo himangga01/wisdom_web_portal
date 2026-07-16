@@ -36,4 +36,30 @@ test("provides the loopback control workspace and required operations", () => {
   ]) {
     assert.equal(typeof packageJson.scripts[script], "string", script);
   }
+
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(packageJson.scripts).filter(([name]) => [
+      "db:migrate",
+      "consent:seed",
+      "consent:activate",
+      "retention:purge",
+      "notifications:worker",
+      "content:worker",
+      "admin:bootstrap",
+      "admin:password-reset",
+      "admin:mfa-replace",
+    ].includes(name))),
+    {
+      "db:migrate": "node dist/cli/migrate.js",
+      "consent:seed": "node dist/cli/consent-seed.js",
+      "consent:activate": "node dist/cli/consent-activate.js",
+      "retention:purge": "node dist/cli/purge.js",
+      "notifications:worker": "node dist/notification-worker.js",
+      "content:worker": "node dist/content-worker.js",
+      "admin:bootstrap": "node dist/admin/cli.js bootstrap",
+      "admin:password-reset": "node dist/admin/cli.js password-reset",
+      "admin:mfa-replace": "node dist/admin/cli.js mfa-replace",
+    },
+    "production operations must not depend on pruned dev-only tsx",
+  );
 });

@@ -46,11 +46,19 @@ const minimalRuntimeFiles = [
   "apps/control/dist/server.js",
   "apps/control/dist/notification-worker.js",
   "apps/control/dist/content-worker.js",
+  "apps/control/dist/admin/cli.js",
+  "apps/control/dist/cli/migrate.js",
+  "apps/control/dist/cli/consent-seed.js",
+  "apps/control/dist/cli/consent-activate.js",
+  "apps/control/dist/cli/purge.js",
   "apps/site/package.json",
   "apps/site/dist/index.html",
   "apps/site/dist/_astro/app.Abc_123.js",
   "packages/shared/package.json",
   "packages/shared/dist/index.js",
+  "node_modules/hono/dist/index.js",
+  "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+  "node_modules/runtime-fixture/index.js",
   "ops/lib/runtime-config.mjs",
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
@@ -203,6 +211,77 @@ test("release manifest binds the required built artifacts and detects tampering"
   await verifyReleaseManifest(fixture.destination, fixture.releaseId);
   await writeFile(path.join(fixture.destination, "apps/control/dist/notification-worker.js"), "tampered");
   await assert.rejects(verifyReleaseManifest(fixture.destination, fixture.releaseId), { code: "RELEASE_MANIFEST_INVALID" });
+});
+
+test("release manifest seals JavaScript dependencies, native addons, workspace code, and exact inventory", async (t) => {
+  const mutations = [
+    ["JavaScript dependency", "node_modules/hono/dist/index.js"],
+    ["native addon", "node_modules/better-sqlite3/build/Release/better_sqlite3.node"],
+    ["workspace dependency", "packages/shared/dist/index.js"],
+  ];
+  for (const [name, relative] of mutations) {
+    await t.test(name, async () => {
+      const fixture = await releaseFixture();
+      await populateRelease(fixture.destination, fixture.releaseId);
+      await writeFile(path.join(fixture.destination, ...relative.split("/")), "tampered-runtime-byte");
+      await assert.rejects(verifyReleaseManifest(fixture.destination, fixture.releaseId), {
+        code: "RELEASE_MANIFEST_INVALID",
+      });
+    });
+  }
+
+  await t.test("added unmanifested runtime file", async () => {
+    const fixture = await releaseFixture();
+    await populateRelease(fixture.destination, fixture.releaseId);
+    const added = path.join(fixture.destination, "node_modules", "runtime-fixture", "injected.js");
+    await writeFile(added, "unmanifested executable");
+    await assert.rejects(verifyReleaseManifest(fixture.destination, fixture.releaseId), {
+      code: "RELEASE_MANIFEST_INVALID",
+    });
+  });
+});
+
+test("release manifest records internal runtime symlinks and rejects escaping symlinks", async (t) => {
+  const internal = await releaseFixture();
+  for (const relative of minimalRuntimeFiles) {
+    const absolute = path.join(internal.destination, relative);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, relative);
+  }
+  const workspaceLink = path.join(internal.destination, "node_modules", "@wisdom", "shared");
+  await mkdir(path.dirname(workspaceLink), { recursive: true });
+  try {
+    await symlink(path.relative(path.dirname(workspaceLink), path.join(internal.destination, "packages", "shared")), workspaceLink, "dir");
+  } catch (error) {
+    if (process.platform === "win32" && error.code === "EPERM") {
+      t.diagnostic("symlink creation is unavailable on this Windows host");
+      return;
+    }
+    throw error;
+  }
+  await createReleaseManifest(internal.destination, internal.releaseId, new Date("2026-07-16T01:02:03.000Z"));
+  const manifest = JSON.parse(await readFile(path.join(internal.destination, ".ops-release.json"), "utf8"));
+  assert.equal(manifest.formatVersion, 2);
+  assert.equal(manifest.symlinks["node_modules/@wisdom/shared"], path.relative(
+    path.dirname(workspaceLink),
+    path.join(internal.destination, "packages", "shared"),
+  ));
+  await verifyReleaseManifest(internal.destination, internal.releaseId);
+
+  const escaping = await releaseFixture();
+  for (const relative of minimalRuntimeFiles) {
+    const absolute = path.join(escaping.destination, relative);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, relative);
+  }
+  const outside = path.join(escaping.appRoot, "outside-runtime.js");
+  const escapingLink = path.join(escaping.destination, "node_modules", "runtime-fixture", "escape.js");
+  await writeFile(outside, "outside executable");
+  await symlink(outside, escapingLink, "file");
+  await assert.rejects(
+    createReleaseManifest(escaping.destination, escaping.releaseId),
+    { code: "RELEASE_MANIFEST_INVALID" },
+  );
 });
 
 test("atomic pointer switch creates a sibling symlink then renames it", async () => {
