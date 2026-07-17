@@ -1090,7 +1090,7 @@ git commit -m "fix: address automatic backup review findings"
 
 If no files changed, do not create an empty commit.
 
-- [ ] **Step 7: Push the feature branch and open a draft PR**
+- [x] **Step 7: Push the feature branch and open a draft PR**
 
 Run:
 
@@ -1100,6 +1100,6 @@ git push -u origin codex/admin-backup-mac-setup
 
 Open a draft pull request into `master` titled `Add admin automatic backup control and Mac mini setup guide`. Its body lists delivered behavior, schema v7/rollback incompatibility, focused/full verification evidence, operational blockers intentionally left out of scope, and Mac hardware validation still required.
 
-- [ ] **Step 8: Final handoff**
+- [x] **Step 8: Final handoff**
 
 Provide the user a detailed Korean implementation summary grouped by administrator UX/security, scheduler/runtime, monitoring, restore, Mac guide, schema/migrations, tests, Git commits/branch/PR, remaining launch blockers, and the first Mac mini action. Include clickable absolute links to the guide, plan, and key implementation files.
