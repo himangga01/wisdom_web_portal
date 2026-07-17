@@ -134,7 +134,7 @@ FileVault              protects the Mac storage at rest before login
 
 | 번호 | 정확한 차단 항목 | 상태 | 공개 전에 필요한 증거 |
 |---|---|---|---|
-| 1 | production template render/install CLI | **공개 전 구현 필요** | 모든 token을 안전하게 렌더링·권한설정·검증·원자 설치하는 실제 CLI와 Mac 통합 시험 |
+| 1 | production template render/install CLI | **구현 완료·Mac 실장비 검증 필요** | 실제 Mac에서 보호된 입력, user/system 분리 설치, ownership·원자 교체·rollback과 설치 후 validator를 검증한 통합 시험 |
 | 2 | first normal publication bootstrap | **공개 전 구현 필요** | Tunnel off 상태에서 Secure-cookie 관리자 UI를 안전하게 이용해 첫 Wisdom release를 만드는 HTTPS 경로 |
 | 3 | Kakao URL publication allowlist | **공개 전 구현 필요** | 승인된 Kakao HTTPS URL이 격리된 publication build에 전달되고 manifest/페이지에서 검증되는 테스트 |
 | 4 | Hermes HMAC provisioning | **공개 전 구현 필요** | 일반 HMAC과 monitor HMAC을 서로 섞지 않고 기존 Hermes에 전달·회전·검증하는 절차 |
@@ -396,25 +396,87 @@ done
 
 기대 결과: 모든 경로가 실제 디렉터리이고 mode `0700`이다. symlink, group/world 쓰기, release/data/public root 중첩이 있으면 중단한다.
 
-### 9.1 운영 template의 현재 한계
+### 9.1 production template render/install CLI
 
-**production template render/install CLI — 공개 전 구현 필요.** 저장소에는 `ops/lib/templates.mjs` 라이브러리와 테스트 fixture만 있고 운영값을 일괄 렌더링·설치하는 CLI가 없다. 따라서 template token을 수작업 치환해 프로덕션 설치가 지원된다고 주장하지 않는다.
+설치기는 구현됐지만 대상 Mac의 ownership·원자 교체·rollback 통합 시험은 아직 공개 게이트다. template을 수작업 치환하지 않는다. 먼저 example을 **비밀이 아닌** 운영 reference와 공개 값으로 채운다. 이 JSON에는 application secret, SMTP password, Telegram token, Cloudflare credential 본문, Codex credential, age identity를 넣지 않는다. 정확한 35개 token 외의 key는 설치기가 거부한다.
 
-별도 검토자가 만든 렌더 결과를 **로컬 rehearsal용으로만** 점검할 때도 `runtime.env`, `monitoring.json`, Tunnel credential은 `0600`, 나머지 owner-write 파일은 group/world writable이 아니어야 한다. 아래 검사가 모두 성공하기 전 사용하지 않는다.
+보호된 values 파일을 실제 일반 파일 mode `0600`으로 준비한다. 기존 파일을 덮어쓰기보다 승인된 편집 절차로 새 파일을 만든 뒤 권한과 symlink 여부를 확인한다.
 
 ```sh
-chmod 600 "$APP_ROOT/shared/runtime.env" "$APP_ROOT/shared/monitoring.json" || exit 1
-if /usr/bin/grep -R -n -E '\{\{[A-Z0-9_]+\}\}' \
-  "$APP_ROOT/shared" "$HOME/Library/LaunchAgents"; then
-  printf 'STOP: unresolved template token\n' >&2
-  exit 1
-fi
-plutil -lint "$HOME/Library/LaunchAgents"/com.jihye.portal.*.plist || exit 1
-"$CADDY_BINARY" validate --config "$APP_ROOT/shared/Caddyfile" --adapter caddyfile || exit 1
-stat -f '%Sp %N' "$APP_ROOT/shared/runtime.env" "$APP_ROOT/shared/monitoring.json" || exit 1
+export CONFIG_VALUES="$HOME/.config/jihye-portal/production-values.json"
+case "$CONFIG_VALUES" in /*) ;; *) exit 1 ;; esac
+umask 077
+mkdir -p "$(dirname "$CONFIG_VALUES")" || exit 1
+chmod 700 "$(dirname "$CONFIG_VALUES")" || exit 1
+cp "$SOURCE_ROOT/ops/config/production-values.example.json" "$CONFIG_VALUES" || exit 1
+chmod 600 "$CONFIG_VALUES" || exit 1
+
+# 승인된 non-secret 운영값으로 편집한 뒤 실행한다.
+test -f "$CONFIG_VALUES" && test ! -L "$CONFIG_VALUES" || exit 1
+test "$(stat -f '%Lp' "$CONFIG_VALUES")" = "600" || exit 1
 ```
 
-기대 결과: unresolved token 출력 없음, 각 plist `OK`, Caddy valid, 두 보호 파일 `-rw-------`. 중단 조건: 하나라도 실패, unknown runtime key, monitoring의 `backupResumeGraceMinutes`가 정확히 `10`이 아님, credential 본문이 template/plist/Git에 들어감. 이 수동 점검은 미구현 production installer를 대체하지 않는다.
+입력 파일이 64 KiB를 넘거나 group/world 권한이 하나라도 열렸거나 symlink이면 중단한다. 편집을 마친 뒤 user와 system 두 scope를 **모두 dry-run**한다. dry-run에는 `sudo`를 사용하지 않는다.
+
+```sh
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope user || exit 1
+
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope system || exit 1
+```
+
+각 성공 출력은 `schemaVersion`, `scope`, `applied: false`, `artifacts`만 있는 JSON이다. 각 artifact에는 `id`, `sha256`, `changed`만 있어야 한다. token 값, 렌더 본문, 절대 target 경로, child stdout/stderr가 보이면 중단한다. dry-run도 private staging에서 runtime·monitoring parse와 plist·Caddy·cloudflared 또는 newsyslog validator를 모두 실행하지만 target은 변경하지 않는다.
+
+두 dry-run이 모두 성공한 뒤 기존 로그인 계정으로 user scope만 적용한다. 두 confirmation은 values에서 검증된 경로와 정확히 같아야 한다.
+
+```sh
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope user \
+  --apply \
+  --confirm-app-root "$APP_ROOT" \
+  --confirm-user-home "$HOME" || exit 1
+```
+
+system scope는 별도 명령으로만 root 적용한다. 이 명령은 user 파일을 다시 쓰지 않고 newsyslog 파일 하나만 설치해야 한다.
+
+```sh
+sudo "$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope system \
+  --apply \
+  --confirm-system-target /etc/newsyslog.d/wisdom-portal.conf || exit 1
+```
+
+apply 성공 출력은 같은 sanitized 형식의 `applied: true`이고, 설치기는 먼저 모든 파일을 렌더링·검증한 뒤 sibling temporary file, `fsync`, mode 설정, atomic rename으로 게시한다. 나중 artifact의 게시가 실패하면 앞선 변경을 복구한다. user scope는 12개 파일을 mode `0600`, system scope는 `/etc/newsyslog.d/wisdom-portal.conf` 하나를 mode `0644`로 설치한다.
+
+설치된 실제 target을 다시 검증한다.
+
+```sh
+plutil -lint "$HOME/Library/LaunchAgents"/com.jihye.portal.*.plist || exit 1
+"$CADDY_BINARY" validate \
+  --config "$APP_ROOT/shared/Caddyfile" \
+  --adapter caddyfile || exit 1
+"$CLOUDFLARED_BINARY" \
+  --config "$APP_ROOT/shared/cloudflared.yml" \
+  tunnel ingress validate || exit 1
+sudo /usr/sbin/newsyslog -n \
+  -f /etc/newsyslog.d/wisdom-portal.conf || exit 1
+stat -f '%Sp %Su %N' \
+  "$APP_ROOT/shared/runtime.env" \
+  "$APP_ROOT/shared/monitoring.json" \
+  "$APP_ROOT/shared/Caddyfile" \
+  "$APP_ROOT/shared/cloudflared.yml" \
+  "$HOME/Library/LaunchAgents"/com.jihye.portal.*.plist \
+  /etc/newsyslog.d/wisdom-portal.conf || exit 1
+```
+
+기대 결과: plist·Caddy·cloudflared·newsyslog 검증 성공, user 파일은 현재 로그인 계정 소유의 `0600`, system 파일은 root 소유의 `0644`다. 설치기는 Keychain, Cloudflare credential 파일, application secret을 읽지 않으며 `launchctl`을 호출하거나 서비스를 시작·재시작하지 않는다. 특히 cloudflared는 정상 Wisdom publication과 이후 preflight가 끝날 때까지 unloaded 상태를 유지한다.
+
+차단 항목 1을 최종 종료하려면 대상 Mac에서 정상 설치뿐 아니라 잘못된 owner/mode·symlink 거부, 두 번째 apply의 unchanged 판정, 중간 publication 실패의 원본 복구, rollback 실패의 별도 sanitized code, 설치 후 digest/mode 재검증을 기록한다. 이 실장비 증거가 없으면 구현 완료 상태를 공개 준비 완료로 올리지 않는다.
 
 ## 10. 도메인·Cloudflare Tunnel 준비
 
@@ -721,7 +783,7 @@ export RELEASE_ID
 
 기대 결과: JSON dry-run plan이며 파일·서비스·DB를 변경하지 않는다. path/release ID/canary 검증 실패면 apply하지 않는다.
 
-아래 apply는 production render/install CLI와 관련 차단 항목이 해결되고, 보호된 runtime/monitoring 파일과 bootstrap public pointer가 검증된 뒤에만 실행한다.
+아래 apply는 9.1의 production installer를 실행해 보호된 runtime/monitoring 파일을 설치·검증하고, 나머지 관련 차단 항목과 bootstrap public pointer가 검증된 뒤에만 실행한다.
 
 ```sh
 "$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/deploy.mjs" \
@@ -788,7 +850,7 @@ fi
 
 ### 13.2 launchd 설치 이후의 검사 명령
 
-현재 production template render/install CLI가 없으므로 다음 lifecycle 명령은 **검증된 installer가 실제 plist를 설치한 이후**에만 사용한다. bootstrap 중 cloudflared는 loaded하면 안 된다.
+다음 lifecycle 명령은 **9.1의 installer가 실제 plist를 설치하고 설치 후 validator가 통과한 이후**에만 사용한다. installer 자체는 `launchctl`을 호출하지 않는다. bootstrap 중 cloudflared는 loaded하면 안 된다.
 
 ```sh
 plutil -lint "$HOME/Library/LaunchAgents"/com.jihye.portal.*.plist || exit 1
@@ -1472,7 +1534,8 @@ curl -fsSI "https://$ADMIN_HOST/admin/login" || exit 1
 - [ ] 비밀이 Git, runtime template, plist, shell history, screenshot, Telegram, guide에 없다.
 - [ ] arm64, Node 24, npm 12.0.1, age 1.3.1, bundled SQLite 3.51.3 이상과 binary provenance가 확인됐다.
 - [ ] Windows `node_modules`를 복사하지 않았고 Mac에서 `npm ci`, Playwright install, `npm run verify`를 통과했다.
-- [ ] production template render/install CLI 등 공개 차단 항목 1~7을 실제 구현·검토·Mac 시험으로 닫았다.
+- [ ] production template render/install CLI를 실제 Mac에서 user/system dry-run·분리 apply·ownership·원자 교체·rollback·설치 후 validator까지 시험해 차단 항목 1을 닫았다.
+- [ ] 공개 차단 항목 2~7을 실제 구현·검토·Mac 시험으로 닫았다.
 - [ ] stale `PUBLIC_ORIGINS` README mismatch는 singular `PUBLIC_ORIGIN`으로 정정되었다.
 - [ ] owner password, TOTP, recovery code와 8개 consent 문서가 승인·검증됐다.
 - [ ] first normal Wisdom publication, Kakao URL, normal preflight와 Tunnel 공개가 안전한 순서로 완료됐다.
