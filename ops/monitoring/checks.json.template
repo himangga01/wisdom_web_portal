@@ -23,6 +23,7 @@
     ],
     "thresholds": {
       "backupFreshnessMinutes": 90,
+      "backupResumeGraceMinutes": 10,
       "diskFreePercentMinimum": 15,
       "queueStallMinutes": 15,
       "retentionOverdueMaximum": 0,

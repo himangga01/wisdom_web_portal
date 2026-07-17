@@ -16,6 +16,7 @@ import {
   withSecureRealDirectory,
   writeProtectedIncidentState,
 } from "./monitor-files.mjs";
+import { validateBackupControlRows } from "./backup-control.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -107,11 +108,12 @@ function validateConfig(value) {
 
   const thresholds = local.thresholds;
   if (!exactKeys(thresholds, [
-    "backupFreshnessMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
+    "backupFreshnessMinutes", "backupResumeGraceMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
     "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum", "queueStallMinutes",
     "retentionOverdueMaximum", "translationFailureBacklogMaximum",
   ]) ||
     !integer(thresholds.backupFreshnessMinutes, 1, 1_440) ||
+    thresholds.backupResumeGraceMinutes !== 10 ||
     !integer(thresholds.diskFreePercentMinimum, 1, 99) ||
     !integer(thresholds.queueStallMinutes, 1, 1_440) ||
     !integer(thresholds.retentionOverdueMaximum, 0, 1_000_000) ||
@@ -267,6 +269,17 @@ function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : undefined;
 }
 
+function validatedBackupControl(value) {
+  return validateBackupControlRows([{
+    singleton: 1,
+    automatic_enabled: value?.automaticEnabled === true
+      ? 1
+      : value?.automaticEnabled === false ? 0 : value?.automaticEnabled,
+    row_version: value?.rowVersion,
+    updated_at_ms: value?.updatedAtMs,
+  }]);
+}
+
 function safeRunId(value) {
   if (typeof value !== "string" || !RUN_ID.test(value)) fail("MONITOR_RUN_ID_INVALID", "Monitor run id is invalid");
   return value;
@@ -352,10 +365,26 @@ export async function runLocalMonitor({
 
   const checks = [
     safeCheck("backup", "BACKUP_CHECK_FAILED", checkMs, async (signal) => {
+      let control;
+      try {
+        control = validatedBackupControl(await adapters.readBackupControl(local.databasePath, {
+          signal,
+          timeoutMs: checkMs,
+        }));
+      } catch {
+        return failed("backup", "BACKUP_CONTROL_INVALID");
+      }
+      if (!control.automaticEnabled) return failed("backup", "BACKUP_ADMIN_DISABLED");
       const status = await adapters.loadNewestBackupStatus(local.backupRoot, { signal });
+      const createdAtMs = status ? Date.parse(status.createdAt) : undefined;
+      const postTransition = Number.isFinite(createdAtMs) && createdAtMs >= control.updatedAtMs;
+      const transitionAgeMs = now.valueOf() - control.updatedAtMs;
+      if (!postTransition && transitionAgeMs < local.thresholds.backupResumeGraceMinutes * 60_000) {
+        return { id: "backup", state: "grace", code: "BACKUP_RESUME_GRACE" };
+      }
+      if (!postTransition) return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
       const freshness = backupFreshness(status, now, local.thresholds.backupFreshnessMinutes * 60_000);
       const ageMinutes = freshness.ageMs === undefined ? undefined : Math.floor(freshness.ageMs / 60_000);
-      if (freshness.state === "missing") return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
       if (freshness.state === "invalid") return failed("backup", "BACKUP_TIMESTAMP_INVALID");
       if (freshness.state === "stale") return failed("backup", "BACKUP_VERIFIED_PAIR_STALE", ageMinutes);
       return healthy("backup", ageMinutes);
@@ -443,13 +472,16 @@ export async function runLocalMonitor({
 
   const nested = await within(local.timeouts.overallMs, async () => Promise.all(checks));
   const results = nested.flat();
-  const ok = results.every(({ state }) => state === "healthy");
+  const fullyHealthy = results.every(({ state }) => state === "healthy");
+  const ok = results.every(({ state }) => state === "healthy" || state === "grace");
   let handoff = ok ? "not-required" : dryRun ? "dry-run-suppressed" : "failed";
   let exitCode = ok ? 0 : 2;
   const base = { schemaVersion: 1, runId, observedAt, ok, checks: results };
   if (dryRun) return boundedReport({ ...base, handoff, exitCode });
 
-  if (ok) {
+  if (ok && !fullyHealthy) return boundedReport({ ...base, handoff, exitCode });
+
+  if (fullyHealthy) {
     try {
       await adapters.clearIncidentState(local.incidentState.path);
     } catch {
@@ -458,7 +490,11 @@ export async function runLocalMonitor({
     return boundedReport({ ...base, handoff, exitCode });
   }
 
-  const fingerprint = incidentFingerprint(results);
+  const failures = results.filter(({ state }) => state === "failed");
+  const disabledOnly = failures.length === 1 &&
+    failures[0].id === "backup" &&
+    failures[0].code === "BACKUP_ADMIN_DISABLED";
+  const fingerprint = incidentFingerprint(failures);
   let prior;
   try {
     prior = await adapters.loadIncidentState(local.incidentState.path);
@@ -467,9 +503,10 @@ export async function runLocalMonitor({
     return operationalFailure(base, "INCIDENT_STATE_READ_FAILED");
   }
   const lastSentAt = prior === undefined ? undefined : Date.parse(prior.lastSentAt);
-  const withinCooldown = prior?.fingerprint === fingerprint && lastSentAt <= now.valueOf() &&
+  const withinCooldown = lastSentAt <= now.valueOf() &&
     now.valueOf() - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
-  if (withinCooldown) {
+  const suppress = prior?.fingerprint === fingerprint && (disabledOnly || withinCooldown);
+  if (suppress) {
     return boundedReport({ ...base, handoff: "cooldown-suppressed", exitCode: 2 });
   }
 
@@ -564,6 +601,64 @@ export function createSystemMonitoringAdapters({
       });
       response.body?.cancel();
       return response.status === 200;
+    },
+    readBackupControl: async (databasePath, { signal, timeoutMs } = {}) => {
+      try {
+        if (!integer(timeoutMs, 100, 60_000)) throw new Error("invalid timeout");
+        await assertSecureRealDirectory(path.dirname(databasePath), {
+          code: "BACKUP_CONTROL_INVALID",
+          requireProtected: true,
+        });
+        const { canonicalPath: canonical } = await assertSecureRegularFile(databasePath, {
+          code: "BACKUP_CONTROL_INVALID",
+          requireProtected: true,
+        });
+        if (!absolutePath(databaseHelper) || !absolutePath(nodeBinary)) throw new Error("invalid helper");
+        const output = await execute(nodeBinary, [
+          databaseHelper,
+          "--database",
+          canonical,
+          "--backup-control",
+        ], {
+          encoding: "utf8",
+          env: {
+            LANG: "C",
+            LC_ALL: "C",
+            ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+            ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+            ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+            ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
+          },
+          killSignal: "SIGKILL",
+          maxBuffer: 8 * 1024,
+          shell: false,
+          signal,
+          timeout: Math.max(25, timeoutMs - 25),
+          windowsHide: true,
+        });
+        const stdout = typeof output?.stdout === "string" ? output.stdout : "";
+        const stderr = typeof output?.stderr === "string" ? output.stderr : "";
+        if (Buffer.byteLength(stdout, "utf8") > 4 * 1024 || stderr !== "" || !/^\{[^\r\n]+\}\n?$/u.test(stdout)) {
+          throw new Error("invalid output");
+        }
+        const result = JSON.parse(stdout);
+        if (
+          !exactKeys(result, ["automaticEnabled", "rowVersion", "updatedAtMs"]) ||
+          typeof result.automaticEnabled !== "boolean"
+        ) {
+          throw new Error("invalid result");
+        }
+        return validateBackupControlRows([{
+          singleton: 1,
+          automatic_enabled: result.automaticEnabled === true
+            ? 1
+            : result.automaticEnabled === false ? 0 : result.automaticEnabled,
+          row_version: result.rowVersion,
+          updated_at_ms: result.updatedAtMs,
+        }]);
+      } catch {
+        fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+      }
     },
     readBacklogs: async (databasePath, {
       signal,

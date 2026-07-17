@@ -387,6 +387,7 @@ test("monitoring template keeps external uptime separate from executable local c
     source: "outside-mac-and-lan",
   });
   assert.equal(parsed.local.thresholds.backupFreshnessMinutes, 90);
+  assert.equal(parsed.local.thresholds.backupResumeGraceMinutes, 10);
   assert.equal(parsed.local.thresholds.diskFreePercentMinimum, 15);
   assert.equal(parsed.local.thresholds.queueStallMinutes, 15);
   assert.equal(parsed.local.thresholds.retentionOverdueMaximum, 0);

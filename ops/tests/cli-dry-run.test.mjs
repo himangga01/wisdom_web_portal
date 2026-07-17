@@ -155,6 +155,7 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
       requiredRunningLaunchdLabels: ["com.jihye.portal.control"],
       thresholds: {
         backupFreshnessMinutes: 90,
+        backupResumeGraceMinutes: 10,
         diskFreePercentMinimum: 15,
         queueStallMinutes: 15,
         retentionOverdueMaximum: 0,
