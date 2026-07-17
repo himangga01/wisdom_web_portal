@@ -59,8 +59,10 @@ const minimalRuntimeFiles = [
   "node_modules/hono/dist/index.js",
   "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
   "node_modules/runtime-fixture/index.js",
+  "ops/lib/backup-control.mjs",
   "ops/lib/monitor-files.mjs",
   "ops/lib/monitoring.mjs",
+  "ops/scripts/backup-dispatcher.mjs",
   "ops/lib/runtime-config.mjs",
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
@@ -245,6 +247,21 @@ test("release manifest requires the bounded monitor database helper", async () =
 
 test("release manifest requires the monitor runner's runtime library dependency chain", async () => {
   for (const required of ["ops/lib/monitoring.mjs", "ops/lib/monitor-files.mjs"]) {
+    const fixture = await releaseFixture();
+    for (const relative of minimalRuntimeFiles.filter((value) => value !== required)) {
+      const absolute = path.join(fixture.destination, relative);
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, relative);
+    }
+    await assert.rejects(
+      createReleaseManifest(fixture.destination, fixture.releaseId),
+      { code: "RELEASE_MANIFEST_INVALID" },
+    );
+  }
+});
+
+test("release manifest requires the automatic backup dispatcher and its control library", async () => {
+  for (const required of ["ops/lib/backup-control.mjs", "ops/scripts/backup-dispatcher.mjs"]) {
     const fixture = await releaseFixture();
     for (const relative of minimalRuntimeFiles.filter((value) => value !== required)) {
       const absolute = path.join(fixture.destination, relative);

@@ -54,6 +54,18 @@ async function render(relativePath, extra = {}) {
   });
 }
 
+function plistProgramArguments(source) {
+  const match = /<key>ProgramArguments<\/key><array>([\s\S]*?)<\/array>/u.exec(source);
+  assert.ok(match, "ProgramArguments array is required");
+  return [...match[1].matchAll(/<string>([^<]*)<\/string>/gu)].map((entry) => entry[1]);
+}
+
+function plistInteger(source, key) {
+  const match = new RegExp(`<key>${key}</key><integer>(\\d+)</integer>`, "u").exec(source);
+  assert.ok(match, `${key} integer is required`);
+  return Number(match[1]);
+}
+
 test("operator environment templates expose exactly-one Naver verification settings as opt-in", async () => {
   const rootExample = await readFile(path.resolve(opsRoot, "../.env.example"), "utf8");
   const runtime = await readFile(path.join(opsRoot, "config/runtime.env.template"), "utf8");
@@ -320,13 +332,33 @@ test("ops templates contain placeholders rather than deployable credentials", as
   }
 });
 
-test("backup schedule and log rotation are bounded", async () => {
+test("backup schedule dispatches every 60 seconds before Keychain access with one fixed automatic child", async () => {
   const backup = await render("launchd/com.jihye.portal.backup.plist.template");
   const newsyslog = await render("newsyslog/wisdom-portal.conf.template");
+  const args = plistProgramArguments(backup);
+  const separator = args.indexOf("--");
 
-  assert.match(backup, /<key>StartInterval<\/key><integer>3600<\/integer>/);
-  assert.match(backup, /<string>--apply<\/string>/);
-  assert.match(backup, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/(?:keychain-exec|backup)\.mjs/);
+  assert.deepEqual(args.slice(0, 2), [
+    fixture.NODE_BINARY,
+    `${fixture.CURRENT_RELEASE}/ops/scripts/backup-dispatcher.mjs`,
+  ]);
+  assert.equal(plistInteger(backup, "StartInterval"), 60);
+  assert.equal(plistInteger(backup, "ThrottleInterval"), 60);
+  assert.equal(args[args.indexOf("--run-state") + 1], `${fixture.DATA_ROOT}/backup-run-state.json`);
+  assert.equal(separator > 1, true);
+  assert.equal(args.slice(0, separator).some((value) => value.includes("keychain-exec")), false);
+  assert.equal(args.slice(separator + 1).filter((value) => value.endsWith("/keychain-exec.mjs")).length, 1);
+  assert.equal(args.filter((value) => value === "AGE_IDENTITY=com.jihye.portal.age-identity").length, 1);
+  assert.equal(args.filter((value) => value === "--automatic").length, 1);
+  assert.equal(args.filter((value) => value === "--apply").length, 2);
+  assert.deepEqual(args.filter((value, index) => args[index - 1] === "--source"), [
+    `${fixture.DATA_ROOT}/portal.sqlite`,
+    `${fixture.DATA_ROOT}/portal.sqlite`,
+  ]);
+  assert.deepEqual(args.filter((value, index) => args[index - 1] === "--root"), [
+    fixture.BACKUP_ROOT,
+    fixture.BACKUP_ROOT,
+  ]);
   assert.doesNotMatch(backup, /\/Users\/wisdom\/portal\/ops\/scripts/);
   assert.match(newsyslog, /\/Users\/wisdom\/Library\/Logs\/WisdomPortal\/\*\.log\s+wisdom:staff\s+640\s+10\s+10240\s+\*\s+GJN/);
   assert.doesNotMatch(newsyslog, /world|777/i);

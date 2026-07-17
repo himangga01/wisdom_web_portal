@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -174,6 +174,112 @@ test("backup and restore serialize on one exclusive database maintenance lock", 
     now: new Date("2026-07-16T02:00:00.000Z"),
   }, fakeAdapters());
   assert.equal(result.verified, true);
+});
+
+test("automatic backup rechecks OFF under the maintenance lock before backup filesystem or adapter work", async () => {
+  const root = await fixtureDirectory("automatic-backup-disabled");
+  const sourceDb = path.join(root, "data", "portal.sqlite");
+  const backupRoot = path.join(root, "must-not-create-backups");
+  const tempRoot = path.join(root, "must-not-create-temp");
+  await mkdir(path.dirname(sourceDb), { recursive: true });
+  await writeFile(sourceDb, "database-fixture");
+  const calls = { readBackupControl: 0, checkpoint: 0, onlineBackup: 0, encrypt: 0, decrypt: 0 };
+  const adapters = fakeAdapters();
+  adapters.sqlite.readBackupControl = async () => {
+    calls.readBackupControl += 1;
+    assert.equal((await lstat(databaseMaintenanceLockPath(sourceDb))).isDirectory(), true);
+    return { automaticEnabled: false, rowVersion: 4, updatedAtMs: Date.parse("2026-07-16T02:00:00.000Z") };
+  };
+  adapters.sqlite.checkpoint = async () => { calls.checkpoint += 1; };
+  adapters.sqlite.onlineBackup = async () => { calls.onlineBackup += 1; };
+  adapters.age.encrypt = async () => { calls.encrypt += 1; };
+  adapters.age.decrypt = async () => { calls.decrypt += 1; };
+
+  const skipped = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot,
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T02:00:00.000Z"),
+    automatic: true,
+  }, adapters);
+
+  assert.deepEqual(skipped, {
+    verified: false,
+    outcome: "admin-disabled",
+    controlRevision: 4,
+  });
+  assert.deepEqual(calls, { readBackupControl: 1, checkpoint: 0, onlineBackup: 0, encrypt: 0, decrypt: 0 });
+  await assert.rejects(lstat(backupRoot), { code: "ENOENT" });
+  await assert.rejects(lstat(tempRoot), { code: "ENOENT" });
+  await assert.rejects(lstat(databaseMaintenanceLockPath(sourceDb)), { code: "ENOENT" });
+});
+
+test("automatic ON follows the existing flow and a later OFF change does not interrupt it", async () => {
+  const root = await fixtureDirectory("automatic-backup-enabled");
+  const sourceDb = path.join(root, "data", "portal.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const tempRoot = path.join(root, "temp");
+  await mkdir(path.dirname(sourceDb), { recursive: true });
+  await writeFile(sourceDb, "database-fixture");
+  let automaticEnabled = true;
+  let policyReads = 0;
+  let checkpointCalls = 0;
+  const adapters = fakeAdapters();
+  adapters.sqlite.readBackupControl = async () => {
+    policyReads += 1;
+    assert.equal((await lstat(databaseMaintenanceLockPath(sourceDb))).isDirectory(), true);
+    return { automaticEnabled, rowVersion: 5, updatedAtMs: 0 };
+  };
+  const checkpoint = adapters.sqlite.checkpoint;
+  adapters.sqlite.checkpoint = async (...args) => {
+    checkpointCalls += 1;
+    automaticEnabled = false;
+    return checkpoint(...args);
+  };
+
+  const result = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot,
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T03:00:00.000Z"),
+    automatic: true,
+  }, adapters);
+
+  assert.equal(result.verified, true);
+  assert.equal(policyReads, 1);
+  assert.equal(checkpointCalls, 1);
+  assert.equal(automaticEnabled, false);
+});
+
+test("manual backup omits automatic and never reads administrator policy", async () => {
+  const root = await fixtureDirectory("manual-backup-policy-bypass");
+  const sourceDb = path.join(root, "data", "portal.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const tempRoot = path.join(root, "temp");
+  await mkdir(path.dirname(sourceDb), { recursive: true });
+  await writeFile(sourceDb, "database-fixture");
+  const adapters = fakeAdapters();
+  let policyReads = 0;
+  adapters.sqlite.readBackupControl = async () => {
+    policyReads += 1;
+    return { automaticEnabled: false, rowVersion: 99, updatedAtMs: 1 };
+  };
+
+  const result = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot,
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T04:00:00.000Z"),
+  }, adapters);
+
+  assert.equal(result.verified, true);
+  assert.equal(policyReads, 0);
 });
 
 test("database maintenance lock requires confirmed quarantine before reuse and verifies release ownership", async () => {
@@ -974,7 +1080,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
     assert.equal(restored.pragma("integrity_check", { simple: true }), "ok");
-    assert.equal(restored.pragma("user_version", { simple: true }), 6);
+    assert.equal(restored.pragma("user_version", { simple: true }), 7);
   } finally {
     restored.close();
   }

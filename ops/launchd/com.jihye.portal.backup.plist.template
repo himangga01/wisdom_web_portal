@@ -3,6 +3,11 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>com.jihye.portal.backup</string>
   <key>ProgramArguments</key><array>
+    <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/backup-dispatcher.mjs</string>
+    <string>--source</string><string>{{DATA_ROOT}}/portal.sqlite</string>
+    <string>--root</string><string>{{BACKUP_ROOT}}</string>
+    <string>--run-state</string><string>{{DATA_ROOT}}/backup-run-state.json</string>
+    <string>--apply</string><string>--</string>
     <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/keychain-exec.mjs</string>
     <string>--account</string><string>{{USER_NAME}}</string>
     <string>--config</string><string>{{APP_ROOT}}/shared/runtime.env</string>
@@ -10,11 +15,11 @@
     <string>--</string><string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/backup.mjs</string>
     <string>--source</string><string>{{DATA_ROOT}}/portal.sqlite</string><string>--root</string><string>{{BACKUP_ROOT}}</string>
     <string>--temp-root</string><string>{{BACKUP_TEMP_ROOT}}</string><string>--age</string><string>{{AGE_BINARY}}</string>
-    <string>--recipient</string><string>{{AGE_RECIPIENT}}</string><string>--apply</string>
+    <string>--recipient</string><string>{{AGE_RECIPIENT}}</string><string>--automatic</string><string>--apply</string>
   </array>
   <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
   <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>60</integer>
   <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>{{LOG_ROOT}}/backup.stdout.log</string>
   <key>StandardErrorPath</key><string>{{LOG_ROOT}}/backup.stderr.log</string>

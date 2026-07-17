@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { validateBackupControlRows } from "./backup-control.mjs";
+
 const MAX_RESTORE_RETENTION_ROWS = 100_000;
 
 function fail(code, message) {
@@ -98,13 +100,52 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
 
 export function createSqliteAdapter({
   loadDatabase = async () => (await import("better-sqlite3")).default,
-  expectedSchemaVersion = 6,
+  expectedSchemaVersion = 7,
   maxRetentionRows = MAX_RESTORE_RETENTION_ROWS,
 } = {}) {
   if (!Number.isSafeInteger(maxRetentionRows) || maxRetentionRows < 1 || maxRetentionRows > MAX_RESTORE_RETENTION_ROWS) {
     fail("RESTORE_RETENTION_INVALID", "Restore retention row bound is invalid");
   }
   return {
+    readBackupControl: async (databasePath) => {
+      try {
+        if (!validatePath(databasePath)) throw new Error("invalid path");
+        const Database = await loadDatabase();
+        const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+        let transactionOpen = false;
+        try {
+          database.pragma("query_only = ON");
+          database.exec("BEGIN");
+          transactionOpen = true;
+          const schemaVersion = database.pragma("user_version", { simple: true });
+          if (!Number.isSafeInteger(schemaVersion) || schemaVersion !== expectedSchemaVersion) {
+            throw new Error("incompatible schema");
+          }
+          const rows = database.prepare(`
+            SELECT singleton, automatic_enabled, row_version, updated_at_ms
+            FROM backup_settings
+            LIMIT 2
+          `).all();
+          const control = validateBackupControlRows(rows);
+          database.exec("COMMIT");
+          transactionOpen = false;
+          return control;
+        } catch (error) {
+          if (transactionOpen) {
+            try {
+              database.exec("ROLLBACK");
+            } catch {
+              // The outer sanitized failure remains authoritative.
+            }
+          }
+          throw error;
+        } finally {
+          database.close();
+        }
+      } catch {
+        fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+      }
+    },
     checkpoint: async (source) => {
       const Database = await loadDatabase();
       const database = new Database(source);
