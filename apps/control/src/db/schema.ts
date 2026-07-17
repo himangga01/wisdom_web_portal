@@ -151,6 +151,14 @@ export const admins = sqliteTable("admins", {
   lastLoginAtMs: integer("last_login_at_ms"),
 });
 
+export const backupSettings = sqliteTable("backup_settings", {
+  singleton: integer("singleton").primaryKey(),
+  automaticEnabled: integer("automatic_enabled", { mode: "boolean" }).notNull(),
+  rowVersion: integer("row_version").notNull(),
+  updatedAtMs: integer("updated_at_ms").notNull(),
+  updatedByAdminId: text("updated_by_admin_id").references(() => admins.id),
+});
+
 export const adminSessions = sqliteTable("admin_sessions", {
   tokenHash: blob("token_hash", { mode: "buffer" }).primaryKey(),
   adminId: text("admin_id").notNull().references(() => admins.id),
@@ -276,6 +284,7 @@ export const REQUIRED_TABLES = [
   "hermes_article_idempotency",
   "hermes_article_nonces",
   "audit_events",
+  "backup_settings",
 ] as const;
 
 export const REQUIRED_INDEXES = [
@@ -352,7 +361,7 @@ export const REQUIRED_TRIGGERS = [
   "releases_delete_retired_only",
 ] as const;
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const drizzleSchema = {
   schemaMigrations,
@@ -363,6 +372,7 @@ export const drizzleSchema = {
   abuseBuckets,
   notificationOutbox,
   admins,
+  backupSettings,
   adminSessions,
   adminRecoveryCodes,
   adminPreAuthChallenges,
