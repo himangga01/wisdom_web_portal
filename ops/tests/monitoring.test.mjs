@@ -321,6 +321,62 @@ test("runLocalMonitor requires an exact own-key boolean backup control object", 
   }
 });
 
+test("runLocalMonitor snapshots each backup control property exactly once", async () => {
+  const transitionMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const reads = {
+    automaticEnabled: 0,
+    rowVersion: 0,
+    updatedAtMs: 0,
+  };
+  const control = Object.defineProperties({}, {
+    automaticEnabled: {
+      enumerable: true,
+      get() {
+        reads.automaticEnabled += 1;
+        return reads.automaticEnabled === 1 ? true : 1;
+      },
+    },
+    rowVersion: {
+      enumerable: true,
+      get() {
+        reads.rowVersion += 1;
+        return 6;
+      },
+    },
+    updatedAtMs: {
+      enumerable: true,
+      get() {
+        reads.updatedAtMs += 1;
+        return transitionMs;
+      },
+    },
+  });
+
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date("2026-07-17T04:01:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000276",
+    dryRun: true,
+  }, healthyAdapters({
+    readBackupControl: async () => control,
+    loadNewestBackupStatus: async () => ({
+      verified: true,
+      createdAt: new Date(transitionMs).toISOString(),
+    }),
+  }));
+
+  assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "healthy",
+    value: 1,
+  });
+  assert.deepEqual(reads, {
+    automaticEnabled: 1,
+    rowVersion: 1,
+    updatedAtMs: 1,
+  });
+});
+
 test("future backup-control timestamps fail closed before backup scanning while equality remains valid", async () => {
   const now = new Date("2026-07-17T04:01:00.000Z");
   let backupStatusReads = 0;

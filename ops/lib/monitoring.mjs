@@ -270,19 +270,20 @@ function boundedCount(value) {
 }
 
 function validatedBackupControl(value, nowMs) {
-  if (
-    !exactKeys(value, ["automaticEnabled", "rowVersion", "updatedAtMs"]) ||
-    typeof value.automaticEnabled !== "boolean"
-  ) {
+  if (!exactKeys(value, ["automaticEnabled", "rowVersion", "updatedAtMs"])) {
     throw new Error("Backup control object is invalid");
   }
+  const automaticEnabled = value.automaticEnabled;
+  const rowVersion = value.rowVersion;
+  const updatedAtMs = value.updatedAtMs;
+  if (typeof automaticEnabled !== "boolean") throw new Error("Backup control object is invalid");
   const control = validateBackupControlRows([{
     singleton: 1,
-    automatic_enabled: value?.automaticEnabled === true
+    automatic_enabled: automaticEnabled === true
       ? 1
-      : value?.automaticEnabled === false ? 0 : value?.automaticEnabled,
-    row_version: value?.rowVersion,
-    updated_at_ms: value?.updatedAtMs,
+      : automaticEnabled === false ? 0 : automaticEnabled,
+    row_version: rowVersion,
+    updated_at_ms: updatedAtMs,
   }]);
   if (control.updatedAtMs > nowMs) throw new Error("Backup control timestamp is invalid");
   return control;
