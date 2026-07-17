@@ -1,6 +1,7 @@
 export * from "./article.js";
 export * from "./article-markdown.js";
 export * from "./article-content.js";
+export * from "./backup-run-state.js";
 export * from "./consultation.js";
 export * from "./consent-publication.js";
 export * from "./contracts.js";

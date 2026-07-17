@@ -1,5 +1,6 @@
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { serve } from "@hono/node-server";
+import * as path from "node:path";
 
 import { createControlApp } from "./app.js";
 import {
@@ -8,12 +9,17 @@ import {
   reconcilePublicationActivation,
 } from "./articles/publication-release.js";
 import { createIndexNowKeyCache } from "./articles/indexnow-sender.js";
+import { readBackupRunState } from "./backups/run-state.js";
 import { createDatabaseConsentAuthorityResolver } from "./consent/service.js";
 import { closeDatabase } from "./db/client.js";
 import { createControlRuntime, loadLocalEnvironment } from "./runtime.js";
 
 loadLocalEnvironment();
 const runtime = createControlRuntime();
+const backupRunStatePath = path.join(
+  path.dirname(runtime.config.databasePath),
+  "backup-run-state.json",
+);
 const indexNowKeyCache = runtime.config.indexNow
   ? createIndexNowKeyCache({
       service: runtime.config.indexNow.keychainService,
@@ -44,6 +50,7 @@ const app = createControlApp({
   enforceOrigin: runtime.config.enforceOrigin,
   hermesHmacSecret: runtime.config.hermesHmacSecret,
   consentAuthorityResolver,
+  backupRunStateProvider: () => readBackupRunState(backupRunStatePath),
   ...(articlePublication ? { articlePublication } : {}),
   ...(indexNowKeyCache ? { indexNowKeyProvider: () => indexNowKeyCache.get() } : {}),
   ...(runtime.config.publicOrigin && runtime.config.adminOrigin
