@@ -35,7 +35,7 @@ The values file is UTF-8 JSON with a 64 KiB maximum:
 }
 ```
 
-The top-level keys are exactly `schemaVersion` and `values`; `schemaVersion` is exactly `1`. `values` must contain exactly the union of tokens found in the frozen installer template inventory. Missing and extra keys fail. Every value is a non-empty string with no NUL, CR, or LF. The file path must be absolute, the file must be a regular non-symlink, and POSIX group/world permissions must be zero.
+The top-level keys are exactly `schemaVersion` and `values`; `schemaVersion` is exactly `1`. `values` must contain exactly the 35-token union found in the frozen installer template inventory. Missing and extra keys fail. `USER_HOME` and `RELEASE_ROOT` are not template tokens and are not accepted as extra values; the installer derives them from the exact `APP_ROOT=/Users/<USER_NAME>/portal` contract. Every value is a non-empty string with no NUL, CR, or LF. The file path must be absolute, the file must be a regular non-symlink, and POSIX group/world permissions must be zero.
 
 The installer additionally enforces these cross-field invariants:
 
@@ -45,8 +45,8 @@ The installer additionally enforces these cross-field invariants:
 - `TUNNEL_ID` is a canonical UUID and `AGE_RECIPIENT` is an age public recipient, never an identity.
 - `USER_NAME` is a bounded macOS account identifier.
 - all token names ending in `_ROOT`, `_HOME`, `_BINARY`, `_FILE`, `_CONFIG`, or `_RELEASE` are normalized absolute paths.
-- `CADDY_CONFIG`, `CLOUDFLARED_CONFIG`, `APP_ROOT`, and `USER_HOME` agree with the installer-derived target locations.
-- `CURRENT_RELEASE`, `PUBLIC_CURRENT_RELEASE`, `RELEASE_ROOT`, and `PUBLIC_RELEASE_ROOT` remain separate paths; data, backup, log, temp, and release roots cannot nest unsafely.
+- `APP_ROOT` is exactly `/Users/<USER_NAME>/portal`; `USER_HOME` is derived as its parent. `CADDY_CONFIG` and `CLOUDFLARED_CONFIG` agree with installer-derived shared targets.
+- `CURRENT_RELEASE`, derived `RELEASE_ROOT`, `PUBLIC_CURRENT_RELEASE`, and `PUBLIC_RELEASE_ROOT` are exactly the separate `APP_ROOT/current`, `APP_ROOT/releases`, `APP_ROOT/public-current`, and `APP_ROOT/public-releases` paths; data, backup, log, temp, and release roots cannot nest unsafely.
 - values are treated as internal configuration and are never printed. The exact allowlist contains references and public material only; keys such as application secrets, SMTP passwords, Telegram tokens, Cloudflare credential bodies, Codex API credentials, and age identities are rejected as extras.
 
 ## 5. Template inventory and targets
@@ -95,7 +95,7 @@ Separating scopes prevents a root-run system-file operation from silently rewrit
 6. Parse `runtime.env` with `parseRuntimeConfig` and `monitoring.json` with `parseMonitoringConfig`.
 7. Validate every plist with `/usr/bin/plutil -lint` against a private staging file.
 8. Validate Caddy with the configured `CADDY_BINARY validate --config <staged> --adapter caddyfile`.
-9. Validate cloudflared ingress with the configured `CLOUDFLARED_BINARY tunnel ingress validate --config <staged>`.
+9. Validate cloudflared ingress with the configured `CLOUDFLARED_BINARY --config <staged> tunnel ingress validate`.
 10. Validate system scope with `/usr/sbin/newsyslog -n -f <staged>`.
 11. Produce a sanitized plan containing only scope, artifact IDs, SHA-256 digests, change status, and `applied: false`.
 12. In apply mode, verify target parent directories are real non-symlink directories with no group/world write permission, then publish through sibling temporary files, `fsync`, `chmod`, and atomic rename.

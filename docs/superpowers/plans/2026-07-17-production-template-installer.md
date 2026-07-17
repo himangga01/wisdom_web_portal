@@ -63,7 +63,7 @@ Expected: FAIL because `ops/lib/config-installer.mjs` does not exist.
 
 - [ ] **Step 3: Implement the exact descriptors and strict parser**
 
-Define descriptors with stable IDs, source paths, scope, target resolver, and mode. Export an immutable sorted token list derived by reading token names from the descriptor templates. `parseProductionValues` requires exact top-level and token keys, then applies the approved cross-field invariants. All failures expose a stable `CONFIG_VALUES_INVALID` code without values.
+Define descriptors with stable IDs, source paths, scope, target resolver, and mode. Export the immutable sorted 35-token list derived from descriptor templates. `USER_HOME` and `RELEASE_ROOT` are not accepted values; derive them from the exact `APP_ROOT=/Users/<USER_NAME>/portal` contract. `parseProductionValues` requires exact top-level and token keys, then applies the approved cross-field invariants. All failures expose a stable `CONFIG_VALUES_INVALID` code without values.
 
 Implement `readProductionValuesFile` with absolute-path, regular non-symlink, 64 KiB, single-read identity, and POSIX `mode & 0o077 === 0` checks. It returns only the parsed immutable token map.
 
@@ -189,7 +189,7 @@ Inject `spawn` and assert fixed argv, `shell: false`, no inherited template valu
 ```text
 /usr/bin/plutil -lint <staged-plist>
 <CADDY_BINARY> validate --config <staged-caddy> --adapter caddyfile
-<CLOUDFLARED_BINARY> tunnel ingress validate --config <staged-yaml>
+<CLOUDFLARED_BINARY> --config <staged-yaml> tunnel ingress validate
 /usr/sbin/newsyslog -n -f <staged-config>
 ```
 
