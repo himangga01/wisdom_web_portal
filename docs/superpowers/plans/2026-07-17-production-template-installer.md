@@ -30,7 +30,7 @@
 - Produces: `CONFIG_TEMPLATE_DESCRIPTORS`, `CONFIG_TOKEN_NAMES`, `parseProductionValues(source)`, `readProductionValuesFile(filePath, adapters)`.
 - Consumes: `renderTemplate` from `ops/lib/templates.mjs` in later tasks.
 
-- [ ] **Step 1: Write failing inventory and parser tests**
+- [x] **Step 1: Write failing inventory and parser tests**
 
 Create tests that import the four exports and assert:
 
@@ -51,7 +51,7 @@ Add table cases for missing token, extra token, wrong schema, arrays, non-string
 
 Add real-file cases for relative path, symlink, directory, over-size, and POSIX mode `0644`; the accepted fixture is a regular `0600` file.
 
-- [ ] **Step 2: Run the focused test and observe RED**
+- [x] **Step 2: Run the focused test and observe RED**
 
 Run:
 
@@ -61,17 +61,17 @@ node --test ops/tests/config-installer.test.mjs
 
 Expected: FAIL because `ops/lib/config-installer.mjs` does not exist.
 
-- [ ] **Step 3: Implement the exact descriptors and strict parser**
+- [x] **Step 3: Implement the exact descriptors and strict parser**
 
 Define descriptors with stable IDs, source paths, scope, target resolver, and mode. Export the immutable sorted 35-token list derived from descriptor templates. `USER_HOME` and `RELEASE_ROOT` are not accepted values; derive them from the exact `APP_ROOT=/Users/<USER_NAME>/portal` contract. `parseProductionValues` requires exact top-level and token keys, then applies the approved cross-field invariants. All failures expose a stable `CONFIG_VALUES_INVALID` code without values.
 
 Implement `readProductionValuesFile` with absolute-path, regular non-symlink, 64 KiB, single-read identity, and POSIX `mode & 0o077 === 0` checks. It returns only the parsed immutable token map.
 
-- [ ] **Step 4: Add the exact placeholder-only example**
+- [x] **Step 4: Add the exact placeholder-only example**
 
 Create schema version 1 JSON with every key in `CONFIG_TOKEN_NAMES`, fixture/example values only, no private key, token, password, API credential, or deployable domain. The example must parse successfully but remain visibly non-production.
 
-- [ ] **Step 5: Run focused tests GREEN and commit**
+- [x] **Step 5: Run focused tests GREEN and commit**
 
 Run the focused test and `git diff --check`, then commit:
 
