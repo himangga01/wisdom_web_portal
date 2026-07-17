@@ -23,6 +23,33 @@ async function dryRun(script, args) {
   return value;
 }
 
+function dispatcherArgs() {
+  const source = path.join(drive, "fixture", "data", "portal.sqlite");
+  const root = path.join(drive, "fixture", "backups");
+  const scripts = path.join(drive, "fixture", "current", "ops", "scripts");
+  return [
+    "--source", source,
+    "--root", root,
+    "--run-state", path.join(path.dirname(source), "backup-run-state.json"),
+    "--",
+    process.execPath,
+    path.join(scripts, "keychain-exec.mjs"),
+    "--account", "wisdom",
+    "--config", path.join(drive, "fixture", "shared", "runtime.env"),
+    "--secret", "AGE_IDENTITY=com.jihye.portal.age-identity",
+    "--",
+    process.execPath,
+    path.join(scripts, "backup.mjs"),
+    "--source", source,
+    "--root", root,
+    "--temp-root", path.join(drive, "fixture", "temp"),
+    "--age", path.join(drive, "opt", "bin", "age"),
+    "--recipient", "age1fixtureoperator",
+    "--automatic",
+    "--apply",
+  ];
+}
+
 test("backup CLI dry-run needs no SQLite, age binary, identity, or filesystem writes", async () => {
   const result = await dryRun("backup.mjs", [
     "--source", path.join(drive, "fixture", "portal.sqlite"),
@@ -32,8 +59,78 @@ test("backup CLI dry-run needs no SQLite, age binary, identity, or filesystem wr
     "--recipient", "age1fixtureoperator",
   ]);
   assert.equal(result.action, "online-encrypted-backup");
+  assert.equal(result.automatic, false);
   assert.equal(result.retention.hourly, 24);
   assert.equal(result.retention.daily, 14);
+});
+
+test("backup CLI accepts automatic exactly once and exposes only the dry-run mode", async () => {
+  const args = [
+    "--source", path.join(drive, "fixture", "portal.sqlite"),
+    "--root", path.join(drive, "fixture", "backups"),
+    "--temp-root", path.join(drive, "fixture", "temp"),
+    "--age", path.join(drive, "opt", "bin", "age"),
+    "--recipient", "age1fixtureoperator",
+  ];
+  const result = await dryRun("backup.mjs", [...args, "--automatic"]);
+  assert.equal(result.automatic, true);
+  assert.doesNotMatch(JSON.stringify(result), /AGE_IDENTITY|AGE-SECRET|keychain/iu);
+
+  for (const invalid of [
+    [...args, "--automatic", "--automatic"],
+    [...args, "--automatic=true"],
+    [...args, "--unknown"],
+    [...args, "--apply", "--apply"],
+  ]) {
+    await assert.rejects(execute(process.execPath, [
+      path.join(opsRoot, "scripts", "backup.mjs"),
+      ...invalid,
+    ], {
+      cwd: path.dirname(opsRoot),
+      env: { PATH: process.env.PATH },
+      timeout: 10_000,
+      windowsHide: true,
+    }), (error) => {
+      assert.match(error.stderr, /CLI_USAGE/u);
+      return true;
+    });
+  }
+});
+
+test("backup apply refuses a directly supplied age identity outside keychain-exec", async () => {
+  await assert.rejects(execute(process.execPath, [
+    path.join(opsRoot, "scripts", "backup.mjs"),
+    "--source", path.join(drive, "fixture", "portal.sqlite"),
+    "--root", path.join(drive, "fixture", "backups"),
+    "--temp-root", path.join(drive, "fixture", "temp"),
+    "--age", path.join(drive, "opt", "bin", "age"),
+    "--recipient", "age1fixtureoperator",
+    "--automatic",
+    "--apply",
+  ], {
+    cwd: path.dirname(opsRoot),
+    env: { PATH: process.env.PATH, AGE_IDENTITY: "AGE-SECRET-KEY-OPERATOR" },
+    timeout: 10_000,
+    windowsHide: true,
+  }), (error) => {
+    assert.match(error.stderr, /BACKUP_KEYCHAIN_EXEC_REQUIRED/u);
+    assert.doesNotMatch(error.stderr, /AGE-SECRET-KEY/u);
+    return true;
+  });
+});
+
+test("backup dispatcher dry-run validates fixed child argv without SQLite, Keychain, or filesystem access", async () => {
+  const args = dispatcherArgs();
+  const result = await dryRun("backup-dispatcher.mjs", args);
+  assert.deepEqual(result, {
+    dryRun: true,
+    action: "dispatch-automatic-backup",
+    intervalSeconds: 60,
+    child: "keychain-exec",
+  });
+  const serialized = JSON.stringify(result);
+  assert.doesNotMatch(serialized, /AGE_IDENTITY|age-identity|portal\.sqlite|runtime\.env/iu);
+  assert.equal(serialized.includes(args[1]), false);
 });
 
 test("monitor CLI validates an absolute config without checks, secrets, or sends", async () => {
@@ -58,6 +155,7 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
       requiredRunningLaunchdLabels: ["com.jihye.portal.control"],
       thresholds: {
         backupFreshnessMinutes: 90,
+        backupResumeGraceMinutes: 10,
         diskFreePercentMinimum: 15,
         queueStallMinutes: 15,
         retentionOverdueMaximum: 0,
@@ -98,14 +196,90 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
 
 test("restore CLI is dry-run unless both apply and exact confirmation are supplied", async () => {
   const backupRoot = path.join(drive, "fixture", "backups");
+  const target = path.join(drive, "fixture", "data", "portal.sqlite");
+  const args = [
+    "--backup-root", backupRoot,
+    "--backup", path.join(backupRoot, "hourly-20260716T010203Z.age"),
+    "--target", target,
+    "--temp-root", path.join(drive, "fixture", "temp"),
+    "--age", path.join(drive, "opt", "bin", "age"),
+  ];
   const result = await dryRun("restore.mjs", [
+    ...args,
+  ]);
+  assert.match(result.steps.join(" "), /assert-services-stopped/);
+  assert.deepEqual({
+    automaticBackupPolicy: result.automaticBackupPolicy,
+    explicitFallback: result.explicitFallback,
+    inputRequiredIfCurrentUnreadable: result.inputRequiredIfCurrentUnreadable,
+  }, {
+    automaticBackupPolicy: "preserve-current",
+    explicitFallback: null,
+    inputRequiredIfCurrentUnreadable: true,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /AGE_IDENTITY|AGE-SECRET|keychain/iu);
+
+  await assert.rejects(execute(process.execPath, [
+    path.join(opsRoot, "scripts", "restore.mjs"),
+    ...args,
+    "--apply",
+    "--confirm-destroy", `${target}-different`,
+  ], {
+    cwd: path.dirname(opsRoot),
+    env: {
+      PATH: process.env.PATH,
+      WISDOM_KEYCHAIN_EXEC: "1",
+      AGE_IDENTITY: "AGE-SECRET-KEY-OPERATOR",
+    },
+    timeout: 10_000,
+    windowsHide: true,
+  }), (error) => {
+    assert.match(error.stderr, /RESTORE_CONFIRMATION_MISMATCH/u);
+    assert.doesNotMatch(error.stderr, /AGE-SECRET-KEY/u);
+    return true;
+  });
+});
+
+test("restore CLI accepts only one exact automatic-backup fallback value", async () => {
+  const backupRoot = path.join(drive, "fixture", "backups");
+  const args = [
     "--backup-root", backupRoot,
     "--backup", path.join(backupRoot, "hourly-20260716T010203Z.age"),
     "--target", path.join(drive, "fixture", "data", "portal.sqlite"),
     "--temp-root", path.join(drive, "fixture", "temp"),
     "--age", path.join(drive, "opt", "bin", "age"),
-  ]);
-  assert.match(result.steps.join(" "), /assert-services-stopped/);
+  ];
+
+  for (const mode of ["enabled", "disabled"]) {
+    const result = await dryRun("restore.mjs", [
+      ...args,
+      "--automatic-backup-after-restore", mode,
+    ]);
+    assert.equal(result.automaticBackupPolicy, "preserve-current");
+    assert.equal(result.explicitFallback, mode);
+    assert.equal(result.inputRequiredIfCurrentUnreadable, true);
+  }
+
+  for (const invalid of [
+    [...args, "--automatic-backup-after-restore", "on"],
+    [...args, "--automatic-backup-after-restore", "enabled", "--automatic-backup-after-restore", "disabled"],
+    [...args, "--automatic-backup-after-restore=enabled"],
+    [...args, "--unknown"],
+    [...args, "--apply", "--apply", "--confirm-destroy", args[5]],
+  ]) {
+    await assert.rejects(execute(process.execPath, [
+      path.join(opsRoot, "scripts", "restore.mjs"),
+      ...invalid,
+    ], {
+      cwd: path.dirname(opsRoot),
+      env: { PATH: process.env.PATH },
+      timeout: 10_000,
+      windowsHide: true,
+    }), (error) => {
+      assert.match(error.stderr, /CLI_USAGE/u);
+      return true;
+    });
+  }
 });
 
 test("deploy and rollback CLIs default to plans without invoking macOS tools", async () => {

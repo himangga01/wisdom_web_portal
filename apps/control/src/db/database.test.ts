@@ -263,30 +263,56 @@ describe("SQLite durability and migrations", () => {
     }
   });
 
-  it("keeps the immutable v1 and v2 migration bytes unchanged", () => {
-    expect(MIGRATION_FINGERPRINTS.slice(0, 2)).toEqual([
+  it("keeps the immutable v1 through v6 migration bytes unchanged", () => {
+    expect(MIGRATION_FINGERPRINTS.slice(0, 6)).toEqual([
       { version: 1, sha256: "0c7085ea33ea2c92181e55cd2161af57557fadd34cd1675f293e0388d4fff86b" },
       { version: 2, sha256: "83919e59c87120db696d8854c539ddf71020e47d2257f561e80feb038f5e15d9" },
+      { version: 3, sha256: "f3d067eebd406b20e116457f42be6d4139299b3e5ce3a409d93af2933e9b49c2" },
+      { version: 4, sha256: "82e140a7b18f262acb43773bc225d0cdde945be300860d58199426cc3f7a2762" },
+      { version: 5, sha256: "af039844269a809ef32771391099a243172bbdb3e6270e98375ba84ae50e9778" },
+      { version: 6, sha256: "47015d5ddd616e19b390e17b656faa1775b223a83c4898e8230b7fc63738d608" },
     ]);
   });
 
-  it("appends the article publication and immutable consent schemas without rewriting v1 or v2", () => {
+  it("appends the automatic backup control schema without rewriting v1 through v6", () => {
     testDatabase = createTestDatabase();
-    expect(SCHEMA_VERSION).toBe(6);
-    expect(testDatabase.db.sqlite.prepare(
+    const db = testDatabase.db.sqlite;
+    expect(SCHEMA_VERSION).toBe(7);
+    const history = db.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",
-    ).all()).toEqual([
+    ).all();
+    expect(history).toEqual([
       { version: 1, name: "initial-control-schema" },
       { version: 2, name: "admin-notification-withdrawal" },
       { version: 3, name: "article-publication-pipeline" },
       { version: 4, name: "immutable-consent-bundles" },
       { version: 5, name: "append-only-consent-events" },
       { version: 6, name: "consent-event-replace-guard" },
+      { version: 7, name: "automatic-backup-control" },
     ]);
-    const tables = new Set((testDatabase.db.sqlite.prepare(`
+    expect(history.at(-1)).toEqual({ version: 7, name: "automatic-backup-control" });
+    expect(db.prepare(`
+      SELECT singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings
+    `).get()).toEqual({
+      singleton: 1,
+      automatic_enabled: 1,
+      row_version: 1,
+      updated_at_ms: 0,
+      updated_by_admin_id: null,
+    });
+    for (const invalidUpdate of [
+      "UPDATE backup_settings SET singleton = 2 WHERE singleton = 1",
+      "UPDATE backup_settings SET automatic_enabled = 2 WHERE singleton = 1",
+      "UPDATE backup_settings SET row_version = 0 WHERE singleton = 1",
+      "UPDATE backup_settings SET updated_at_ms = -1 WHERE singleton = 1",
+    ]) expect(() => db.prepare(invalidUpdate).run(), invalidUpdate).toThrow();
+
+    const tables = new Set((db.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table'
     `).all() as Array<{ name: string }>).map((row) => row.name));
     for (const table of [
+      "backup_settings",
       "article_locale_heads",
       "article_review_runs",
       "article_translation_jobs",
@@ -298,10 +324,58 @@ describe("SQLite durability and migrations", () => {
     ]) expect(tables.has(table), table).toBe(true);
   });
 
+  it("migrates v6 data to the default automatic backup policy without changing existing rows", () => {
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db, 1_000, 6);
+      db.sqlite.prepare(`
+        INSERT INTO consultations (
+          id, receipt_id, status, locale, category, preferred_contact,
+          pii_envelope, pii_key_id, phone_blind_index, blind_index_key_id,
+          marketing_accepted, received_at_ms, updated_at_ms,
+          retention_expires_at_ms, row_version
+        ) VALUES ('consultation-v6', 'receipt-v6', 'received', 'ko', 'other', 'email',
+          'opaque-envelope', 'pii-v6', ?, 'pii-v6', 0, 1_000, 1_000, 2_000, 3)
+      `).run(Buffer.alloc(32, 6));
+      db.sqlite.prepare(`
+        INSERT INTO admins (
+          id, username, display_name, password_hash, status, created_at_ms, updated_at_ms
+        ) VALUES ('admin-v6', 'owner-v6', 'Owner V6', 'argon-placeholder', 'active', 1_000, 1_000)
+      `).run();
+      const consultationBefore = db.sqlite.prepare(
+        "SELECT * FROM consultations WHERE id = 'consultation-v6'",
+      ).get();
+      const adminBefore = db.sqlite.prepare(
+        "SELECT * FROM admins WHERE id = 'admin-v6'",
+      ).get();
+
+      runMigrations(db, 2_000);
+
+      expect(db.sqlite.prepare(
+        "SELECT * FROM consultations WHERE id = 'consultation-v6'",
+      ).get()).toEqual(consultationBefore);
+      expect(db.sqlite.prepare(
+        "SELECT * FROM admins WHERE id = 'admin-v6'",
+      ).get()).toEqual(adminBefore);
+      expect(db.sqlite.prepare(`
+        SELECT singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+        FROM backup_settings
+      `).get()).toEqual({
+        singleton: 1,
+        automatic_enabled: 1,
+        row_version: 1,
+        updated_at_ms: 0,
+        updated_by_admin_id: null,
+      });
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   it("retains v4 consent bundle identity and effective-time immutability", () => {
     testDatabase = createTestDatabase();
     const db = testDatabase.db.sqlite;
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBe(7);
     expect(db.prepare(
       "SELECT version, name FROM schema_migrations WHERE version = 4",
     ).get()).toEqual({ version: 4, name: "immutable-consent-bundles" });
@@ -1203,7 +1277,7 @@ describe("SQLite durability and migrations", () => {
       runMigrations(restarted, 3_000);
       expect(restarted.sqlite.prepare(
         "SELECT version, name FROM schema_migrations ORDER BY version",
-      ).all()).toHaveLength(6);
+      ).all()).toHaveLength(7);
       expect(restarted.sqlite.prepare(
         "SELECT body_markdown FROM article_revisions WHERE id = 'legacy-revision'",
       ).get()).toEqual({ body_markdown: "# Legacy body" });
@@ -1319,6 +1393,7 @@ describe("SQLite durability and migrations", () => {
         CREATE INDEX article_translation_jobs_one_running_uidx
         ON article_translation_jobs((1)) WHERE state = 'running'`,
       "ALTER TABLE releases DROP COLUMN activation_generation",
+      "DROP TABLE backup_settings",
     ]) {
       const database = createTestDatabase();
       try {
@@ -1344,6 +1419,41 @@ describe("SQLite durability and migrations", () => {
       expect(isDatabaseReady(recursiveTriggersDisabled.db)).toBe(false);
     } finally {
       recursiveTriggersDisabled.close();
+    }
+
+    for (const mutation of [
+      "DELETE FROM backup_settings",
+      "UPDATE backup_settings SET automatic_enabled = 2",
+      "UPDATE backup_settings SET row_version = 0",
+      "UPDATE backup_settings SET updated_at_ms = -1",
+    ]) {
+      const invalidPolicy = createTestDatabase();
+      try {
+        invalidPolicy.db.sqlite.pragma("ignore_check_constraints = ON");
+        invalidPolicy.db.sqlite.exec(mutation);
+        expect(isDatabaseReady(invalidPolicy.db), mutation).toBe(false);
+      } finally {
+        invalidPolicy.close();
+      }
+    }
+
+    const duplicatePolicy = createTestDatabase();
+    try {
+      duplicatePolicy.db.sqlite.exec(`
+        DROP TABLE backup_settings;
+        CREATE TABLE backup_settings (
+          singleton INTEGER,
+          automatic_enabled INTEGER NOT NULL,
+          row_version INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          updated_by_admin_id TEXT
+        );
+        INSERT INTO backup_settings VALUES (1, 1, 1, 0, NULL);
+        INSERT INTO backup_settings VALUES (1, 0, 2, 1, NULL);
+      `);
+      expect(isDatabaseReady(duplicatePolicy.db)).toBe(false);
+    } finally {
+      duplicatePolicy.close();
     }
   });
 
@@ -1384,6 +1494,7 @@ describe("SQLite durability and migrations", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
     ]);
     expect(upgraded.sqlite.prepare("SELECT id FROM consultations").all()).toEqual([{ id: "consultation-v1" }]);
     expect(upgraded.sqlite.prepare("SELECT admin_id FROM admin_sessions").all()).toEqual([{ admin_id: "admin-v1" }]);
@@ -1419,7 +1530,7 @@ describe("SQLite durability and migrations", () => {
     closeDatabase(upgraded);
     const restarted = openDatabase(path);
     runMigrations(restarted, 4_000);
-    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 6 });
+    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 7 });
     closeDatabase(restarted);
     rmSync(directory, { force: true, recursive: true });
   });

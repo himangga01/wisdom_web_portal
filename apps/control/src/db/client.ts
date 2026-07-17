@@ -896,6 +896,19 @@ BEGIN
 END;
 `;
 
+const SEVENTH_MIGRATION = `
+CREATE TABLE backup_settings (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  automatic_enabled INTEGER NOT NULL CHECK (automatic_enabled IN (0, 1)),
+  row_version INTEGER NOT NULL CHECK (row_version > 0),
+  updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+  updated_by_admin_id TEXT REFERENCES admins(id)
+);
+INSERT INTO backup_settings (
+  singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+) VALUES (1, 1, 1, 0, NULL);
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
@@ -903,6 +916,7 @@ const MIGRATIONS = [
   { version: 4, name: "immutable-consent-bundles", sql: FOURTH_MIGRATION },
   { version: 5, name: "append-only-consent-events", sql: FIFTH_MIGRATION },
   { version: 6, name: "consent-event-replace-guard", sql: SIXTH_MIGRATION },
+  { version: 7, name: "automatic-backup-control", sql: SEVENTH_MIGRATION },
 ] as const;
 
 export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
@@ -1426,12 +1440,39 @@ export function isDatabaseReady(db: ControlDatabase): boolean {
         "translation_metadata_json", "initial_review_state", "created_by_type", "created_by_id",
       ],
       releases: ["verified_at_ms", "verification_sha256", "activation_generation"],
+      backup_settings: [
+        "singleton", "automatic_enabled", "row_version", "updated_at_ms",
+        "updated_by_admin_id",
+      ],
     } as const;
-    return Object.entries(requiredColumns).every(([table, names]) => {
+    const columnsReady = Object.entries(requiredColumns).every(([table, names]) => {
       const columns = db.sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;
       const present = new Set(columns.map((column) => column.name));
       return names.every((name) => present.has(name));
     });
+    if (!columnsReady) return false;
+
+    const policyRows = db.sqlite.prepare(`
+      SELECT singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings
+      LIMIT 2
+    `).all() as Array<{
+      singleton: unknown;
+      automatic_enabled: unknown;
+      row_version: unknown;
+      updated_at_ms: unknown;
+      updated_by_admin_id: unknown;
+    }>;
+    if (policyRows.length !== 1) return false;
+    const policy = policyRows[0];
+    return policy !== undefined &&
+      policy.singleton === 1 &&
+      (policy.automatic_enabled === 0 || policy.automatic_enabled === 1) &&
+      Number.isSafeInteger(policy.row_version) && Number(policy.row_version) > 0 &&
+      Number.isSafeInteger(policy.updated_at_ms) && Number(policy.updated_at_ms) >= 0 &&
+      (policy.updated_by_admin_id === null || (
+        typeof policy.updated_by_admin_id === "string" && policy.updated_by_admin_id.length > 0
+      ));
   } catch {
     return false;
   }

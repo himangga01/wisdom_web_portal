@@ -1,5 +1,7 @@
 # macOS 배포 운영 절차
 
+실장비 최초 준비, 필요한 계정·발급값·Keychain 비밀과 공개 차단 항목은 먼저 [`docs/operations/mac-mini-setup.md`](../../docs/operations/mac-mini-setup.md)를 따른다. 이 런북은 검증된 입력과 설치 파일이 준비된 뒤의 간결한 배포·rollback 절차다.
+
 ## 운영 경계
 
 - Apple silicon Mac mini, macOS, Node.js 24, SQLite 3.51.3 이상을 전제로 한다. 배포 시 실제 SQLite 버전을 기록하며 예상 버전 3.53.2를 맹신하지 않는다.
@@ -9,7 +11,72 @@
 
 ## 최초 설치 순서
 
-1. `ops/config/runtime.env.template`, `ops/monitoring/checks.json.template`, Caddy, cloudflared, launchd 템플릿을 운영값으로 렌더링한다. 렌더 결과는 immutable application release 밖의 `shared` 경로에 두고 소유자만 쓸 수 있게 한다. monitoring 결과는 `shared/monitoring.json`으로 설치하고 group/world 쓰기를 금지한다.
+### production configuration 설치
+
+먼저 실제 포털 사용자 세션에서 보호된 values JSON을 준비한다. 이 파일은 정확한 35개 non-secret template 값만 담으며 Keychain secret, SMTP password, Telegram token, Cloudflare credential 본문, Codex credential, age identity를 담지 않는다. 파일 경로는 절대경로, 실제 일반 파일, mode `0600`이어야 한다.
+
+```sh
+export CONFIG_VALUES="$HOME/.config/jihye-portal/production-values.json"
+case "$CONFIG_VALUES" in /*) ;; *) exit 1 ;; esac
+umask 077
+mkdir -p "$(dirname "$CONFIG_VALUES")" || exit 1
+chmod 700 "$(dirname "$CONFIG_VALUES")" || exit 1
+cp "$SOURCE_ROOT/ops/config/production-values.example.json" "$CONFIG_VALUES" || exit 1
+chmod 600 "$CONFIG_VALUES" || exit 1
+
+# 승인된 non-secret 운영값으로 편집한 뒤 다음 조건을 다시 확인한다.
+test -f "$CONFIG_VALUES" && test ! -L "$CONFIG_VALUES" || exit 1
+test "$(stat -f '%Lp' "$CONFIG_VALUES")" = "600" || exit 1
+```
+
+user와 system scope를 모두 dry-run한다. system dry-run에도 `sudo`를 사용하지 않는다.
+
+```sh
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope user || exit 1
+
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope system || exit 1
+```
+
+성공 report는 `schemaVersion`, `scope`, `applied: false`, `artifacts`만 포함하고 각 artifact는 `id`, `sha256`, `changed`만 포함한다. 값, 렌더 본문, 절대 target 경로, validator stdout/stderr가 출력되면 중단한다. 두 dry-run이 모두 성공한 뒤 user scope는 포털 사용자로 적용하고 system scope는 별도 root 명령으로만 적용한다.
+
+```sh
+"$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope user \
+  --apply \
+  --confirm-app-root "$APP_ROOT" \
+  --confirm-user-home "$HOME" || exit 1
+
+sudo "$NODE_BINARY" "$SOURCE_ROOT/ops/scripts/config-install.mjs" \
+  --values "$CONFIG_VALUES" \
+  --scope system \
+  --apply \
+  --confirm-system-target /etc/newsyslog.d/wisdom-portal.conf || exit 1
+```
+
+성공 apply report는 같은 sanitized 필드와 `applied: true`를 반환한다. user scope는 release 밖 `shared` 설정 4개와 LaunchAgent 8개를 mode `0600`으로, system scope는 newsyslog 파일 하나를 mode `0644`로 설치해야 한다. 설치된 target을 다시 검사한다.
+
+```sh
+plutil -lint "$HOME/Library/LaunchAgents"/com.jihye.portal.*.plist || exit 1
+"$CADDY_BINARY" validate \
+  --config "$APP_ROOT/shared/Caddyfile" \
+  --adapter caddyfile || exit 1
+"$CLOUDFLARED_BINARY" \
+  --config "$APP_ROOT/shared/cloudflared.yml" \
+  tunnel ingress validate || exit 1
+sudo /usr/sbin/newsyslog -n \
+  -f /etc/newsyslog.d/wisdom-portal.conf || exit 1
+```
+
+이 CLI는 모든 selected artifact를 target 변경 전에 렌더링·검증하고 원자 교체하며, 중간 실패 시 앞선 변경을 rollback한다. Keychain이나 credential 파일을 읽지 않고 `launchctl`을 호출하거나 서비스를 시작·재시작하지 않는다. cloudflared는 정상 publication과 아래 외부 preflight가 끝날 때까지 unloaded 상태로 유지한다. 대상 Mac에서 ownership·mode·symlink 거부·unchanged 재적용·원자 교체·rollback drill을 기록하기 전에는 installer가 구현됐더라도 공개 게이트를 통과한 것으로 판정하지 않는다.
+
+### 나머지 최초 설치 순서
+
+1. 위 production configuration 설치를 완료하고 네 user shared 파일, LaunchAgent 8개, system newsyslog 파일의 validator·소유권·mode를 확인한다.
 2. 최초 정적 빌드를 만든 뒤 `seed-public.mjs`를 먼저 dry-run하고 `--apply`한다. 이 명령은 별도 `public-releases/<release-id>`에 bootstrap 전용 전체 파일 hash manifest를 만들고 검증한 후 `public-current`를 원자적으로 전환한다. application `current`와 혼용하지 않는다. 정상 발행이 한 번이라도 존재하면 bootstrap release로 되돌아갈 수 없다.
 3. bootstrap 단계에서는 cloudflared LaunchAgent를 먼저 `launchctl bootout`하여 완전히 unload한 뒤 `ops/scripts/preflight.mjs --allow-bootstrap-local-staging`으로 verified bootstrap `public-current`, `arm64`, Node 24, Caddy, cloudflared, 정확히 age 1.3.1, `better-sqlite3`, SQLite 버전과 쓰기 가능한 경로를 확인한다. 결과는 `tunnelReady: false`, `tunnelDisabledVerified: true`여야 하며 tunnel을 시작하지 않는다. preflight는 cloudflared가 실행 중이거나 정지됐지만 여전히 loaded인 경우, 또는 launchctl 상태를 확정할 수 없는 경우 모두 실패한다. 이 검사는 서비스를 자동으로 중지하지 않는다. `age --version` 결과가 고정 버전과 다르거나 해석할 수 없으면 배포를 중지한다.
 4. `secret-bootstrap.mjs`를 먼저 dry-run하고 `--apply`로 독립된 애플리케이션 비밀을 Keychain에 설치한다. 모니터는 알림 worker의 `HERMES_HMAC_SECRET`을 재사용하지 않고 `MONITOR_HERMES_HMAC_SECRET` → `com.jihye.portal.monitor-hermes-hmac` 항목만 사용한다. 회전은 한 번에 하나만 `--mode rotate --only <ENVIRONMENT>`로 요청하며 PII/control/철회 키는 전용 migration 절차 없이 회전할 수 없다.

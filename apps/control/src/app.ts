@@ -2,6 +2,7 @@ import { randomUUID as nodeRandomUUID } from "node:crypto";
 
 import {
   apiErrorSchema,
+  type BackupRunState,
   consultationRequestSchema,
   localeSchema,
   type ApiError,
@@ -70,6 +71,7 @@ export interface ControlAppDependencies {
   indexNowKey?: string;
   indexNowKeyProvider?: () => string | undefined;
   consentAuthorityResolver?: ConsentAuthorityResolver;
+  backupRunStateProvider?: () => Promise<BackupRunState | undefined>;
 }
 
 class PayloadTooLargeError extends Error {}
@@ -521,6 +523,9 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       peerAddress: dependencies.peerAddress ?? (() => "unknown"),
       ...(dependencies.articlePublication
         ? { articlePublication: dependencies.articlePublication }
+        : {}),
+      ...(dependencies.backupRunStateProvider
+        ? { backupRunStateProvider: dependencies.backupRunStateProvider }
         : {}),
     });
   }

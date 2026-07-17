@@ -16,6 +16,7 @@ import {
   withSecureRealDirectory,
   writeProtectedIncidentState,
 } from "./monitor-files.mjs";
+import { validateBackupControlRows } from "./backup-control.mjs";
 
 const execFile = promisify(execFileCallback);
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -42,9 +43,9 @@ function integer(value, minimum, maximum) {
   return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 }
 
-function absolutePath(value) {
-  return typeof value === "string" && value.length <= 4_096 && path.isAbsolute(value) &&
-    !/[\0\r\n]/u.test(value) && path.normalize(value) === value;
+function absolutePath(value, pathApi = path) {
+  return typeof value === "string" && value.length <= 4_096 && pathApi.isAbsolute(value) &&
+    !/[\0\r\n]/u.test(value) && pathApi.normalize(value) === value;
 }
 
 function parsedUrl(value, code) {
@@ -63,7 +64,7 @@ function literalLoopback(url) {
     : version === 6 && hostname === "::1";
 }
 
-function validateConfig(value) {
+function validateConfig(value, pathApi = path) {
   if (!exactKeys(value, ["externalPublic", "local"])) fail("MONITOR_CONFIG_INVALID", "Monitoring config keys are invalid");
   const external = value.externalPublic;
   const local = value.local;
@@ -81,15 +82,15 @@ function validateConfig(value) {
     external.expectedText.length < 1 || external.expectedText.length > 128 || /[\0\r\n]/u.test(external.expectedText)
   ) fail("MONITOR_CONFIG_INVALID", "External uptime contract is invalid");
 
-  if (![local.backupRoot, local.databasePath, local.diskPath].every(absolutePath)) {
+  if (![local.backupRoot, local.databasePath, local.diskPath].every((value) => absolutePath(value, pathApi))) {
     fail("MONITOR_CONFIG_INVALID", "Local monitoring paths must be normalized absolute paths");
   }
   const incidentState = local.incidentState;
   if (
-    !exactKeys(incidentState, ["cooldownMinutes", "path"]) || !absolutePath(incidentState.path) ||
+    !exactKeys(incidentState, ["cooldownMinutes", "path"]) || !absolutePath(incidentState.path, pathApi) ||
     !integer(incidentState.cooldownMinutes, 1, 1_440) ||
-    path.dirname(local.databasePath) !== local.diskPath ||
-    path.dirname(incidentState.path) !== local.diskPath ||
+    pathApi.dirname(local.databasePath) !== local.diskPath ||
+    pathApi.dirname(incidentState.path) !== local.diskPath ||
     incidentState.path === local.databasePath
   ) fail("MONITOR_CONFIG_INVALID", "Monitor database and incident state must be bounded direct children of the data root");
   const readyUrl = parsedUrl(local.controlReadyUrl, "MONITOR_CONFIG_INVALID");
@@ -107,11 +108,12 @@ function validateConfig(value) {
 
   const thresholds = local.thresholds;
   if (!exactKeys(thresholds, [
-    "backupFreshnessMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
+    "backupFreshnessMinutes", "backupResumeGraceMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
     "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum", "queueStallMinutes",
     "retentionOverdueMaximum", "translationFailureBacklogMaximum",
   ]) ||
     !integer(thresholds.backupFreshnessMinutes, 1, 1_440) ||
+    thresholds.backupResumeGraceMinutes !== 10 ||
     !integer(thresholds.diskFreePercentMinimum, 1, 99) ||
     !integer(thresholds.queueStallMinutes, 1, 1_440) ||
     !integer(thresholds.retentionOverdueMaximum, 0, 1_000_000) ||
@@ -142,7 +144,7 @@ function validateConfig(value) {
   return value;
 }
 
-export function parseMonitoringConfig(source) {
+export function parseMonitoringConfig(source, { pathApi = path } = {}) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_CONFIG_BYTES || source.includes("\0")) {
     fail("MONITOR_CONFIG_INVALID", "Monitoring config is invalid or too large");
   }
@@ -152,7 +154,7 @@ export function parseMonitoringConfig(source) {
   } catch {
     fail("MONITOR_CONFIG_INVALID", "Monitoring config must be JSON");
   }
-  return validateConfig(value);
+  return validateConfig(value, pathApi);
 }
 
 export async function loadMonitoringConfigFile(configPath) {
@@ -228,7 +230,7 @@ export function backupFreshness(status, now, staleAfterMs = 90 * 60 * 1000) {
   if (!status) return { state: "missing", ageMs: undefined };
   const ageMs = now.valueOf() - Date.parse(status.createdAt);
   if (!Number.isFinite(ageMs) || ageMs < 0) return { state: "invalid", ageMs };
-  return { state: ageMs > staleAfterMs ? "stale" : "healthy", ageMs };
+  return { state: ageMs >= staleAfterMs ? "stale" : "healthy", ageMs };
 }
 
 async function within(timeoutMs, operation) {
@@ -265,6 +267,26 @@ async function safeCheck(id, code, timeoutMs, operation, mappedCodes = {}) {
 
 function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : undefined;
+}
+
+function validatedBackupControl(value, nowMs) {
+  if (!exactKeys(value, ["automaticEnabled", "rowVersion", "updatedAtMs"])) {
+    throw new Error("Backup control object is invalid");
+  }
+  const automaticEnabled = value.automaticEnabled;
+  const rowVersion = value.rowVersion;
+  const updatedAtMs = value.updatedAtMs;
+  if (typeof automaticEnabled !== "boolean") throw new Error("Backup control object is invalid");
+  const control = validateBackupControlRows([{
+    singleton: 1,
+    automatic_enabled: automaticEnabled === true
+      ? 1
+      : automaticEnabled === false ? 0 : automaticEnabled,
+    row_version: rowVersion,
+    updated_at_ms: updatedAtMs,
+  }]);
+  if (control.updatedAtMs > nowMs) throw new Error("Backup control timestamp is invalid");
+  return control;
 }
 
 function safeRunId(value) {
@@ -332,11 +354,19 @@ export async function runLocalMonitor({
 }, adapters) {
   validateConfig(config);
   safeRunId(runId);
-  if (!(now instanceof Date) || !Number.isFinite(now.valueOf())) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  let nowMs;
+  try {
+    nowMs = now instanceof Date ? now.valueOf() : undefined;
+  } catch {
+    fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  }
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  const observedNow = new Date(nowMs);
+  if (!Number.isFinite(observedNow.valueOf())) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
   if (!adapters || typeof adapters !== "object") fail("MONITOR_ADAPTER_INVALID", "Monitoring adapters are required");
   const local = config.local;
   const checkMs = local.timeouts.checkMs;
-  const observedAt = now.toISOString();
+  const observedAt = observedNow.toISOString();
   if (!dryRun && (!(secret instanceof Uint8Array) || secret.byteLength < 32 || secret.byteLength > 512)) {
     return boundedReport({
       schemaVersion: 1,
@@ -352,10 +382,26 @@ export async function runLocalMonitor({
 
   const checks = [
     safeCheck("backup", "BACKUP_CHECK_FAILED", checkMs, async (signal) => {
+      let control;
+      try {
+        control = validatedBackupControl(await adapters.readBackupControl(local.databasePath, {
+          signal,
+          timeoutMs: checkMs,
+        }), nowMs);
+      } catch {
+        return failed("backup", "BACKUP_CONTROL_INVALID");
+      }
+      if (!control.automaticEnabled) return failed("backup", "BACKUP_ADMIN_DISABLED");
       const status = await adapters.loadNewestBackupStatus(local.backupRoot, { signal });
-      const freshness = backupFreshness(status, now, local.thresholds.backupFreshnessMinutes * 60_000);
+      const createdAtMs = status ? Date.parse(status.createdAt) : undefined;
+      const postTransition = Number.isFinite(createdAtMs) && createdAtMs >= control.updatedAtMs;
+      const transitionAgeMs = nowMs - control.updatedAtMs;
+      if (!postTransition && transitionAgeMs < local.thresholds.backupResumeGraceMinutes * 60_000) {
+        return { id: "backup", state: "grace", code: "BACKUP_RESUME_GRACE" };
+      }
+      if (!postTransition) return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
+      const freshness = backupFreshness(status, observedNow, local.thresholds.backupFreshnessMinutes * 60_000);
       const ageMinutes = freshness.ageMs === undefined ? undefined : Math.floor(freshness.ageMs / 60_000);
-      if (freshness.state === "missing") return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
       if (freshness.state === "invalid") return failed("backup", "BACKUP_TIMESTAMP_INVALID");
       if (freshness.state === "stale") return failed("backup", "BACKUP_VERIFIED_PAIR_STALE", ageMinutes);
       return healthy("backup", ageMinutes);
@@ -383,7 +429,6 @@ export async function runLocalMonitor({
         ? healthy("control-ready")
         : failed("control-ready", "CONTROL_NOT_READY")),
     safeCheck("backlogs", "BACKLOG_CHECK_FAILED", checkMs, async (signal) => {
-      const nowMs = now.valueOf();
       const values = await adapters.readBacklogs(local.databasePath, {
         signal,
         timeoutMs: checkMs,
@@ -443,13 +488,16 @@ export async function runLocalMonitor({
 
   const nested = await within(local.timeouts.overallMs, async () => Promise.all(checks));
   const results = nested.flat();
-  const ok = results.every(({ state }) => state === "healthy");
+  const fullyHealthy = results.every(({ state }) => state === "healthy");
+  const ok = results.every(({ state }) => state === "healthy" || state === "grace");
   let handoff = ok ? "not-required" : dryRun ? "dry-run-suppressed" : "failed";
   let exitCode = ok ? 0 : 2;
   const base = { schemaVersion: 1, runId, observedAt, ok, checks: results };
   if (dryRun) return boundedReport({ ...base, handoff, exitCode });
 
-  if (ok) {
+  if (ok && !fullyHealthy) return boundedReport({ ...base, handoff, exitCode });
+
+  if (fullyHealthy) {
     try {
       await adapters.clearIncidentState(local.incidentState.path);
     } catch {
@@ -458,7 +506,11 @@ export async function runLocalMonitor({
     return boundedReport({ ...base, handoff, exitCode });
   }
 
-  const fingerprint = incidentFingerprint(results);
+  const failures = results.filter(({ state }) => state === "failed");
+  const disabledOnly = failures.length === 1 &&
+    failures[0].id === "backup" &&
+    failures[0].code === "BACKUP_ADMIN_DISABLED";
+  const fingerprint = incidentFingerprint(failures);
   let prior;
   try {
     prior = await adapters.loadIncidentState(local.incidentState.path);
@@ -467,9 +519,10 @@ export async function runLocalMonitor({
     return operationalFailure(base, "INCIDENT_STATE_READ_FAILED");
   }
   const lastSentAt = prior === undefined ? undefined : Date.parse(prior.lastSentAt);
-  const withinCooldown = prior?.fingerprint === fingerprint && lastSentAt <= now.valueOf() &&
-    now.valueOf() - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
-  if (withinCooldown) {
+  const withinCooldown = lastSentAt <= nowMs &&
+    nowMs - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
+  const suppress = prior?.fingerprint === fingerprint && (disabledOnly || withinCooldown);
+  if (suppress) {
     return boundedReport({ ...base, handoff: "cooldown-suppressed", exitCode: 2 });
   }
 
@@ -479,7 +532,7 @@ export async function runLocalMonitor({
       secret,
       payload: handoffPayload(base),
       deliveryId: runId,
-      timestampMs: now.valueOf(),
+      timestampMs: nowMs,
       nonce,
       timeoutMs: local.timeouts.hermesRequestMs,
       maximumAttempts: local.hermes.maximumAttempts,
@@ -564,6 +617,64 @@ export function createSystemMonitoringAdapters({
       });
       response.body?.cancel();
       return response.status === 200;
+    },
+    readBackupControl: async (databasePath, { signal, timeoutMs } = {}) => {
+      try {
+        if (!integer(timeoutMs, 100, 60_000)) throw new Error("invalid timeout");
+        await assertSecureRealDirectory(path.dirname(databasePath), {
+          code: "BACKUP_CONTROL_INVALID",
+          requireProtected: true,
+        });
+        const { canonicalPath: canonical } = await assertSecureRegularFile(databasePath, {
+          code: "BACKUP_CONTROL_INVALID",
+          requireProtected: true,
+        });
+        if (!absolutePath(databaseHelper) || !absolutePath(nodeBinary)) throw new Error("invalid helper");
+        const output = await execute(nodeBinary, [
+          databaseHelper,
+          "--database",
+          canonical,
+          "--backup-control",
+        ], {
+          encoding: "utf8",
+          env: {
+            LANG: "C",
+            LC_ALL: "C",
+            ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+            ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+            ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+            ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
+          },
+          killSignal: "SIGKILL",
+          maxBuffer: 8 * 1024,
+          shell: false,
+          signal,
+          timeout: Math.max(25, timeoutMs - 25),
+          windowsHide: true,
+        });
+        const stdout = typeof output?.stdout === "string" ? output.stdout : "";
+        const stderr = typeof output?.stderr === "string" ? output.stderr : "";
+        if (Buffer.byteLength(stdout, "utf8") > 4 * 1024 || stderr !== "" || !/^\{[^\r\n]+\}\n?$/u.test(stdout)) {
+          throw new Error("invalid output");
+        }
+        const result = JSON.parse(stdout);
+        if (
+          !exactKeys(result, ["automaticEnabled", "rowVersion", "updatedAtMs"]) ||
+          typeof result.automaticEnabled !== "boolean"
+        ) {
+          throw new Error("invalid result");
+        }
+        return validateBackupControlRows([{
+          singleton: 1,
+          automatic_enabled: result.automaticEnabled === true
+            ? 1
+            : result.automaticEnabled === false ? 0 : result.automaticEnabled,
+          row_version: result.rowVersion,
+          updated_at_ms: result.updatedAtMs,
+        }]);
+      } catch {
+        fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+      }
     },
     readBacklogs: async (databasePath, {
       signal,

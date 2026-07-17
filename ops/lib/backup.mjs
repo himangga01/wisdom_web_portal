@@ -14,6 +14,7 @@ import {
 import path from "node:path";
 
 import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
+import { validateBackupControlRows } from "./backup-control.mjs";
 import { hashSecureRegularFile, readSecureRegularFile } from "./monitor-files.mjs";
 import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
 
@@ -42,15 +43,21 @@ function isInside(root, candidate) {
   return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function validateConfig(config) {
-  for (const [name, candidate] of Object.entries({
-    sourceDb: config.sourceDb,
-    backupRoot: config.backupRoot,
-    tempRoot: config.tempRoot,
-  })) {
-    if (typeof candidate !== "string" || !path.isAbsolute(candidate)) {
-      fail("BACKUP_INPUT_INVALID", `${name} must be absolute`);
-    }
+function validateSourceConfig(config) {
+  if (!config || typeof config !== "object" || typeof config.sourceDb !== "string" || !path.isAbsolute(config.sourceDb)) {
+    fail("BACKUP_INPUT_INVALID", "sourceDb must be absolute");
+  }
+  if (config.automatic !== undefined && config.automatic !== true) {
+    fail("BACKUP_INPUT_INVALID", "automatic must be omitted for manual backup or true for scheduled backup");
+  }
+  if (!(config.now instanceof Date) || Number.isNaN(config.now.valueOf())) {
+    fail("BACKUP_INPUT_INVALID", "A valid backup timestamp is required");
+  }
+}
+
+function validateBackupOperationConfig(config) {
+  for (const [name, candidate] of Object.entries({ backupRoot: config.backupRoot, tempRoot: config.tempRoot })) {
+    if (typeof candidate !== "string" || !path.isAbsolute(candidate)) fail("BACKUP_INPUT_INVALID", `${name} must be absolute`);
   }
   if (
     normalized(config.sourceDb) === normalized(config.backupRoot) ||
@@ -68,8 +75,21 @@ function validateConfig(config) {
   if (typeof config.ageIdentity !== "string" || config.ageIdentity.length < 16) {
     fail("BACKUP_INPUT_INVALID", "An age verification identity is required");
   }
-  if (!(config.now instanceof Date) || Number.isNaN(config.now.valueOf())) {
-    fail("BACKUP_INPUT_INVALID", "A valid backup timestamp is required");
+}
+
+async function readAutomaticBackupControl(config, adapters) {
+  try {
+    const control = await adapters?.sqlite?.readBackupControl(config.sourceDb);
+    return validateBackupControlRows([{
+      singleton: 1,
+      automatic_enabled: control?.automaticEnabled === true
+        ? 1
+        : control?.automaticEnabled === false ? 0 : control?.automaticEnabled,
+      row_version: control?.rowVersion,
+      updated_at_ms: control?.updatedAtMs,
+    }]);
+  } catch {
+    fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
   }
 }
 
@@ -202,17 +222,28 @@ async function verifiedPair(artifactPath, statusPath, kind) {
 }
 
 export async function createOnlineBackup(config, adapters) {
-  validateConfig(config);
+  validateSourceConfig(config);
   await assertNoSymlinkPath(config.sourceDb, "BACKUP_PATH_UNSAFE");
   const sourceMetadata = await lstat(config.sourceDb);
   if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) fail("BACKUP_PATH_UNSAFE", "Source database must be a regular non-symlink file");
-  await ensureRealDirectory(config.backupRoot, "BACKUP_PATH_UNSAFE");
-  await ensureRealDirectory(config.tempRoot, "BACKUP_PATH_UNSAFE");
-  await chmod(config.backupRoot, 0o700);
-  await chmod(config.tempRoot, 0o700);
 
   const releaseMaintenanceLock = await acquireDatabaseMaintenanceLock(config.sourceDb);
   try {
+    if (config.automatic === true) {
+      const control = await readAutomaticBackupControl(config, adapters);
+      if (!control.automaticEnabled) {
+        return {
+          verified: false,
+          outcome: "admin-disabled",
+          controlRevision: control.rowVersion,
+        };
+      }
+    }
+    validateBackupOperationConfig(config);
+    await ensureRealDirectory(config.backupRoot, "BACKUP_PATH_UNSAFE");
+    await ensureRealDirectory(config.tempRoot, "BACKUP_PATH_UNSAFE");
+    await chmod(config.backupRoot, 0o700);
+    await chmod(config.tempRoot, 0o700);
     return await createOnlineBackupLocked(config, adapters);
   } finally {
     await releaseMaintenanceLock();

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { validateBackupControlRows } from "./backup-control.mjs";
+
 const MAX_RESTORE_RETENTION_ROWS = 100_000;
 
 function fail(code, message) {
@@ -98,13 +100,151 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
 
 export function createSqliteAdapter({
   loadDatabase = async () => (await import("better-sqlite3")).default,
-  expectedSchemaVersion = 6,
+  expectedSchemaVersion = 7,
   maxRetentionRows = MAX_RESTORE_RETENTION_ROWS,
 } = {}) {
   if (!Number.isSafeInteger(maxRetentionRows) || maxRetentionRows < 1 || maxRetentionRows > MAX_RESTORE_RETENTION_ROWS) {
     fail("RESTORE_RETENTION_INVALID", "Restore retention row bound is invalid");
   }
   return {
+    readBackupControl: async (databasePath) => {
+      try {
+        if (!validatePath(databasePath)) throw new Error("invalid path");
+        const Database = await loadDatabase();
+        const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+        let transactionOpen = false;
+        try {
+          database.pragma("query_only = ON");
+          database.exec("BEGIN");
+          transactionOpen = true;
+          const schemaVersion = database.pragma("user_version", { simple: true });
+          if (!Number.isSafeInteger(schemaVersion) || schemaVersion !== expectedSchemaVersion) {
+            throw new Error("incompatible schema");
+          }
+          const rows = database.prepare(`
+            SELECT singleton, automatic_enabled, row_version, updated_at_ms
+            FROM backup_settings
+            LIMIT 2
+          `).all();
+          const control = validateBackupControlRows(rows);
+          database.exec("COMMIT");
+          transactionOpen = false;
+          return control;
+        } catch (error) {
+          if (transactionOpen) {
+            try {
+              database.exec("ROLLBACK");
+            } catch {
+              // The outer sanitized failure remains authoritative.
+            }
+          }
+          throw error;
+        } finally {
+          database.close();
+        }
+      } catch {
+        fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+      }
+    },
+    applyBackupControl: async (databasePath, { automaticEnabled, nowMs, requestId } = {}) => {
+      try {
+        if (
+          !validatePath(databasePath) ||
+          typeof automaticEnabled !== "boolean" ||
+          !Number.isSafeInteger(nowMs) || nowMs < 0 ||
+          typeof requestId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/u.test(requestId)
+        ) throw new Error("invalid restore policy input");
+        const Database = await loadDatabase();
+        const database = new Database(databasePath, { fileMustExist: true });
+        let transactionOpen = false;
+        try {
+          database.pragma("foreign_keys = ON");
+          database.exec("BEGIN IMMEDIATE");
+          transactionOpen = true;
+          const schemaVersion = database.pragma("user_version", { simple: true });
+          if (!Number.isSafeInteger(schemaVersion) || schemaVersion !== expectedSchemaVersion) {
+            throw new Error("incompatible schema");
+          }
+          const current = validateBackupControlRows(database.prepare(`
+            SELECT singleton, automatic_enabled, row_version, updated_at_ms
+            FROM backup_settings
+            LIMIT 2
+          `).all());
+          const rowVersion = current.rowVersion + 1;
+          if (!Number.isSafeInteger(rowVersion)) throw new Error("invalid next revision");
+          const updated = database.prepare(`
+            UPDATE backup_settings
+            SET automatic_enabled = ?,
+                row_version = ?,
+                updated_at_ms = ?,
+                updated_by_admin_id = NULL
+            WHERE singleton = 1 AND row_version = ?
+          `).run(
+            automaticEnabled ? 1 : 0,
+            rowVersion,
+            nowMs,
+            current.rowVersion,
+          );
+          if (updated.changes !== 1) throw new Error("restore policy update conflict");
+          const auditId = randomUUID();
+          const metadataJson = JSON.stringify({ automaticEnabled, rowVersion });
+          const insertedAudit = database.prepare(`
+            INSERT INTO audit_events (
+              id, actor_type, action, target_type, target_id,
+              request_id, metadata_json, created_at_ms
+            ) VALUES (?, 'system', 'automatic_backup.restore_preserved',
+                      'backup_settings', '1', ?, ?, ?)
+          `).run(
+            auditId,
+            requestId,
+            metadataJson,
+            nowMs,
+          );
+          if (insertedAudit.changes !== 1) throw new Error("restore policy audit was not inserted");
+          const auditRows = database.prepare(`
+            SELECT actor_type, actor_id, action, target_type, target_id,
+                   request_id, metadata_json, created_at_ms
+            FROM audit_events
+            WHERE id = ?
+            LIMIT 2
+          `).all(auditId);
+          const audit = auditRows.length === 1 ? auditRows[0] : undefined;
+          if (
+            !audit || audit.actor_type !== "system" || audit.actor_id !== null ||
+            audit.action !== "automatic_backup.restore_preserved" ||
+            audit.target_type !== "backup_settings" || audit.target_id !== "1" ||
+            audit.request_id !== requestId || audit.metadata_json !== metadataJson ||
+            audit.created_at_ms !== nowMs
+          ) throw new Error("restore policy audit is invalid");
+          const applied = validateBackupControlRows(database.prepare(`
+            SELECT singleton, automatic_enabled, row_version, updated_at_ms
+            FROM backup_settings
+            LIMIT 2
+          `).all());
+          if (
+            applied.automaticEnabled !== automaticEnabled ||
+            applied.rowVersion !== rowVersion ||
+            applied.updatedAtMs !== nowMs
+          ) throw new Error("invalid applied restore policy");
+          database.exec("COMMIT");
+          transactionOpen = false;
+          return applied;
+        } catch (error) {
+          if (transactionOpen) {
+            try {
+              database.exec("ROLLBACK");
+            } catch {
+              // The outer sanitized failure remains authoritative.
+            }
+          }
+          throw error;
+        } finally {
+          database.close();
+        }
+      } catch {
+        fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+      }
+    },
     checkpoint: async (source) => {
       const Database = await loadDatabase();
       const database = new Database(source);

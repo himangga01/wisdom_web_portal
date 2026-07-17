@@ -17,6 +17,12 @@ function pathChanged() {
   fail("DB_PATH_CHANGED");
 }
 
+function backupControlInvalid() {
+  return Object.assign(new Error("Backup control state is invalid"), {
+    code: "BACKUP_CONTROL_INVALID",
+  });
+}
+
 function protectedMode(metadata) {
   return process.platform === "win32" || (metadata.mode & 0o022n) === 0n;
 }
@@ -88,6 +94,56 @@ async function assertDatabasePathUnchanged(guard) {
 
 function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
+}
+
+export async function queryBackupControl(databasePath, {
+  afterSqliteOpen,
+  beforeFinalIdentityCheck,
+} = {}) {
+  if (afterSqliteOpen !== undefined && typeof afterSqliteOpen !== "function") throw backupControlInvalid();
+  if (beforeFinalIdentityCheck !== undefined && typeof beforeFinalIdentityCheck !== "function") {
+    throw backupControlInvalid();
+  }
+  const { validateBackupControlRows } = await import("../lib/backup-control.mjs");
+  const { default: Database } = await import("better-sqlite3");
+  let guard;
+  let database;
+  let transactionOpen = false;
+  try {
+    guard = await openIndependentSecureDatabase(databasePath);
+    database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 100 });
+    await afterSqliteOpen?.();
+    await assertDatabasePathUnchanged(guard);
+    const main = database.pragma("database_list").find(({ name }) => name === "main");
+    if (!main || path.resolve(main.file) !== databasePath || await realpath(main.file) !== databasePath) pathChanged();
+    database.pragma("query_only = ON");
+    database.pragma("trusted_schema = OFF");
+    database.exec("BEGIN");
+    transactionOpen = true;
+    if (database.pragma("user_version", { simple: true }) !== 7) throw backupControlInvalid();
+    const control = validateBackupControlRows(database.prepare(`
+      SELECT singleton, automatic_enabled, row_version, updated_at_ms
+      FROM backup_settings
+      LIMIT 2
+    `).all());
+    await beforeFinalIdentityCheck?.();
+    await assertDatabasePathUnchanged(guard);
+    database.exec("COMMIT");
+    transactionOpen = false;
+    return control;
+  } catch {
+    if (transactionOpen) {
+      try {
+        database?.exec("ROLLBACK");
+      } catch {
+        // The fixed sanitized backup-control failure remains authoritative.
+      }
+    }
+    throw backupControlInvalid();
+  } finally {
+    database?.close();
+    await guard?.handle.close().catch(() => undefined);
+  }
 }
 
 export async function queryDatabaseAggregates(databasePath, {
@@ -168,13 +224,21 @@ export async function queryDatabaseAggregates(databasePath, {
 }
 
 async function main() {
+  let result;
   if (
-    process.argv.length !== 8 || process.argv[2] !== "--database" ||
-    process.argv[4] !== "--now-ms" || process.argv[6] !== "--stale-before-ms"
-  ) fail();
-  const nowMs = Number(process.argv[5]);
-  const staleBeforeMs = Number(process.argv[7]);
-  const result = await queryDatabaseAggregates(process.argv[3], { nowMs, staleBeforeMs });
+    process.argv.length === 5 && process.argv[2] === "--database" &&
+    process.argv[4] === "--backup-control"
+  ) {
+    result = await queryBackupControl(process.argv[3]);
+  } else {
+    if (
+      process.argv.length !== 8 || process.argv[2] !== "--database" ||
+      process.argv[4] !== "--now-ms" || process.argv[6] !== "--stale-before-ms"
+    ) fail();
+    const nowMs = Number(process.argv[5]);
+    const staleBeforeMs = Number(process.argv[7]);
+    result = await queryDatabaseAggregates(process.argv[3], { nowMs, staleBeforeMs });
+  }
   const output = JSON.stringify(result);
   if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) fail();
   process.stdout.write(`${output}\n`);
@@ -185,8 +249,13 @@ if (invokedPath === import.meta.url) {
   try {
     await main();
   } catch (error) {
-    const changed = error?.code === "DB_PATH_CHANGED";
-    process.stderr.write(changed ? "DB_PATH_CHANGED\n" : "MONITOR_DATABASE_QUERY_FAILED\n");
-    process.exitCode = changed ? 4 : 2;
+    if (error?.code === "BACKUP_CONTROL_INVALID") {
+      process.stderr.write("BACKUP_CONTROL_INVALID\n");
+      process.exitCode = 5;
+    } else {
+      const changed = error?.code === "DB_PATH_CHANGED";
+      process.stderr.write(changed ? "DB_PATH_CHANGED\n" : "MONITOR_DATABASE_QUERY_FAILED\n");
+      process.exitCode = changed ? 4 : 2;
+    }
   }
 }

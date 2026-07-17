@@ -1,5 +1,7 @@
 # 백업·복구 훈련
 
+age/PII/FileVault 키 경계, 자동 백업 ON/OFF, Keychain 준비, 별도 target drill과 cold-boot 인수는 [`docs/operations/mac-mini-setup.md`](../../docs/operations/mac-mini-setup.md)를 먼저 따른다. 이 런북은 실제 사고와 정기 훈련 때의 간결한 복구 계약이다.
+
 ## Bounded restore and retention work
 
 Restore-time expiry enforcement enables SQLite `secure_delete` before changing staged data.
@@ -18,7 +20,7 @@ eligible pairs are deferred to a later scheduled run instead of creating unbound
 
 ## 백업
 
-1. launchd는 매시간 `backup.mjs --apply`를 실행한다.
+1. launchd는 60초마다 secret-free dispatcher를 실행하고, 자동 백업이 ON이며 새 verified backup이 due인 경우에만 Keychain을 경유해 `backup.mjs --automatic --apply`를 실행한다.
 2. SQLite online backup과 PASSIVE checkpoint를 사용하며 DB, `-wal`, `-shm` 파일을 raw copy하지 않는다.
 3. FileVault 보호 임시 경로의 snapshot을 integrity 검사한 뒤 즉시 age로 암호화한다.
 4. 다시 복호화하여 hash, integrity, schema를 검증한 결과만 hourly/daily 상태로 게시한다.
@@ -27,12 +29,14 @@ eligible pairs are deferred to a later scheduled run instead of creating unbound
 ## 복구 훈련
 
 1. 복구할 `.age` 파일을 절대 경로로 선택한다. 최신이라는 이유만으로 자동 선택하지 않는다.
-2. 기본 dry-run 결과의 target과 단계를 확인한다.
-3. control/worker 서비스를 멈춘 뒤 restore를 반드시 `keychain-exec.mjs` 경유로 실행한다. `AGE_IDENTITY=com.jihye.portal.age-identity` 매핑과 shared `runtime.env`를 전달하고, 그 뒤의 절대 Node/restore 명령에 `--apply --target <absolute> --confirm-destroy <same-resolved-absolute>`를 정확히 전달한다. identity를 환경변수로 직접 export하거나 명령 인자에 넣으면 안 되며 restore CLI도 직접 apply를 거부한다. restore adapter는 identity를 age 1.3.1의 `--identity -` 표준입력으로만 넘기고 사용 직후 메모리 버퍼를 덮어쓴다. 복호화한 DB는 현재 schema/integrity 확인 뒤 별도 staged 파일로 복사하고, 현재 시각에 보유기간이 끝난 모든 상담 PII와 관련 발송 payload를 제거한 다음 다시 integrity/schema를 검사한다. 이 단계와 `retentionPurgedCount` 검증이 성공하기 전에는 운영 DB를 교체하거나 서비스를 시작하지 않는다.
-4. 도구는 암호 인증, encrypted SHA-256, SQLite integrity, schema compatibility를 검사한다.
-5. 기존 DB는 timestamped quarantine으로 보존하고 새 DB를 원자적으로 교체한다. ready 실패 시 이전 DB와 서비스를 복구한다.
-6. receipt와 ciphertext가 보존되었는지만 확인한다. 훈련 중 PII를 복호화하거나 출력하지 않는다.
-7. 성공 후 quarantine 삭제는 별도 승인 작업으로 수행한다.
+2. 항상 apply 전에 기본 dry-run을 먼저 실행하고 결과의 target, 단계, `automaticBackupPolicy: "preserve-current"`, `explicitFallback`, `inputRequiredIfCurrentUnreadable: true`를 확인한다. dry-run은 SQLite나 Keychain을 열지 않는다.
+3. 복구 시점의 현재 target DB에서 유효한 자동 백업 설정을 읽을 수 있으면 그 ON/OFF 선택이 오래된 backup 안의 설정보다 항상 우선한다. 이 경우 fallback을 생략할 수 있다. `--automatic-backup-after-restore`를 함께 전달한다면 현재 선택과 정확히 같아야 하며, 충돌하면 `RESTORE_BACKUP_POLICY_CONFLICT`로 중지한다.
+4. fallback이 반드시 필요한 경우는 현재 target DB가 없거나 손상되어 설정을 읽을 수 없을 때다. 이때 apply 명령에 정확히 `--automatic-backup-after-restore enabled` 또는 `--automatic-backup-after-restore disabled` 중 하나를 명시한다. 생략하면 복호화나 quarantine 전에 `RESTORE_BACKUP_POLICY_REQUIRED`로 중지한다.
+5. control/worker 서비스를 멈춘 뒤 restore를 반드시 `keychain-exec.mjs` 경유로 실행한다. `AGE_IDENTITY=com.jihye.portal.age-identity` 매핑과 shared `runtime.env`를 전달하고, 그 뒤의 절대 Node/restore 명령에 `--apply --target <absolute> --confirm-destroy <same-resolved-absolute>`를 정확히 전달한다. identity를 환경변수로 직접 export하거나 명령 인자에 넣으면 안 되며 restore CLI도 직접 apply를 거부한다. restore adapter는 identity를 age 1.3.1의 `--identity -` 표준입력으로만 넘기고 사용 직후 메모리 버퍼를 덮어쓴다. 복호화한 DB는 현재 schema/integrity 확인 뒤 별도 staged 파일로 복사하고, 현재 시각에 보유기간이 끝난 모든 상담 PII와 관련 발송 payload를 제거한다. 그 다음 보존할 자동 백업 설정과 system audit을 같은 transaction으로 staged DB에 기록하고, 다시 integrity/schema를 검사한다. 이 단계와 `retentionPurgedCount` 검증이 성공하기 전에는 운영 DB를 교체하거나 서비스를 시작하지 않는다.
+6. 도구는 암호 인증, encrypted SHA-256, SQLite integrity, schema compatibility를 검사한다.
+7. 기존 DB는 timestamped quarantine으로 보존하고 새 DB를 원자적으로 교체한다. ready 실패 시 이전 DB와 원래 자동 백업 설정, 서비스를 함께 복구한다.
+8. 복구 결과가 ON이면 설정의 `updated_at`이 복구 시각으로 갱신되므로 60초 dispatcher의 다음 실행에서 즉시 새 automatic verified backup이 due가 된다. OFF이면 새 자동 백업을 만들지 않고 기존 verified backup 파일도 변경하지 않는다. 서비스 ready 후 인증된 관리자 백업 페이지에서 현재 ON/OFF 상태와 최신 sanitized 실행 관측값을 확인한다. 운영 DB를 직접 조회하거나 secret, PII, 복호화 본문을 출력해 확인하지 않는다.
+9. receipt와 ciphertext가 보존되었는지만 확인한다. 훈련 중 PII를 복호화하거나 출력하지 않는다. 성공 후 quarantine 삭제는 별도 승인 작업으로 수행한다.
 
 애플리케이션 pointer 복구나 rollback을 함께 수행할 때는 대상 release의 `.ops-release.json` format v2를 먼저 검증한다. workspace 전체와 production `node_modules`/native addon의 exact inventory, 파일 size/hash, 내부 상대 symlink가 모두 일치해야 한다. 오래된 format v1 release나 추가·누락·변경 파일, runtime root 밖 symlink가 있는 release는 복구 대상으로 실행하지 않고 새로 검증된 release를 배포한다.
 

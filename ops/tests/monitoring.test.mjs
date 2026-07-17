@@ -13,7 +13,7 @@ import {
   parseMonitoringConfig,
   runLocalMonitor,
 } from "../lib/monitoring.mjs";
-import { queryDatabaseAggregates } from "../scripts/monitor-db-check.mjs";
+import { queryBackupControl, queryDatabaseAggregates } from "../scripts/monitor-db-check.mjs";
 
 function absoluteFixture(name) {
   return path.join(path.parse(process.cwd()).root, "wisdom-monitor-fixture", name);
@@ -45,6 +45,7 @@ function configValue(overrides = {}) {
       ],
       thresholds: {
         backupFreshnessMinutes: 90,
+        backupResumeGraceMinutes: 10,
         diskFreePercentMinimum: 15,
         queueStallMinutes: 15,
         retentionOverdueMaximum: 0,
@@ -71,6 +72,11 @@ function configValue(overrides = {}) {
 
 function healthyAdapters(overrides = {}) {
   return {
+    readBackupControl: async () => ({
+      automaticEnabled: true,
+      rowVersion: 1,
+      updatedAtMs: 0,
+    }),
     loadNewestBackupStatus: async () => ({
       verified: true,
       createdAt: "2026-07-16T00:30:00.000Z",
@@ -96,6 +102,39 @@ function healthyAdapters(overrides = {}) {
   };
 }
 
+async function createMonitorBackupControlDatabase({
+  root,
+  name = "portal.sqlite",
+  schemaVersion = 7,
+  rows = [{ singleton: 1, automaticEnabled: 0, rowVersion: 3, updatedAtMs: Date.UTC(2026, 6, 17, 4) }],
+  createTable = true,
+} = {}) {
+  const databasePath = path.join(root, name);
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath);
+  database.pragma(`user_version = ${schemaVersion}`);
+  if (createTable) {
+    database.exec(`
+      CREATE TABLE backup_settings (
+        singleton INTEGER,
+        automatic_enabled INTEGER,
+        row_version INTEGER,
+        updated_at_ms INTEGER
+      )
+    `);
+    const insert = database.prepare(`
+      INSERT INTO backup_settings (
+        singleton, automatic_enabled, row_version, updated_at_ms
+      ) VALUES (?, ?, ?, ?)
+    `);
+    for (const row of rows) {
+      insert.run(row.singleton, row.automaticEnabled, row.rowVersion, row.updatedAtMs);
+    }
+  }
+  database.close();
+  return databasePath;
+}
+
 test("monitor config strictly separates external uptime from bounded private checks", () => {
   const parsed = parseMonitoringConfig(JSON.stringify(configValue()));
   assert.equal(parsed.externalPublic.source, "outside-mac-and-lan");
@@ -116,6 +155,24 @@ test("monitor config strictly separates external uptime from bounded private che
   ];
   for (const value of unsafe) {
     assert.throws(() => parseMonitoringConfig(JSON.stringify(value)), { code: "MONITOR_CONFIG_INVALID" });
+  }
+});
+
+test("monitor config requires the exact ten-minute backup resume grace", () => {
+  const configured = configValue();
+  configured.local.thresholds.backupResumeGraceMinutes = 10;
+  assert.equal(
+    parseMonitoringConfig(JSON.stringify(configured)).local.thresholds.backupResumeGraceMinutes,
+    10,
+  );
+
+  for (const backupResumeGraceMinutes of [9, 11]) {
+    const invalid = structuredClone(configured);
+    invalid.local.thresholds.backupResumeGraceMinutes = backupResumeGraceMinutes;
+    assert.throws(
+      () => parseMonitoringConfig(JSON.stringify(invalid)),
+      { code: "MONITOR_CONFIG_INVALID" },
+    );
   }
 });
 
@@ -141,6 +198,332 @@ test("a healthy local run is bounded, machine-readable, and sends no handoff", a
   assert.equal(report.handoff, "not-required");
   assert.ok(report.checks.every(({ state }) => state === "healthy"));
   assert.ok(Buffer.byteLength(JSON.stringify(report)) < 16 * 1024);
+});
+
+test("administrator-disabled backup fails with one fixed code while every other local check continues", async () => {
+  const calls = {
+    backupStatus: 0,
+    disk: 0,
+    launchd: 0,
+    readiness: 0,
+    backlogs: 0,
+  };
+  const now = new Date("2026-07-17T04:01:00.000Z");
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now,
+    runId: "00000000-0000-4000-8000-000000000201",
+    dryRun: true,
+  }, healthyAdapters({
+    readBackupControl: async () => ({
+      automaticEnabled: false,
+      rowVersion: 4,
+      updatedAtMs: now.valueOf() - 60_000,
+    }),
+    loadNewestBackupStatus: async () => {
+      calls.backupStatus += 1;
+      return undefined;
+    },
+    diskFreePercent: async () => {
+      calls.disk += 1;
+      return 80;
+    },
+    launchdRunning: async () => {
+      calls.launchd += 1;
+      return true;
+    },
+    controlReady: async () => {
+      calls.readiness += 1;
+      return true;
+    },
+    readBacklogs: async () => {
+      calls.backlogs += 1;
+      return healthyAdapters().readBacklogs();
+    },
+  }));
+
+  assert.equal(report.ok, false);
+  assert.equal(report.exitCode, 2);
+  assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "failed",
+    code: "BACKUP_ADMIN_DISABLED",
+  });
+  assert.deepEqual(calls, {
+    backupStatus: 0,
+    disk: 1,
+    launchd: configValue().local.requiredRunningLaunchdLabels.length,
+    readiness: 1,
+    backlogs: 1,
+  });
+  assert.ok(report.checks.filter(({ id }) => id !== "backup").every(({ state }) => state === "healthy"));
+});
+
+test("unreadable and malformed backup control both become one sanitized monitor failure", async (t) => {
+  const cases = [
+    async () => {
+      throw new Error("raw sqlite detail at /private/operator/portal.sqlite");
+    },
+    async () => ({ automaticEnabled: "enabled", rowVersion: 0, updatedAtMs: -1 }),
+  ];
+  for (const [index, readBackupControl] of cases.entries()) {
+    await t.test(String(index), async () => {
+      const report = await runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now: new Date("2026-07-17T04:01:00.000Z"),
+        runId: `00000000-0000-4000-8000-00000000021${index}`,
+        dryRun: true,
+      }, healthyAdapters({ readBackupControl }));
+
+      assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+        id: "backup",
+        state: "failed",
+        code: "BACKUP_CONTROL_INVALID",
+      });
+      assert.doesNotMatch(JSON.stringify(report), /raw|sqlite|private|operator|portal\.sqlite/i);
+    });
+  }
+});
+
+test("runLocalMonitor requires an exact own-key boolean backup control object", async (t) => {
+  const updatedAtMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const inherited = Object.assign(Object.create({ automaticEnabled: true }), {
+    rowVersion: 6,
+    updatedAtMs,
+  });
+  const cases = [
+    ["numeric-zero", { automaticEnabled: 0, rowVersion: 6, updatedAtMs }],
+    ["numeric-one", { automaticEnabled: 1, rowVersion: 6, updatedAtMs }],
+    ["string", { automaticEnabled: "enabled", rowVersion: 6, updatedAtMs }],
+    ["null", { automaticEnabled: null, rowVersion: 6, updatedAtMs }],
+    ["extra-key", { automaticEnabled: true, rowVersion: 6, updatedAtMs, extra: "private" }],
+    ["inherited", inherited],
+  ];
+
+  for (const [index, [label, control]] of cases.entries()) {
+    await t.test(label, async () => {
+      const report = await runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now: new Date("2026-07-17T04:01:00.000Z"),
+        runId: `00000000-0000-4000-8000-00000000027${index}`,
+        dryRun: true,
+      }, healthyAdapters({
+        readBackupControl: async () => control,
+      }));
+
+      assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+        id: "backup",
+        state: "failed",
+        code: "BACKUP_CONTROL_INVALID",
+      });
+      assert.doesNotMatch(JSON.stringify(report), /private|enabled/i);
+    });
+  }
+});
+
+test("runLocalMonitor snapshots each backup control property exactly once", async () => {
+  const transitionMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const reads = {
+    automaticEnabled: 0,
+    rowVersion: 0,
+    updatedAtMs: 0,
+  };
+  const control = Object.defineProperties({}, {
+    automaticEnabled: {
+      enumerable: true,
+      get() {
+        reads.automaticEnabled += 1;
+        return reads.automaticEnabled === 1 ? true : 1;
+      },
+    },
+    rowVersion: {
+      enumerable: true,
+      get() {
+        reads.rowVersion += 1;
+        return 6;
+      },
+    },
+    updatedAtMs: {
+      enumerable: true,
+      get() {
+        reads.updatedAtMs += 1;
+        return transitionMs;
+      },
+    },
+  });
+
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date("2026-07-17T04:01:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000276",
+    dryRun: true,
+  }, healthyAdapters({
+    readBackupControl: async () => control,
+    loadNewestBackupStatus: async () => ({
+      verified: true,
+      createdAt: new Date(transitionMs).toISOString(),
+    }),
+  }));
+
+  assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "healthy",
+    value: 1,
+  });
+  assert.deepEqual(reads, {
+    automaticEnabled: 1,
+    rowVersion: 1,
+    updatedAtMs: 1,
+  });
+});
+
+test("future backup-control timestamps fail closed before backup scanning while equality remains valid", async () => {
+  const now = new Date("2026-07-17T04:01:00.000Z");
+  let backupStatusReads = 0;
+  let updatedAtMs = now.valueOf() + 1;
+  const adapters = healthyAdapters({
+    readBackupControl: async () => ({
+      automaticEnabled: true,
+      rowVersion: 7,
+      updatedAtMs,
+    }),
+    loadNewestBackupStatus: async () => {
+      backupStatusReads += 1;
+      return undefined;
+    },
+  });
+
+  const future = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now,
+    runId: "00000000-0000-4000-8000-000000000280",
+    dryRun: true,
+  }, adapters);
+  assert.deepEqual(future.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "failed",
+    code: "BACKUP_CONTROL_INVALID",
+  });
+  assert.equal(backupStatusReads, 0);
+
+  updatedAtMs = now.valueOf();
+  const equal = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now,
+    runId: "00000000-0000-4000-8000-000000000281",
+    dryRun: true,
+  }, adapters);
+  assert.deepEqual(equal.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "grace",
+    code: "BACKUP_RESUME_GRACE",
+  });
+  assert.equal(backupStatusReads, 1);
+});
+
+test("monitor time must be a nonnegative safe integer before any adapter operation", async (t) => {
+  const cases = [
+    ["negative", new Date(-1)],
+    ["fractional", Object.assign(new Date(0), { valueOf: () => 0.5 })],
+    ["unsafe", Object.assign(new Date(0), { valueOf: () => Number.MAX_SAFE_INTEGER + 1 })],
+    ["outside-date-range", Object.assign(new Date(0), { valueOf: () => Number.MAX_SAFE_INTEGER })],
+  ];
+  for (const [index, [label, now]] of cases.entries()) {
+    await t.test(label, async () => {
+      let adapterCalls = 0;
+      const adapters = Object.fromEntries([
+        "readBackupControl", "loadNewestBackupStatus", "diskFreePercent", "launchdRunning",
+        "controlReady", "readBacklogs", "loadIncidentState", "writeIncidentState",
+        "clearIncidentState", "deliverHermes",
+      ].map((name) => [name, async () => {
+        adapterCalls += 1;
+      }]));
+      await assert.rejects(runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now,
+        runId: `00000000-0000-4000-8000-00000000029${index}`,
+        dryRun: true,
+      }, adapters), { code: "MONITOR_TIME_INVALID" });
+      assert.equal(adapterCalls, 0);
+    });
+  }
+});
+
+test("ON without a post-transition verified pair has grace only before the exact ten-minute boundary", async (t) => {
+  const transitionMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const control = {
+    automaticEnabled: true,
+    rowVersion: 5,
+    updatedAtMs: transitionMs,
+  };
+  const candidates = [
+    ["missing", undefined],
+    ["pre-transition", { verified: true, createdAt: new Date(transitionMs - 1).toISOString() }],
+  ];
+
+  for (const [index, [label, newestVerified]] of candidates.entries()) {
+    await t.test(label, async () => {
+      const adapters = healthyAdapters({
+        readBackupControl: async () => control,
+        loadNewestBackupStatus: async () => newestVerified,
+      });
+      const before = await runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now: new Date(transitionMs + 10 * 60_000 - 1),
+        runId: `00000000-0000-4000-8000-00000000022${index}`,
+        dryRun: true,
+      }, adapters);
+      assert.equal(before.ok, true);
+      assert.equal(before.exitCode, 0);
+      assert.equal(before.handoff, "not-required");
+      assert.deepEqual(before.checks.find(({ id }) => id === "backup"), {
+        id: "backup",
+        state: "grace",
+        code: "BACKUP_RESUME_GRACE",
+      });
+
+      const exact = await runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now: new Date(transitionMs + 10 * 60_000),
+        runId: `00000000-0000-4000-8000-00000000023${index}`,
+        dryRun: true,
+      }, adapters);
+      assert.equal(exact.ok, false);
+      assert.equal(exact.exitCode, 2);
+      assert.deepEqual(exact.checks.find(({ id }) => id === "backup"), {
+        id: "backup",
+        state: "failed",
+        code: "BACKUP_VERIFIED_PAIR_MISSING",
+      });
+    });
+  }
+});
+
+test("a verified pair at the ON transition is post-transition and enters normal freshness checks", async () => {
+  const transitionMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const report = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date(transitionMs + 5 * 60_000),
+    runId: "00000000-0000-4000-8000-000000000240",
+    dryRun: true,
+  }, healthyAdapters({
+    readBackupControl: async () => ({
+      automaticEnabled: true,
+      rowVersion: 5,
+      updatedAtMs: transitionMs,
+    }),
+    loadNewestBackupStatus: async () => ({
+      verified: true,
+      createdAt: new Date(transitionMs).toISOString(),
+    }),
+  }));
+
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "healthy",
+    value: 5,
+  });
 });
 
 test("aged queue work and overdue retained PII make the monitor unhealthy", async () => {
@@ -278,6 +661,142 @@ test("dry-run reports failures without requiring or sending a secret", async () 
   assert.equal(report.handoff, "dry-run-suppressed");
   assert.equal(sends, 0);
   assert.equal(stateOperations, 0);
+});
+
+test("an unchanged disabled-only incident is suppressed indefinitely but a new real failure alerts immediately", async () => {
+  let state;
+  let diskFreePercent = 80;
+  let sends = 0;
+  let writes = 0;
+  const adapters = healthyAdapters({
+    readBackupControl: async () => ({
+      automaticEnabled: false,
+      rowVersion: 4,
+      updatedAtMs: Date.parse("2026-07-17T04:00:00.000Z"),
+    }),
+    diskFreePercent: async () => diskFreePercent,
+    loadIncidentState: async () => state,
+    writeIncidentState: async (_statePath, next) => {
+      writes += 1;
+      state = structuredClone(next);
+    },
+    clearIncidentState: async () => assert.fail("disabled incident must not clear"),
+    deliverHermes: async () => {
+      sends += 1;
+    },
+  });
+  const invoke = (runId, now) => runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date(now),
+    runId,
+    dryRun: false,
+    secret: Buffer.alloc(32, 13),
+  }, adapters);
+
+  const first = await invoke("00000000-0000-4000-8000-000000000250", "2026-07-17T04:01:00.000Z");
+  assert.equal(first.handoff, "delivered");
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  const firstState = structuredClone(state);
+  assert.equal(firstState.lastSentAt, "2026-07-17T04:01:00.000Z");
+
+  const afterCooldown = await invoke(
+    "00000000-0000-4000-8000-000000000251",
+    "2026-07-17T05:01:00.000Z",
+  );
+  assert.equal(afterCooldown.ok, false);
+  assert.equal(afterCooldown.exitCode, 2);
+  assert.equal(afterCooldown.handoff, "cooldown-suppressed");
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  assert.deepEqual(state, firstState);
+
+  diskFreePercent = 4;
+  const changed = await invoke("00000000-0000-4000-8000-000000000252", "2026-07-17T05:02:00.000Z");
+  assert.equal(changed.handoff, "delivered");
+  assert.equal(sends, 2);
+  assert.equal(writes, 2);
+  assert.equal(state.lastSentAt, "2026-07-17T05:02:00.000Z");
+  assert.notEqual(state.fingerprint, firstState.fingerprint);
+  assert.deepEqual(
+    changed.checks.filter(({ state: checkState }) => checkState === "failed").map(({ id, code }) => ({ id, code })),
+    [
+      { id: "backup", code: "BACKUP_ADMIN_DISABLED" },
+      { id: "disk", code: "DISK_FREE_BELOW_MINIMUM" },
+    ],
+  );
+});
+
+test("ON grace preserves the disabled incident and only a post-transition verified pair clears it", async () => {
+  const transitionMs = Date.parse("2026-07-17T04:02:00.000Z");
+  let control = {
+    automaticEnabled: false,
+    rowVersion: 4,
+    updatedAtMs: transitionMs - 60_000,
+  };
+  let newestVerified;
+  let state;
+  let sends = 0;
+  let writes = 0;
+  let clears = 0;
+  const adapters = healthyAdapters({
+    readBackupControl: async () => control,
+    loadNewestBackupStatus: async () => newestVerified,
+    loadIncidentState: async () => state,
+    writeIncidentState: async (_statePath, next) => {
+      writes += 1;
+      state = structuredClone(next);
+    },
+    clearIncidentState: async () => {
+      clears += 1;
+      state = undefined;
+    },
+    deliverHermes: async () => {
+      sends += 1;
+    },
+  });
+  const invoke = (runId, now) => runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date(now),
+    runId,
+    dryRun: false,
+    secret: Buffer.alloc(32, 14),
+  }, adapters);
+
+  const disabled = await invoke("00000000-0000-4000-8000-000000000260", transitionMs);
+  assert.equal(disabled.handoff, "delivered");
+  const disabledState = structuredClone(state);
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  assert.equal(clears, 0);
+
+  control = { automaticEnabled: true, rowVersion: 5, updatedAtMs: transitionMs };
+  const grace = await invoke("00000000-0000-4000-8000-000000000261", transitionMs + 5 * 60_000);
+  assert.equal(grace.ok, true);
+  assert.equal(grace.exitCode, 0);
+  assert.equal(grace.handoff, "not-required");
+  assert.deepEqual(grace.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "grace",
+    code: "BACKUP_RESUME_GRACE",
+  });
+  assert.deepEqual(state, disabledState);
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  assert.equal(clears, 0);
+
+  newestVerified = {
+    verified: true,
+    createdAt: new Date(transitionMs).toISOString(),
+  };
+  const recovered = await invoke("00000000-0000-4000-8000-000000000262", transitionMs + 6 * 60_000);
+  assert.equal(recovered.ok, true);
+  assert.ok(recovered.checks.every(({ state: checkState }) => checkState === "healthy"));
+  assert.equal(recovered.handoff, "not-required");
+  assert.equal(state, undefined);
+  assert.equal(sends, 1);
+  assert.equal(writes, 1);
+  assert.equal(clears, 1);
 });
 
 test("incident fingerprint suppresses unchanged alerts, changes re-alert, failed delivery is not recorded, and health clears state", async () => {
@@ -449,6 +968,154 @@ test("backup and disk checks reject directory replacement after validation", asy
     },
   });
   await assert.rejects(adapters.diskFreePercent(diskRoot), { code: "MONITOR_INPUT_INVALID" });
+});
+
+test("protected backup control query returns only the validated schema-v7 singleton", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-control-")));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const databasePath = await createMonitorBackupControlDatabase({ root });
+
+  assert.deepEqual(await queryBackupControl(databasePath), {
+    automaticEnabled: false,
+    rowVersion: 3,
+    updatedAtMs: Date.UTC(2026, 6, 17, 4),
+  });
+  assert.deepEqual(
+    await createSystemMonitoringAdapters().readBackupControl(databasePath, { timeoutMs: 3_000 }),
+    {
+      automaticEnabled: false,
+      rowVersion: 3,
+      updatedAtMs: Date.UTC(2026, 6, 17, 4),
+    },
+  );
+});
+
+test("backup control query maps missing, malformed, incompatible, and corrupt databases to one sanitized code", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-control-invalid-")));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const fixtures = [
+    await createMonitorBackupControlDatabase({ root, name: "missing-table.sqlite", createTable: false }),
+    await createMonitorBackupControlDatabase({ root, name: "missing-row.sqlite", rows: [] }),
+    await createMonitorBackupControlDatabase({
+      root,
+      name: "malformed.sqlite",
+      rows: [{ singleton: 1, automaticEnabled: 2, rowVersion: 0, updatedAtMs: -1 }],
+    }),
+    await createMonitorBackupControlDatabase({
+      root,
+      name: "multiple-rows.sqlite",
+      rows: [
+        { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 },
+        { singleton: 2, automaticEnabled: 0, rowVersion: 2, updatedAtMs: 1 },
+      ],
+    }),
+    await createMonitorBackupControlDatabase({ root, name: "wrong-schema.sqlite", schemaVersion: 6 }),
+  ];
+  const corruptPath = path.join(root, "corrupt.sqlite");
+  await writeFile(corruptPath, "private@example.test raw SQLite detail", { mode: 0o600 });
+  fixtures.push(corruptPath);
+
+  for (const databasePath of fixtures) {
+    await assert.rejects(queryBackupControl(databasePath), (error) => {
+      assert.equal(error.code, "BACKUP_CONTROL_INVALID");
+      assert.equal(error.message, "Backup control state is invalid");
+      assert.equal(String(error.stack).includes(databasePath), false);
+      assert.doesNotMatch(error.message, /private|example|sqlite|table|schema|path/i);
+      return true;
+    });
+  }
+});
+
+test("backup control query enforces its SQLite timeout and sanitizes the lock failure", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-control-timeout-")));
+  const databasePath = await createMonitorBackupControlDatabase({ root });
+  const { default: Database } = await import("better-sqlite3");
+  const lock = new Database(databasePath);
+  lock.exec("BEGIN EXCLUSIVE");
+  t.after(async () => {
+    lock.exec("ROLLBACK");
+    lock.close();
+    await rm(root, { force: true, recursive: true });
+  });
+
+  const started = performance.now();
+  await assert.rejects(queryBackupControl(databasePath), { code: "BACKUP_CONTROL_INVALID" });
+  assert.ok(performance.now() - started < 1_000);
+});
+
+test("backup control query maps a final database path replacement to its fixed sanitized code", {
+  skip: process.platform === "win32" ? "Windows does not permit this open-file rename fixture" : false,
+}, async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-control-swap-")));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const databasePath = await createMonitorBackupControlDatabase({ root });
+  const replacementPath = await createMonitorBackupControlDatabase({
+    root,
+    name: "replacement.sqlite",
+    rows: [{ singleton: 1, automaticEnabled: 1, rowVersion: 99, updatedAtMs: 99 }],
+  });
+  const movedPath = path.join(root, "portal-original.sqlite");
+
+  await assert.rejects(queryBackupControl(databasePath, {
+    beforeFinalIdentityCheck: async () => {
+      await rename(databasePath, movedPath);
+      await rename(replacementPath, databasePath);
+    },
+  }), (error) => {
+    assert.equal(error.code, "BACKUP_CONTROL_INVALID");
+    assert.equal(error.message, "Backup control state is invalid");
+    assert.equal(String(error.stack).includes(databasePath), false);
+    return true;
+  });
+});
+
+test("system backup control reader uses an exact bounded child protocol", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-control-protocol-")));
+  t.after(async () => rm(root, { force: true, recursive: true }));
+  const databasePath = path.join(root, "portal.sqlite");
+  const helperPath = path.join(root, "monitor-db-check.mjs");
+  await writeFile(databasePath, "bounded fixture", { mode: 0o600 });
+  await writeFile(helperPath, "// bounded fixture", { mode: 0o600 });
+  const invocations = [];
+  const adapters = createSystemMonitoringAdapters({
+    databaseHelper: helperPath,
+    nodeBinary: process.execPath,
+    execute: async (executable, args, options) => {
+      invocations.push({ executable, args, options });
+      return {
+        stdout: `${JSON.stringify({ automaticEnabled: true, rowVersion: 4, updatedAtMs: 123 })}\n`,
+        stderr: "",
+      };
+    },
+  });
+
+  assert.deepEqual(await adapters.readBackupControl(databasePath, { timeoutMs: 1_000 }), {
+    automaticEnabled: true,
+    rowVersion: 4,
+    updatedAtMs: 123,
+  });
+  assert.equal(invocations[0].executable, process.execPath);
+  assert.deepEqual(invocations[0].args, [helperPath, "--database", databasePath, "--backup-control"]);
+  assert.equal(invocations[0].options.shell, false);
+  assert.ok(invocations[0].options.maxBuffer <= 8 * 1024);
+  assert.ok(invocations[0].options.timeout < 1_000);
+
+  for (const output of [
+    { stdout: `${JSON.stringify({ automaticEnabled: true, rowVersion: 4, updatedAtMs: 123, extra: "private" })}\n`, stderr: "" },
+    { stdout: "x".repeat(4 * 1024 + 1), stderr: "" },
+    { stdout: `${JSON.stringify({ automaticEnabled: 1, rowVersion: 4, updatedAtMs: 123 })}\n`, stderr: "" },
+    { stdout: `${JSON.stringify({ automaticEnabled: true, rowVersion: 4, updatedAtMs: 123 })}\n`, stderr: "raw sqlite path" },
+  ]) {
+    const invalid = createSystemMonitoringAdapters({
+      databaseHelper: helperPath,
+      nodeBinary: process.execPath,
+      execute: async () => output,
+    });
+    await assert.rejects(
+      invalid.readBackupControl(databasePath, { timeoutMs: 1_000 }),
+      { code: "BACKUP_CONTROL_INVALID" },
+    );
+  }
 });
 
 test("system backlog reader opens only aggregate operational tables", async () => {

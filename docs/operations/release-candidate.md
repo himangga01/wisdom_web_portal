@@ -39,6 +39,7 @@
 | 정적 발행과 롤백 | 승인 글과 활성 8개 동의 문서를 함께 봉인한 snapshot/build, 원자 pointer 전환, active+retired 2개 보존 | 정책 body/hash/보존기간 parity·장애 주입·reconcile·rollback·retention 테스트 | 구현 완료 |
 | Google·Naver·AI 발견성 | canonical/hreflang/x-default, JSON-LD, sitemap/RSS/robots, IndexNow | DOM·feed·crawler·3-browser 검사 | 구현 완료 |
 | Mac mini 무도커 운영 | Caddy, Cloudflare Tunnel, launchd, Keychain, release scripts | 운영 구성·dry-run·release 테스트 | 구현 완료 |
+| production configuration 설치기 | 보호된 exact values JSON, user/system 분리 dry-run·apply, 전체 선검증, 원자 교체·rollback, sanitized report | installer·CLI 계약 테스트; 대상 Mac ownership·validator·rollback 통합 시험은 공개 게이트 | 구현 완료·Mac 실장비 검증 필요 |
 | 백업과 복구 | 시간별 age 암호화 SQLite online backup, 24 hourly/14 daily | 실제 SQLite fake-age backup/guarded restore drill | 구현 완료 |
 | 로컬 운영 감시 | 5분 launchd runner, backup/disk/services/ready/queue 집계, 독립 HMAC Hermes handoff | fixture failure 1회 handoff·healthy 0회, config/preflight 테스트 | 구현 완료 |
 
@@ -60,6 +61,9 @@
 - [ ] Google Search Console·Naver Search Advisor 소유권 확인 값과 실제 제출
 - [ ] FileVault 재부팅 후 사람의 volume unlock 절차, UPS·유선 LAN·전원 복구 시험
 - [ ] 실제 외부 네트워크의 공개 live 감시와 운영 알림 목적지
+- [ ] 실제 Mac에서 mode `0600`인 non-symlink production values 파일로 user/system dry-run을 모두 통과하고, report가 `schemaVersion`·`scope`·`applied`와 artifact별 `id`·`sha256`·`changed` 외의 값·본문·절대경로를 노출하지 않는지 확인
+- [ ] 포털 사용자로 `--scope user --apply --confirm-app-root <APP_ROOT> --confirm-user-home <USER_HOME>`를 실행하고, 별도 `sudo` system 명령으로 `--confirm-system-target /etc/newsyslog.d/wisdom-portal.conf` 하나만 적용
+- [ ] 설치된 plist·Caddy·cloudflared·newsyslog를 각각 다시 검증하고 ownership·mode·unchanged 재적용·원자 교체·rollback drill을 기록. 설치기가 Keychain·credential 파일·secret을 읽지 않고 `launchctl`·service start/restart를 실행하지 않았으며 cloudflared가 unloaded인지 확인
 - [ ] 실제 Mac mini에서 monitoring config `--validate-only`와 monitor `--dry-run`을 실행하고, backup·disk·launchd·ready·queue가 healthy인지 기록
 - [ ] 실제 Mac mini에서 안전한 실패를 한 번 주입해 loopback Hermes handoff가 정확히 1회 도착하고 body에 metadata/error code 외 값이 없는지 확인한 뒤 원복
 - [ ] Mac/LAN 밖의 외부 uptime 계정과 알림 목적지는 로컬 monitor와 별도로 구성하고, Mac 전원 차단 드릴에서 외부 경보가 도착하는지 확인
@@ -78,7 +82,7 @@
 
 ## 운영 전환 순서
 
-1. `ops/runbooks/deployment.md`의 Keychain·runtime·public seed·preflight 순서를 따른다.
+1. `ops/runbooks/deployment.md`에서 보호된 production values 파일을 만들고 user/system dry-run을 모두 통과한 뒤 user apply와 별도 sudo system apply, 설치 후 validator를 완료한다. 그 다음 Keychain·public seed·preflight 순서를 따른다. installer는 service를 시작하지 않는다.
 2. `PUBLIC_ORIGIN`을 실제 `www` HTTPS 원본으로 지정해 정적 빌드한다.
 3. 활성 동의 bundle이 정확히 privacy+marketing × 4개 언어의 8개 문서인지 확인하고, public content manifest가 `consent-bundle.json` SHA-256을 봉인했는지 검증한다.
 4. application release와 public content release의 pointer를 혼용하지 않는다.

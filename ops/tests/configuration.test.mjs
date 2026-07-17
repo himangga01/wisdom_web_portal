@@ -4,14 +4,45 @@ import path from "node:path";
 import test from "node:test";
 
 import { renderTemplateFile } from "../lib/templates.mjs";
+import {
+  CONFIG_TEMPLATE_DESCRIPTORS,
+  CONFIG_TOKEN_NAMES,
+  parseProductionValues,
+} from "../lib/config-installer.mjs";
 
 const opsRoot = path.resolve(import.meta.dirname, "..");
+
+async function collectTemplates(directory, prefix = "") {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) result.push(...await collectTemplates(path.join(directory, entry.name), relative));
+    else if (entry.isFile() && entry.name.endsWith(".template")) result.push(relative);
+  }
+  return result.sort();
+}
+
+test("production installer inventory owns every template and every repository token", async () => {
+  const actualTemplates = await collectTemplates(opsRoot);
+  const inventoryTemplates = CONFIG_TEMPLATE_DESCRIPTORS.map(({ source }) => source).sort();
+  assert.deepEqual(actualTemplates, inventoryTemplates);
+
+  const tokens = new Set();
+  for (const relative of actualTemplates) {
+    const source = await readFile(path.join(opsRoot, relative), "utf8");
+    for (const match of source.matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/gu)) tokens.add(match[1]);
+  }
+  assert.deepEqual([...tokens].sort(), [...CONFIG_TOKEN_NAMES]);
+
+  const example = await readFile(path.join(opsRoot, "config/production-values.example.json"), "utf8");
+  assert.deepEqual(Object.keys(parseProductionValues(example)).sort(), [...CONFIG_TOKEN_NAMES]);
+});
 
 const fixture = Object.freeze({
   ADMIN_HOST: "admin.example.test",
   ADMIN_DUMMY_PASSWORD_HASH: "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY",
   AGE_BINARY: "/opt/homebrew/bin/age",
-  AGE_RECIPIENT: "age1operatorreplacebeforeinstall",
+  AGE_RECIPIENT: "age1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0savhh7m",
   APEX_HOST: "example.test",
   APP_ROOT: "/Users/wisdom/portal",
   BACKUP_ROOT: "/Users/wisdom/Backups/portal",
@@ -52,6 +83,18 @@ async function render(relativePath, extra = {}) {
     ...fixture,
     ...extra,
   });
+}
+
+function plistProgramArguments(source) {
+  const match = /<key>ProgramArguments<\/key><array>([\s\S]*?)<\/array>/u.exec(source);
+  assert.ok(match, "ProgramArguments array is required");
+  return [...match[1].matchAll(/<string>([^<]*)<\/string>/gu)].map((entry) => entry[1]);
+}
+
+function plistInteger(source, key) {
+  const match = new RegExp(`<key>${key}</key><integer>(\\d+)</integer>`, "u").exec(source);
+  assert.ok(match, `${key} integer is required`);
+  return Number(match[1]);
 }
 
 test("operator environment templates expose exactly-one Naver verification settings as opt-in", async () => {
@@ -320,13 +363,33 @@ test("ops templates contain placeholders rather than deployable credentials", as
   }
 });
 
-test("backup schedule and log rotation are bounded", async () => {
+test("backup schedule dispatches every 60 seconds before Keychain access with one fixed automatic child", async () => {
   const backup = await render("launchd/com.jihye.portal.backup.plist.template");
   const newsyslog = await render("newsyslog/wisdom-portal.conf.template");
+  const args = plistProgramArguments(backup);
+  const separator = args.indexOf("--");
 
-  assert.match(backup, /<key>StartInterval<\/key><integer>3600<\/integer>/);
-  assert.match(backup, /<string>--apply<\/string>/);
-  assert.match(backup, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/(?:keychain-exec|backup)\.mjs/);
+  assert.deepEqual(args.slice(0, 2), [
+    fixture.NODE_BINARY,
+    `${fixture.CURRENT_RELEASE}/ops/scripts/backup-dispatcher.mjs`,
+  ]);
+  assert.equal(plistInteger(backup, "StartInterval"), 60);
+  assert.equal(plistInteger(backup, "ThrottleInterval"), 60);
+  assert.equal(args[args.indexOf("--run-state") + 1], `${fixture.DATA_ROOT}/backup-run-state.json`);
+  assert.equal(separator > 1, true);
+  assert.equal(args.slice(0, separator).some((value) => value.includes("keychain-exec")), false);
+  assert.equal(args.slice(separator + 1).filter((value) => value.endsWith("/keychain-exec.mjs")).length, 1);
+  assert.equal(args.filter((value) => value === "AGE_IDENTITY=com.jihye.portal.age-identity").length, 1);
+  assert.equal(args.filter((value) => value === "--automatic").length, 1);
+  assert.equal(args.filter((value) => value === "--apply").length, 2);
+  assert.deepEqual(args.filter((value, index) => args[index - 1] === "--source"), [
+    `${fixture.DATA_ROOT}/portal.sqlite`,
+    `${fixture.DATA_ROOT}/portal.sqlite`,
+  ]);
+  assert.deepEqual(args.filter((value, index) => args[index - 1] === "--root"), [
+    fixture.BACKUP_ROOT,
+    fixture.BACKUP_ROOT,
+  ]);
   assert.doesNotMatch(backup, /\/Users\/wisdom\/portal\/ops\/scripts/);
   assert.match(newsyslog, /\/Users\/wisdom\/Library\/Logs\/WisdomPortal\/\*\.log\s+wisdom:staff\s+640\s+10\s+10240\s+\*\s+GJN/);
   assert.doesNotMatch(newsyslog, /world|777/i);
@@ -355,6 +418,7 @@ test("monitoring template keeps external uptime separate from executable local c
     source: "outside-mac-and-lan",
   });
   assert.equal(parsed.local.thresholds.backupFreshnessMinutes, 90);
+  assert.equal(parsed.local.thresholds.backupResumeGraceMinutes, 10);
   assert.equal(parsed.local.thresholds.diskFreePercentMinimum, 15);
   assert.equal(parsed.local.thresholds.queueStallMinutes, 15);
   assert.equal(parsed.local.thresholds.retentionOverdueMaximum, 0);
@@ -421,4 +485,283 @@ test("runbooks and release gate require local monitor and independent external u
   assert.match(releaseCandidate, /실제 Mac mini[\s\S]*monitor.*dry-run/i);
   assert.match(releaseCandidate, /Mac.*LAN 밖[\s\S]*별도/i);
   assert.match(incidents, /Telegram bot[\s\S]*직접 호출하지 않는다/i);
+});
+
+test("Mac mini guide inventories inputs, uses real commands, and names every launch blocker", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+
+  for (const required of [
+    "외부 발급",
+    "운영자 결정",
+    "Mac 로컬 생성",
+    "민감도",
+    "저장 위치",
+    "검증 방법",
+    "분실 영향",
+    "AGE-SECRET-KEY-1",
+    "PII_ENCRYPTION_KEY",
+    "FileVault",
+    "Cloudflare Tunnel",
+    "Google Search Console",
+    "Naver Search Advisor",
+    "IndexNow",
+    "SMTP",
+    "Hermes",
+    "Telegram",
+    "TOTP",
+    "recovery code",
+    "Codex",
+    "npm run verify",
+    "--automatic-backup-after-restore",
+    "BACKUP_ADMIN_DISABLED",
+    "공개 전 구현 필요",
+    "현재 수동 검증 가능",
+  ]) assert.match(guide, new RegExp(required, "i"), required);
+
+  const commandText = guide
+    .replace(/\\\r?\n\s*/gu, " ")
+    .replaceAll('"', "")
+    .replace(/\s+/gu, " ");
+  for (const commandContract of [
+    "secret-bootstrap.mjs --account",
+    "secret-import.mjs --account",
+    "seed-public.mjs --source-dist",
+    "preflight.mjs --monitor-config",
+    "deploy.mjs --source",
+    "monitor.mjs --config",
+    "--validate-only",
+    "--dry-run",
+    "admin:bootstrap",
+    "admin:mfa-replace",
+    "/admin/publish",
+    "/admin/backups",
+    "backup.mjs",
+    "restore.mjs",
+    "--confirm-destroy",
+    "launchctl print gui/$PORTAL_UID",
+  ]) assert.ok(commandText.includes(commandContract), commandContract);
+
+  for (const blocker of [
+    "production template render/install CLI",
+    "first normal publication bootstrap",
+    "Kakao URL publication allowlist",
+    "Hermes HMAC provisioning",
+    "tunnel-off Host-aware health probe",
+    "all-Keychain offline recovery bundle",
+    "automatic offsite backup replication",
+    "stale PUBLIC_ORIGINS README mismatch",
+  ]) assert.ok(guide.includes(blocker), blocker);
+
+  for (const notRequired of [
+    "Docker 계정·설치: 불필요",
+    "WordPress 계정: 불필요",
+    "Caddy 계정: 불필요",
+    "age 서비스 계정: 불필요",
+    "공유기 inbound port forwarding: 불필요",
+    "수동 TLS 인증서: 불필요",
+    "Kakao Developers API: 단순 링크에는 불필요",
+    "Penpot 운영 runtime 접근: 불필요",
+  ]) assert.ok(guide.includes(notRequired), notRequired);
+});
+
+test("operator entry points link the Mac guide and document only the singular public origin key", async () => {
+  const readme = await readFile(path.resolve(opsRoot, "../README.md"), "utf8");
+  const documentMap = await readFile(path.resolve(opsRoot, "../docs/00-document-map.md"), "utf8");
+  const deployment = await readFile(path.join(opsRoot, "runbooks/deployment.md"), "utf8");
+  const recovery = await readFile(path.join(opsRoot, "runbooks/recovery.md"), "utf8");
+
+  assert.match(readme, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(documentMap, /operations\/mac-mini-setup\.md/u);
+  assert.match(deployment, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(recovery, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(readme, /`PUBLIC_ORIGIN`/u);
+  assert.doesNotMatch(readme, /\bPUBLIC_ORIGINS\b/u);
+});
+
+test("Mac guide stops existing schema-v6 deployments until a reviewed maintenance migration exists", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const upgradeGate = guide.slice(
+    guide.indexOf("### 3.1 기존 schema v6 설치의 추가 배포 중단 조건"),
+    guide.indexOf("## 4. 필요하지 않은 계정·설정"),
+  );
+
+  assert.ok(upgradeGate.length > 0, "schema-v6 deployment stop section");
+  assert.match(upgradeGate, /신규 빈 DB[\s\S]*user_version[\s\S]*0[\s\S]*schema v7/u);
+  assert.match(upgradeGate, /기존 schema v6[\s\S]*deploy\.mjs --apply[\s\S]*실행하지 않는다/u);
+  assert.match(upgradeGate, /DATABASE_MIGRATION_ROLLBACK_INCOMPATIBLE/u);
+  assert.match(upgradeGate, /전용 v6→v7 maintenance migration[\s\S]*현재 구현되어 있지 않/u);
+  assert.match(upgradeGate, /require-rollback-compatible[\s\S]*우회[\s\S]*user_version[\s\S]*수동/u);
+  assert.match(upgradeGate, /ops\/runbooks\/deployment\.md#rollback-비호환-migration/u);
+});
+
+test("Mac guide classifies every input and gives every operational secret a lifecycle", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const lines = guide.split(/\r?\n/u);
+  const inventoryHeader = "| 필수 여부 | 구분 | 항목 | 발급처/생성 위치 | 값 형식·예 | 민감도 | 저장 위치 | 검증 방법 | 갱신·분실 영향 |";
+  const inventoryStart = lines.indexOf(inventoryHeader);
+  assert.notEqual(inventoryStart, -1, "nine-column inventory header");
+  const inventoryEnd = lines.findIndex((line, index) => index > inventoryStart + 1 && !line.startsWith("|"));
+  const inventoryRows = lines.slice(inventoryStart + 2, inventoryEnd);
+  assert.equal(inventoryRows.length, 55, "complete inventory rows");
+  const inventoryDataRows = inventoryRows.map((row) => row.split("|").slice(1, -1).map((column) => column.trim()));
+  for (const columns of inventoryDataRows) {
+    assert.equal(columns.length, 9, columns.join(" | "));
+    assert.match(columns[0], /^(?:필수|조건부 필수|선택)$/u, columns.join(" | "));
+  }
+  assert.deepEqual(
+    inventoryDataRows.filter((columns) => columns[0] === "조건부 필수").map((columns) => columns[2]),
+    ["조건부 Cloudflare API token", "조건부 GitHub 계정·credential"],
+    "only manual Cloudflare automation and a private Git remote are conditional",
+  );
+  const codexCredential = inventoryDataRows.find((columns) => columns[2] === "Codex CLI 인증·OpenAI API credential·billing");
+  assert.equal(codexCredential[0], "필수", "approved AI translation/review requires Codex authentication");
+  assert.match(codexCredential.join(" "), /로그인 또는 printable credential 중 택1/u);
+  const cloudflareApiToken = inventoryDataRows.find((columns) => columns[2] === "조건부 Cloudflare API token");
+  assert.match(cloudflareApiToken.join(" "), /수동 console 운영에는 불필요/u);
+  const githubCredential = inventoryDataRows.find((columns) => columns[2] === "조건부 GitHub 계정·credential");
+  assert.match(githubCredential.join(" "), /public remote면 생략하고 private remote면 필수/u);
+
+  const lifecycleHeader = "| 비밀·reference | Keychain service 또는 저장 위치 | 사용 프로세스 | 회전 가능 여부 | 분실 영향 | 복구 시험 |";
+  const lifecycleStart = lines.indexOf(lifecycleHeader);
+  assert.notEqual(lifecycleStart, -1, "secret lifecycle table");
+  const lifecycleEnd = lines.findIndex((line, index) => index > lifecycleStart + 1 && !line.startsWith("|"));
+  const lifecycle = lines.slice(lifecycleStart, lifecycleEnd).join("\n");
+  for (const secret of [
+    "admin session", "control HMAC", "Hermes HMAC", "monitor HMAC", "PII encryption key",
+    "withdrawal token", "age identity", "age recipient", "IndexNow", "SMTP", "Codex",
+  ]) assert.match(lifecycle, new RegExp(secret, "i"), secret);
+
+  const externalHeader = "| 외부·운영자 비밀·계정 | 저장 위치·소유자 | 사용자·consumer | 회전·폐기 | 분실 영향 | 복구 시험 |";
+  const externalStart = lines.indexOf(externalHeader);
+  assert.notEqual(externalStart, -1, "external/operator credential lifecycle table");
+  const externalEnd = lines.findIndex((line, index) => index > externalStart + 1 && !line.startsWith("|"));
+  const externalRows = lines.slice(externalStart + 2, externalEnd);
+  assert.equal(externalRows.length, 15, "every external/operator credential has one lifecycle row");
+  for (const row of externalRows) {
+    const columns = row.split("|").slice(1, -1).map((column) => column.trim());
+    assert.equal(columns.length, 6, row);
+    assert.ok(columns.every(Boolean), row);
+  }
+
+  const secretCoverage = new Map([
+    ["원격접속 방식", ["원격접속 계정·MFA"]],
+    ["FileVault unlock 담당자와 복구 수단", ["FileVault 복구 수단"]],
+    ["도메인 등록기관 계정", ["도메인 등록기관 계정·MFA"]],
+    ["Cloudflare 계정과 zone", ["Cloudflare 계정·MFA"]],
+    ["Cloudflare Tunnel credential", ["Cloudflare Tunnel credential"]],
+    ["조건부 Cloudflare API token", ["Cloudflare API token"]],
+    ["Google 계정", ["Google 계정·MFA"]],
+    ["Naver 계정", ["Naver 계정·MFA"]],
+    ["SMTP 계정", ["SMTP 제공자 계정·MFA"]],
+    ["SMTP app password", ["SMTP credential/reference"]],
+    ["Portal/Hermes 일반 HMAC", ["Hermes HMAC"]],
+    ["Portal/Hermes monitor HMAC", ["monitor HMAC"]],
+    ["Telegram bot token·chat ID", ["Telegram bot token·chat ID"]],
+    ["Codex CLI 인증·OpenAI API credential·billing", ["Codex credential/reference"]],
+    ["owner password", ["owner password"]],
+    ["TOTP enrollment", ["owner TOTP"]],
+    ["recovery code 10개", ["owner recovery codes"]],
+    ["admin session secret", ["admin session secret"]],
+    ["control HMAC", ["control HMAC"]],
+    ["PII encryption key와 active key ID", ["PII encryption key"]],
+    ["withdrawal token secret", ["withdrawal token secret"]],
+    ["age identity·recipient", ["age identity", "age recipient"]],
+    ["조건부 GitHub 계정·credential", ["GitHub private credential"]],
+    ["외부 uptime 계정·알림 대상", ["external uptime account/MFA"]],
+  ]);
+  const secretInventoryItems = inventoryDataRows.filter((columns) => columns[5].includes("비밀")).map((columns) => columns[2]).sort();
+  assert.deepEqual([...secretCoverage.keys()].sort(), secretInventoryItems, "every secret inventory item has lifecycle coverage");
+  const allLifecycle = lines.slice(lifecycleStart, lines.indexOf("## 2. 암호화 계층과 완전 복구 경계")).join("\n");
+  for (const [inventoryItem, lifecycleNames] of secretCoverage) {
+    for (const lifecycleName of lifecycleNames) assert.ok(allLifecycle.includes(lifecycleName), `${inventoryItem}: ${lifecycleName}`);
+  }
+
+});
+
+test("Mac guide shell procedures fail closed and never print process argv", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const shellBlocks = [...guide.matchAll(/```sh\r?\n([\s\S]*?)```/gu)].map((match) => match[1]);
+  const shellLines = shellBlocks.flatMap((block) => block.split(/\r?\n/u));
+  const unguardedTests = shellLines.filter((line) => /^\s*test\b/u.test(line) && !/\|\|\s*exit 1\s*$/u.test(line));
+  assert.deepEqual(unguardedTests, [], `unguarded test predicates:\n${unguardedTests.join("\n")}`);
+
+  const logicalCommands = shellBlocks.join("\n").replace(/\\\r?\n\s*/gu, " ").split(/\r?\n/u);
+  const unguardedApply = logicalCommands.filter((line) => /--apply\b/u.test(line) &&
+    !/\|\|\s*exit 1\s*$/u.test(line) &&
+    !/^\s*if\b[\s\S]*;\s*then\s*$/u.test(line));
+  assert.deepEqual(unguardedApply, [], `unguarded apply commands:\n${unguardedApply.join("\n")}`);
+  const unguardedMutations = logicalCommands.filter((line) => /^\s*(?:chmod|mkdir|rmdir|rm -f|launchctl (?:bootout|bootstrap|kickstart))\b/u.test(line) && !/\|\|\s*exit 1\s*$/u.test(line));
+  assert.deepEqual(unguardedMutations, [], `unguarded mutation commands:\n${unguardedMutations.join("\n")}`);
+
+  assert.match(guide, /전용 shell 세션[\s\S]*fail-fast[\s\S]*`\|\| exit 1`/u);
+  assert.doesNotMatch(shellBlocks.join("\n"), /^\s*set -e\b/mu);
+  assert.match(guide, /test -f "\$CLOUDFLARED_CREDENTIALS_FILE" \|\| exit 1/u);
+  assert.match(guide, /AGE_KEYGEN_BINARY[\s\S]*-o "\$AGE_KEYGEN_OUTPUT" \|\| exit 1/u);
+  assert.match(guide, /find-generic-password[\s\S]*INDEXNOW_KEYCHAIN_SERVICE[\s\S]*\|\| exit 1/u);
+  assert.doesNotMatch(guide, /ps[^\n]*\bcommand\b/u);
+  assert.match(guide, /ps -axo pid=,ppid=,%cpu=,%mem=,comm=/u);
+});
+
+test("Mac guide restore drill proves outage boundaries, wrong-key rejection, and MFA cleanup", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const commandText = guide.replace(/\\\r?\n\s*/gu, " ").replaceAll('"', "").replace(/\s+/gu, " ");
+
+  assert.match(guide, /maintenance window[\s\S]*별도 target[\s\S]*(?:production|운영) service[\s\S]*(?:중단|outage)[\s\S]*external uptime/i);
+  for (const label of ["control", "notification-worker", "content-worker"]) {
+    assert.ok(commandText.includes(`launchctl bootout gui/$PORTAL_UID/com.jihye.portal.${label} || exit 1`), `bootout ${label}`);
+    assert.match(guide, new RegExp(`launchctl print "gui/\\$PORTAL_UID/com\\.jihye\\.portal\\.${label}"[\\s\\S]*state[\\s\\S]*running`, "u"), `running ${label}`);
+  }
+  assert.match(guide, /restore apply[\s\S]*(?:production|운영) readiness/u);
+
+  const wrongKey = guide.slice(guide.indexOf("### 21.3 wrong identity"), guide.indexOf("### 21.4"));
+  for (const prerequisite of [
+    /test -x "\$AGE_BINARY" \|\| exit 1/u,
+    /test -x "\$AGE_KEYGEN_BINARY" \|\| exit 1/u,
+    /test -f "\$BACKUP_ARTIFACT".*\|\| exit 1/u,
+    /test ! -L "\$BACKUP_ARTIFACT".*\|\| exit 1/u,
+    /test "\$WRONG_RECIPIENT" != "\$AGE_RECIPIENT" \|\| exit 1/u,
+    /test ! -e "\$WRONG_OUTPUT" \|\| exit 1/u,
+    /no identity matched any of the recipients/u,
+    /correct-identity restore.*(?:passed|통과)/iu,
+  ]) assert.match(wrongKey, prerequisite);
+  assert.match(wrongKey, /WRONG_STDERR_BYTES[\s\S]*4096/u);
+  assert.match(wrongKey, /test ! -e "\$WRONG_OUTPUT" \|\| exit 1[\s\S]*rm -f/u);
+
+  const mfa = guide.slice(guide.indexOf("MFA 장치 교체"), guide.indexOf("## 15."));
+  assert.match(mfa, /새 TOTP[\s\S]*recovery code[\s\S]*새 로그인[\s\S]*rm -f "\$OWNER_MFA_REPLACEMENT" \|\| exit 1[\s\S]*unset OWNER_MFA_REPLACEMENT/u);
+  assert.match(guide, /rollback dry-run[\s\S]*문법[\s\S]*apply[\s\S]*retained release[\s\S]*manifest[\s\S]*migration[\s\S]*canary[\s\S]*pointer/iu);
+});
+
+test("Mac guide distinguishes missing launchd jobs and recovers every early restore exit", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const commandText = guide.replace(/\\\r?\n\s*/gu, " ").replace(/\s+/gu, " ");
+
+  assert.match(guide, /validate_launchctl_missing_service\(\)[\s\S]*Could not find service[\s\S]*in domain for user gui:[\s\S]*Bad request\.[\s\S]*NR == 1[\s\S]*NR == 2/u);
+  assert.doesNotMatch(guide, /grep -Eiq 'Could not find service\|service not found'/u);
+
+  const cloudflaredProbe = guide.slice(guide.indexOf("CLOUDFLARED_PROBE_ERROR"), guide.indexOf("npm run build:fixture"));
+  assert.match(cloudflaredProbe, /stat -f '%z'[\s\S]*1024/u);
+  assert.match(cloudflaredProbe, /validate_launchctl_missing_service "\$CLOUDFLARED_PROBE_ERROR" 'com\.jihye\.portal\.cloudflared' \|\| exit 1/u);
+
+  const restore = guide.slice(guide.indexOf("### 21.2"), guide.indexOf("### 21.3"));
+  const restoreHelperIndex = restore.indexOf("validate_launchctl_missing_service()");
+  const restoreFirstProbeIndex = restore.indexOf('validate_launchctl_missing_service "$RESTORE_CONTROL_PROBE"');
+  assert.ok(restoreHelperIndex >= 0, "restore shell defines its own missing-service validator");
+  assert.ok(restoreHelperIndex < restoreFirstProbeIndex, "restore validator is defined before its first use");
+  assert.match(restore, /validate_launchctl_missing_service\(\)[\s\S]*Could not find service[\s\S]*Bad request\.[\s\S]*NR == 1[\s\S]*NR == 2/u);
+  assert.match(guide, /새 로그인 또는 새 shell 세션[\s\S]*5절[\s\S]*환경 변수[\s\S]*다시 실행/u);
+  assert.match(restore, /RESTORE_RECOVERY_ARMED=yes/u);
+  assert.match(restore, /trap ['"]?restore_recovery_handler['"]? EXIT HUP INT TERM/u);
+  for (const label of ["control", "notification-worker", "content-worker"]) {
+    assert.match(restore, new RegExp(`validate_launchctl_missing_service [^\\n]*['\"]com\\.jihye\\.portal\\.${label}['\"] \\|\\| exit 1`, "u"), `missing proof ${label}`);
+    assert.match(restore, new RegExp(`launchctl kickstart -k [^\\n]*com\\.jihye\\.portal\\.${label}`, "u"), `recovery ${label}`);
+  }
+
+  const readyIndex = restore.indexOf('curl -fsS "http://127.0.0.1:8787/health/ready" >/dev/null || exit 1');
+  const disarmIndex = restore.indexOf("RESTORE_RECOVERY_ARMED=no");
+  const flagIndex = restore.indexOf("CORRECT_IDENTITY_RESTORE_VERIFIED=yes");
+  assert.ok(readyIndex >= 0, "readiness uses HTTP success rather than a wrong response literal");
+  assert.ok(disarmIndex > readyIndex, "recovery remains armed through readiness");
+  assert.ok(flagIndex > disarmIndex, "correct-identity marker follows recovery disarm");
+  assert.doesNotMatch(commandText, /health\/ready[^\n]*grep -Fq ['"]ok['"]/u);
 });

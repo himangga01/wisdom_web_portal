@@ -2,7 +2,7 @@
 
 지혜행정사사무소 운영 포털의 npm 워크스페이스입니다. 운영 애플리케이션은 `apps/site`, `apps/control`, 공용 계약과 토큰은 `packages/shared`에 둡니다. `prototypes/homepage-motion`은 승인된 시각·모션 참고본이며 운영 워크스페이스와 분리해 동결 상태로 유지합니다.
 
-이 저장소에는 프로덕션 후보 코드와 운영 자동화가 구현되어 있습니다. 그러나 실제 도메인, Cloudflare 자격증명, 승인된 법적 문구와 운영 계정이 아직 주입되지 않은 상태에서는 공개 배포가 완료된 것이 아닙니다. 문서의 시작점은 [`docs/00-document-map.md`](docs/00-document-map.md), 공개 전 체크리스트는 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)입니다.
+이 저장소에는 프로덕션 후보 코드와 운영 자동화가 구현되어 있습니다. 그러나 실제 도메인, Cloudflare 자격증명, 승인된 법적 문구와 운영 계정이 아직 주입되지 않은 상태에서는 공개 배포가 완료된 것이 아닙니다. 문서의 시작점은 [`docs/00-document-map.md`](docs/00-document-map.md), Mac 실장비 준비는 [`docs/operations/mac-mini-setup.md`](docs/operations/mac-mini-setup.md), 공개 전 체크리스트는 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)입니다.
 
 ## 시스템 구성
 
@@ -83,7 +83,7 @@ npm run verify
 - `HERMES_ENDPOINT`: literal loopback Hermes URL, 기본값 `http://127.0.0.1:8788/notify`
 - `PII_ACTIVE_KEY_ID`: 현재 PII 암호화 키 버전 ID
 - `PII_PREVIOUS_KEYS_JSON`: 이전 PII 키 ID와 값의 JSON 객체
-- `PUBLIC_ORIGINS`: 쉼표로 구분한 HTTPS 원본 허용 목록
+- `PUBLIC_ORIGIN`: 공개 상담 요청에 사용하는 하나의 canonical HTTPS 원본이며 쉼표 목록이 아닙니다.
 - `CONTROL_HOST=127.0.0.1`, `CONTROL_PORT=8787`
 
 `CONTROL_HMAC_SECRET`을 교체하면 기존 폼 토큰, 멱등성 키, 요청 지문 및 블라인드 인덱스가 함께 바뀝니다. HMAC 루트 회전은 Task 7 운영 절차에서 점검·배치 재색인과 함께 수행하며 임의로 즉시 교체하지 않습니다.
@@ -133,14 +133,16 @@ npm.cmd run dev --workspace @wisdom/control
 
 운영 구성은 Docker를 사용하지 않습니다. application release와 public content release는 서로 다른 manifest와 포인터로 관리하며, 모든 서비스는 launchd가 실행합니다. 비밀값은 저장소나 plist가 아니라 Keychain service reference로 주입합니다.
 
+- 최초 계정·발급값·비밀·설치·복구 인수: [`docs/operations/mac-mini-setup.md`](docs/operations/mac-mini-setup.md)
 - 배포·rollback·stale lock 복구: [`ops/runbooks/deployment.md`](ops/runbooks/deployment.md)
 - age 암호화 hourly 백업과 guarded restore: [`ops/runbooks/recovery.md`](ops/runbooks/recovery.md)
 - 장애·알림 backlog·monitor 대응: [`ops/runbooks/incidents.md`](ops/runbooks/incidents.md)
 - 동의문 활성화와 policy-only 발행: [`docs/operations/consent-publication.md`](docs/operations/consent-publication.md)
 - Google·Naver·AI 발견성 운영: [`docs/operations/search-discovery.md`](docs/operations/search-discovery.md)
+- 다음 작업자용 남은 작업·중단 조건·검증 순서: [`docs/operations/remaining-work-handoff.md`](docs/operations/remaining-work-handoff.md)
 
 로컬 monitor는 5분 주기로 verified backup freshness, 디스크, launchd 서비스, loopback readiness와 안전한 queue 집계만 검사합니다. 상담 본문이나 연락처는 읽지 않으며, 장애 시 알림 worker와 다른 Keychain HMAC으로 loopback Hermes에 오류 코드와 숫자 메트릭만 전달합니다. Mac·전원·LAN 전체 장애는 로컬 monitor가 보고할 수 없으므로 외부 uptime 감시는 별도 필수입니다.
 
 ## 공개 전 남은 작업
 
-실제 공개 전에는 도메인·DNS·Cloudflare Tunnel, Kakao URL, SMTP와 수신 메일, Hermes·Telegram 목적지, owner MFA 등록, 승인된 4개 언어 개인정보·마케팅 문구, 영문·중문 직함, 12/24개월 보유 범위, Search Console·Naver Search Advisor·IndexNow, FileVault·UPS·전원 복구, 실제 Mac 백업·복구·장애 주입과 외부 uptime 감시를 운영자가 확정해야 합니다. 전체 목록과 완료 증거 형식은 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)를 따릅니다.
+실제 공개 전에는 도메인·DNS·Cloudflare Tunnel, Kakao URL, SMTP와 수신 메일, Hermes·Telegram 목적지, owner MFA 등록, 승인된 4개 언어 개인정보·마케팅 문구, 영문·중문 직함, 12/24개월 보유 범위, Search Console·Naver Search Advisor·IndexNow, FileVault·UPS·전원 복구, 실제 Mac 백업·복구·장애 주입과 외부 uptime 감시를 운영자가 확정해야 합니다. 이어서 구현할 코드·보안 작업은 [`docs/operations/remaining-work-handoff.md`](docs/operations/remaining-work-handoff.md), 전체 운영 입력과 완료 증거 형식은 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)를 따릅니다.

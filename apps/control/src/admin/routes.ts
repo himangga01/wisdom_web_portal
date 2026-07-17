@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  backupRunStateSchema,
   localeSchema,
   consultationStatusSchema,
   type ArticleState,
+  type BackupRunState,
   type ConsultationStatus,
   type Locale,
   type NotificationChannel,
@@ -11,6 +13,10 @@ import {
 import { Hono, type Context } from "hono";
 
 import { resolveClientIp } from "../abuse/rate-limit.js";
+import {
+  changeAutomaticBackupSetting,
+  readBackupSettings,
+} from "../backups/settings.js";
 import {
   beginAdminLogin,
   completeAdminMfa,
@@ -57,6 +63,7 @@ export interface Task4RouteDependencies extends AdminAuthContext {
   now: () => number;
   peerAddress: (context: Context<AdminEnvironment>) => string;
   articlePublication?: AdminArticlePublicationActions;
+  backupRunStateProvider?: () => Promise<BackupRunState | undefined>;
 }
 
 export interface AdminArticlePublicationActionInput {
@@ -88,7 +95,37 @@ function page(title: string, body: string, lang = "en", csrfToken?: string): str
   const logout = csrfToken === undefined
     ? ""
     : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">Sign out</button></form>`;
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
+  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/backups">Backups</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
+}
+
+function safeIsoTimestamp(timestampMs: number): string {
+  const timestamp = new Date(timestampMs);
+  return Number.isNaN(timestamp.getTime()) ? "Unavailable" : timestamp.toISOString();
+}
+
+function elapsedSince(timestamp: string, nowMs: number): string {
+  const elapsedMs = Math.max(0, nowMs - Date.parse(timestamp));
+  const seconds = Math.floor(elapsedMs / 1_000);
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"} ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 120) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function backupActorDisplay(
+  dependencies: Task4RouteDependencies,
+  adminId: string | null,
+): string {
+  if (adminId === null) return "System default";
+  const actor = dependencies.db.sqlite.prepare(`
+    SELECT display_name FROM admins WHERE id = ?
+  `).get(adminId) as { display_name: unknown } | undefined;
+  return typeof actor?.display_name === "string" && actor.display_name.length > 0
+    ? actor.display_name
+    : "Administrator";
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -149,7 +186,7 @@ async function formValues(
   } catch {
     return context.html(page("Invalid request", "<h1>Invalid request</h1>"), 400);
   }
-  const values: Record<string, string> = {};
+  const values = Object.create(null) as Record<string, string>;
   let fields = 0;
   for (const [key, value] of new URLSearchParams(serialized)) {
     fields += 1;
@@ -407,6 +444,72 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT status, count(*) count FROM consultations GROUP BY status ORDER BY status
     `).all() as Array<{ status: string; count: number }>;
     return context.html(page("Dashboard", `<h1>Dashboard</h1><ul>${counts.map((row) => `<li>${escapeHtml(row.status)}: ${row.count}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.get("/admin/backups", async (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const settings = readBackupSettings(dependencies.db);
+    const actor = backupActorDisplay(dependencies, settings.updatedByAdminId);
+    let observationMarkup = "<p>Observation unavailable</p>";
+    if (dependencies.backupRunStateProvider !== undefined) {
+      try {
+        const supplied = await dependencies.backupRunStateProvider();
+        if (supplied === undefined) {
+          observationMarkup = "<p>No automatic backup observation is available yet.</p>";
+        } else {
+          const observation = backupRunStateSchema.parse(supplied);
+          const verified = observation.lastVerifiedAt === null
+            ? "Never"
+            : `${escapeHtml(observation.lastVerifiedAt)} (${escapeHtml(elapsedSince(
+                observation.lastVerifiedAt,
+                dependencies.now(),
+              ))})`;
+          observationMarkup = `<dl><dt>Last automatic run</dt><dd>${escapeHtml(observation.outcome)}</dd><dt>Last verified backup</dt><dd>${verified}</dd></dl>`;
+        }
+      } catch {
+        observationMarkup = "<p>Observation unavailable</p>";
+      }
+    }
+    const enabled = settings.automaticEnabled;
+    const body = `<h1>Automatic encrypted backup</h1><p>Automatic backup is ${enabled ? "ON" : "OFF"}.</p><dl><dt>Last policy change</dt><dd>${escapeHtml(safeIsoTimestamp(settings.updatedAtMs))}</dd><dt>Changed by</dt><dd>${escapeHtml(actor)}</dd></dl>${observationMarkup}<section><h2>Turning automatic backup off</h2><ul><li>Existing backups are not deleted.</li><li>Manual backup and restore remain available.</li><li>One backup already in progress may still complete.</li><li>The 60-minute recovery point objective does not apply while automatic backup is off.</li></ul></section><form method="post" action="/admin/backups"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${settings.rowVersion}"><fieldset><legend>Automatic encrypted backup policy</legend><label><input type="radio" name="automaticEnabled" value="enabled"${enabled ? " checked" : ""}> ON</label><label><input type="radio" name="automaticEnabled" value="disabled"${enabled ? "" : " checked"}> OFF</label></fieldset><label><input type="checkbox" name="disableConfirmed" value="yes"> I understand the OFF risks described above.</label><button type="submit">Save backup policy</button></form>`;
+    return context.html(page("Automatic encrypted backup", body, "en", auth.csrfToken));
+  });
+
+  app.post("/admin/backups", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const allowedFields = new Set(["csrf", "automaticEnabled", "rowVersion", "disableConfirmed"]);
+    const rowVersionText = auth.form.rowVersion ?? "";
+    const rowVersion = Number(rowVersionText);
+    if (
+      Object.keys(auth.form).some((field) => !allowedFields.has(field)) ||
+      (auth.form.automaticEnabled !== "enabled" && auth.form.automaticEnabled !== "disabled") ||
+      !/^[1-9]\d*$/u.test(rowVersionText) ||
+      !Number.isSafeInteger(rowVersion) ||
+      (auth.form.automaticEnabled === "disabled" && auth.form.disableConfirmed !== "yes")
+    ) {
+      return context.html(page("Invalid backup policy", "<h1>Invalid backup policy</h1>"), 422);
+    }
+    const result = changeAutomaticBackupSetting(dependencies.db, {
+      automaticEnabled: auth.form.automaticEnabled === "enabled",
+      expectedRowVersion: rowVersion,
+      actorAdminId: auth.session.adminId,
+      requestId: context.get("requestId"),
+      nowMs: dependencies.now(),
+    });
+    if (result.kind === "updated" || result.kind === "unchanged") {
+      return context.redirect(`${dependencies.adminOrigin}/admin/backups`, 303);
+    }
+    return context.html(
+      page(
+        "Backup policy conflict",
+        '<h1>Backup policy changed</h1><p>Please reload this page and try again.</p><a href="/admin/backups">Reload backup policy</a>',
+        "en",
+        auth.session.csrfToken,
+      ),
+      409,
+    );
   });
 
   app.get("/admin/articles", (context) => {

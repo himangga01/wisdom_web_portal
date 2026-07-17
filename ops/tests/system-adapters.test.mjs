@@ -10,7 +10,7 @@ import { createAgeAdapter, createSqliteAdapter } from "../lib/system-adapters.mj
 function createRestoreRetentionFixtureSchema(database) {
   database.exec(`
     PRAGMA foreign_keys = ON;
-    PRAGMA user_version = 6;
+    PRAGMA user_version = 7;
     CREATE TABLE consultations (
       id TEXT PRIMARY KEY,
       receipt_id TEXT NOT NULL,
@@ -102,6 +102,147 @@ function createRestoreRetentionFixtureSchema(database) {
   `);
 }
 
+async function createBackupControlFixture({
+  createTable = true,
+  rows = [{ singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 }],
+  schemaVersion = 7,
+} = {}) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-backup-control-"));
+  const databasePath = path.join(directory, "portal.sqlite");
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath);
+  database.pragma(`user_version = ${schemaVersion}`);
+  if (createTable) {
+    database.exec(`
+      CREATE TABLE backup_settings (
+        singleton,
+        automatic_enabled,
+        row_version,
+        updated_at_ms
+      )
+    `);
+    const insert = database.prepare(`
+      INSERT INTO backup_settings (
+        singleton, automatic_enabled, row_version, updated_at_ms
+      ) VALUES (?, ?, ?, ?)
+    `);
+    for (const row of rows) {
+      insert.run(row.singleton, row.automaticEnabled, row.rowVersion, row.updatedAtMs);
+    }
+  }
+  database.close();
+  return databasePath;
+}
+
+async function createWritableBackupControlFixture({
+  rows = [{
+    singleton: 1,
+    automaticEnabled: 1,
+    rowVersion: 1,
+    updatedAtMs: 0,
+    updatedByAdminId: "admin-before-restore",
+  }],
+  schemaVersion = 7,
+  rejectAudit = false,
+  ignoreAudit = false,
+  deleteAuditAfterInsert = false,
+  mutatePolicyAfterAudit = false,
+} = {}) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-backup-control-"));
+  const databasePath = path.join(directory, "staged.sqlite");
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath);
+  database.pragma(`user_version = ${schemaVersion}`);
+  database.exec(`
+    CREATE TABLE backup_settings (
+      singleton INTEGER PRIMARY KEY,
+      automatic_enabled INTEGER NOT NULL,
+      row_version INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      updated_by_admin_id TEXT
+    );
+    CREATE TABLE audit_events (
+      id TEXT PRIMARY KEY,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      request_id TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at_ms INTEGER NOT NULL
+    );
+  `);
+  const insert = database.prepare(`
+    INSERT INTO backup_settings (
+      singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+    ) VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const row of rows) {
+    insert.run(
+      row.singleton,
+      row.automaticEnabled,
+      row.rowVersion,
+      row.updatedAtMs,
+      row.updatedByAdminId ?? null,
+    );
+  }
+  if (rejectAudit) {
+    database.exec(`
+      CREATE TRIGGER reject_restore_policy_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected restore policy audit failure');
+      END;
+    `);
+  }
+  if (ignoreAudit) {
+    database.exec(`
+      CREATE TRIGGER ignore_restore_policy_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+  }
+  if (deleteAuditAfterInsert) {
+    database.exec(`
+      CREATE TRIGGER delete_restore_policy_audit
+      AFTER INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        DELETE FROM audit_events WHERE id = NEW.id;
+      END;
+    `);
+  }
+  if (mutatePolicyAfterAudit) {
+    database.exec(`
+      CREATE TRIGGER mutate_policy_after_restore_audit
+      AFTER INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        UPDATE backup_settings SET automatic_enabled = 1 WHERE singleton = 1;
+      END;
+    `);
+  }
+  database.close();
+  return databasePath;
+}
+
+function assertSanitizedBackupControlFailure(databasePath) {
+  return assert.rejects(
+    createSqliteAdapter().readBackupControl(databasePath),
+    (error) => {
+      assert.equal(error.code, "BACKUP_CONTROL_INVALID");
+      assert.equal(error.message, "Backup control state is invalid");
+      assert.doesNotMatch(String(error.stack), new RegExp(databasePath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+      return true;
+    },
+  );
+}
+
 test("age decrypt streams identity through stdin, never a file or process argument", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-age-adapter-"));
   const input = path.join(directory, "backup.age");
@@ -177,6 +318,317 @@ test("age encryption accepts only an age recipient and absolute paths", async ()
     adapter.encrypt({ input: "snapshot.sqlite", output, recipient: "not-an-age-recipient" }),
     { code: "AGE_ADAPTER_INPUT_INVALID" },
   );
+});
+
+test("SQLite reads the schema-v7 singleton backup policy", async () => {
+  const databasePath = await createBackupControlFixture();
+  const adapter = createSqliteAdapter();
+
+  assert.deepEqual(await adapter.readBackupControl(databasePath), {
+    automaticEnabled: true,
+    rowVersion: 1,
+    updatedAtMs: 0,
+  });
+  assert.equal(await adapter.schemaCompatible({ schemaVersion: 7 }), true);
+  assert.equal(await adapter.schemaCompatible({ schemaVersion: 6 }), false);
+});
+
+test("SQLite backup policy reads are readonly, query-only, and bounded to two rows", async () => {
+  const calls = [];
+  class Database {
+    constructor(databasePath, options) {
+      calls.push(["open", databasePath, options]);
+    }
+    pragma(source, options) {
+      calls.push(["pragma", source, options]);
+      return source === "user_version" ? 7 : undefined;
+    }
+    exec(source) {
+      calls.push(["exec", source]);
+    }
+    prepare(source) {
+      calls.push(["prepare", source]);
+      return {
+        all() {
+          calls.push(["all"]);
+          return [{ singleton: 1, automatic_enabled: 0, row_version: 3, updated_at_ms: 42 }];
+        },
+      };
+    }
+    close() {
+      calls.push(["close"]);
+    }
+  }
+  const databasePath = path.join(path.parse(process.cwd()).root, "fixture", "portal.sqlite");
+
+  assert.deepEqual(await createSqliteAdapter({
+    loadDatabase: async () => Database,
+  }).readBackupControl(databasePath), {
+    automaticEnabled: false,
+    rowVersion: 3,
+    updatedAtMs: 42,
+  });
+  assert.deepEqual(calls[0], ["open", databasePath, { readonly: true, fileMustExist: true }]);
+  assert.deepEqual(calls[1], ["pragma", "query_only = ON", undefined]);
+  assert.deepEqual(calls[2], ["exec", "BEGIN"]);
+  assert.deepEqual(calls[3], ["pragma", "user_version", { simple: true }]);
+  assert.match(calls[4][1], /FROM backup_settings\s+LIMIT 2/u);
+  assert.deepEqual(calls.slice(5), [["all"], ["exec", "COMMIT"], ["close"]]);
+});
+
+test("SQLite backup policy pins schema and singleton reads to one snapshot", async () => {
+  const databasePath = await createBackupControlFixture({
+    rows: [{ singleton: 1, automaticEnabled: 0, rowVersion: 1, updatedAtMs: 0 }],
+  });
+  const { default: NativeDatabase } = await import("better-sqlite3");
+  const setup = new NativeDatabase(databasePath);
+  setup.pragma("journal_mode = WAL");
+  setup.close();
+
+  let interleaved = false;
+  class InterleavedDatabase {
+    constructor(openPath, options) {
+      this.database = new NativeDatabase(openPath, options);
+    }
+    exec(source) {
+      return this.database.exec(source);
+    }
+    pragma(source, options) {
+      const result = this.database.pragma(source, options);
+      if (source === "user_version" && !interleaved) {
+        interleaved = true;
+        const writer = new NativeDatabase(databasePath);
+        try {
+          writer.exec(`
+            BEGIN IMMEDIATE;
+            UPDATE backup_settings
+            SET automatic_enabled = 1, row_version = 2, updated_at_ms = 1
+            WHERE singleton = 1;
+            PRAGMA user_version = 8;
+            COMMIT;
+          `);
+        } finally {
+          writer.close();
+        }
+      }
+      return result;
+    }
+    prepare(source) {
+      return this.database.prepare(source);
+    }
+    close() {
+      this.database.close();
+    }
+  }
+
+  assert.deepEqual(await createSqliteAdapter({
+    loadDatabase: async () => InterleavedDatabase,
+  }).readBackupControl(databasePath), {
+    automaticEnabled: false,
+    rowVersion: 1,
+    updatedAtMs: 0,
+  });
+
+  const latest = new NativeDatabase(databasePath, { readonly: true });
+  try {
+    assert.equal(latest.pragma("user_version", { simple: true }), 8);
+    assert.deepEqual(latest.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms
+      FROM backup_settings WHERE singleton = 1
+    `).get(), { automatic_enabled: 1, row_version: 2, updated_at_ms: 1 });
+  } finally {
+    latest.close();
+  }
+});
+
+test("SQLite backup policy reads fail closed for missing, duplicate, incompatible, or unavailable state", async () => {
+  const missingTable = await createBackupControlFixture({ createTable: false });
+  const missingRow = await createBackupControlFixture({ rows: [] });
+  const duplicateRows = await createBackupControlFixture({
+    rows: [
+      { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 },
+      { singleton: 1, automaticEnabled: 0, rowVersion: 2, updatedAtMs: 1 },
+    ],
+  });
+  const oldSchema = await createBackupControlFixture({ schemaVersion: 6 });
+  const unavailable = path.join(path.dirname(oldSchema), "missing.sqlite");
+
+  for (const databasePath of [missingTable, missingRow, duplicateRows, oldSchema, unavailable]) {
+    await assertSanitizedBackupControlFailure(databasePath);
+  }
+});
+
+test("SQLite backup policy reads reject malformed singleton, boolean, revision, and time values", async () => {
+  const invalidRows = [
+    { singleton: 2, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 },
+    { singleton: 1, automaticEnabled: 2, rowVersion: 1, updatedAtMs: 0 },
+    { singleton: 1, automaticEnabled: 1, rowVersion: 0, updatedAtMs: 0 },
+    { singleton: 1, automaticEnabled: 1, rowVersion: 1.5, updatedAtMs: 0 },
+    { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: -1 },
+    { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 1.5 },
+  ];
+
+  for (const row of invalidRows) {
+    await assertSanitizedBackupControlFailure(await createBackupControlFixture({ rows: [row] }));
+  }
+});
+
+test("SQLite injects the restore-time backup policy and system audit atomically", async () => {
+  const databasePath = await createWritableBackupControlFixture();
+  const nowMs = Date.parse("2026-07-17T08:09:10.000Z");
+  const adapter = createSqliteAdapter();
+
+  const applied = await adapter.applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs,
+    requestId: "restore-policy-00000001",
+  });
+
+  assert.deepEqual(applied, {
+    automaticEnabled: false,
+    rowVersion: 2,
+    updatedAtMs: nowMs,
+  });
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 0,
+      row_version: 2,
+      updated_at_ms: nowMs,
+      updated_by_admin_id: null,
+    });
+    assert.deepEqual(database.prepare(`
+      SELECT actor_type, actor_id, action, target_type, target_id,
+             request_id, metadata_json, created_at_ms
+      FROM audit_events WHERE request_id = 'restore-policy-00000001'
+    `).get(), {
+      actor_type: "system",
+      actor_id: null,
+      action: "automatic_backup.restore_preserved",
+      target_type: "backup_settings",
+      target_id: "1",
+      request_id: "restore-policy-00000001",
+      metadata_json: JSON.stringify({ automaticEnabled: false, rowVersion: 2 }),
+      created_at_ms: nowMs,
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite rolls back restore policy injection when its system audit fails", async () => {
+  const databasePath = await createWritableBackupControlFixture({ rejectAudit: true });
+
+  await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs: 42,
+    requestId: "restore-policy-00000002",
+  }), { code: "BACKUP_CONTROL_INVALID" });
+
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 1,
+      row_version: 1,
+      updated_at_ms: 0,
+      updated_by_admin_id: "admin-before-restore",
+    });
+    assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite rolls back restore policy injection when its audit is silently ignored", async () => {
+  const databasePath = await createWritableBackupControlFixture({ ignoreAudit: true });
+
+  await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs: 43,
+    requestId: "restore-policy-00000004",
+  }), { code: "BACKUP_CONTROL_INVALID" });
+
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 1,
+      row_version: 1,
+      updated_at_ms: 0,
+      updated_by_admin_id: "admin-before-restore",
+    });
+    assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite revalidates the audit and policy after restore audit triggers", async () => {
+  const databasePaths = [
+    await createWritableBackupControlFixture({ deleteAuditAfterInsert: true }),
+    await createWritableBackupControlFixture({ mutatePolicyAfterAudit: true }),
+  ];
+
+  for (const databasePath of databasePaths) {
+    await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+      automaticEnabled: false,
+      nowMs: 44,
+      requestId: "restore-policy-00000005",
+    }), { code: "BACKUP_CONTROL_INVALID" });
+
+    const { default: Database } = await import("better-sqlite3");
+    const database = new Database(databasePath, { readonly: true });
+    try {
+      assert.deepEqual(database.prepare(`
+        SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+        FROM backup_settings WHERE singleton = 1
+      `).get(), {
+        automatic_enabled: 1,
+        row_version: 1,
+        updated_at_ms: 0,
+        updated_by_admin_id: "admin-before-restore",
+      });
+      assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+    } finally {
+      database.close();
+    }
+  }
+});
+
+test("SQLite restore policy injection fails closed for missing or malformed staged policy", async () => {
+  const invalidPolicies = [
+    await createBackupControlFixture({ createTable: false }),
+    await createBackupControlFixture({ rows: [] }),
+    await createBackupControlFixture({
+      rows: [
+        { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 },
+        { singleton: 1, automaticEnabled: 0, rowVersion: 2, updatedAtMs: 1 },
+      ],
+    }),
+    await createBackupControlFixture({
+      rows: [{ singleton: 1, automaticEnabled: 2, rowVersion: 1, updatedAtMs: 0 }],
+    }),
+    await createBackupControlFixture({ schemaVersion: 6 }),
+  ];
+
+  for (const databasePath of invalidPolicies) {
+    await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+      automaticEnabled: true,
+      nowMs: 42,
+      requestId: "restore-policy-00000003",
+    }), { code: "BACKUP_CONTROL_INVALID" });
+  }
 });
 
 test("SQLite restore retention removes expired PII and cancels its queued delivery", async () => {
@@ -347,7 +799,7 @@ test("SQLite restore retention fails closed when a due batch makes no progress",
   `;
   const child = spawnSync(process.execPath, ["--input-type=module", "--eval", source, databasePath], {
     encoding: "utf8",
-    timeout: 1_000,
+    timeout: 10_000,
     windowsHide: true,
   });
   assert.equal(child.signal, null);

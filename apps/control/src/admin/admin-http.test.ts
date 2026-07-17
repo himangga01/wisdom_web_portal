@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computePublishedArticleContentSha256 } from "@wisdom/shared";
+import {
+  computePublishedArticleContentSha256,
+  type BackupRunState,
+} from "@wisdom/shared";
 
 import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { createControlApp, type RedactedLogEvent } from "../app.js";
@@ -311,12 +314,21 @@ interface Fixture {
   dummyPasswordHash: string;
 }
 
+interface FixtureOverrides {
+  articlePublication?: {
+    publish: (input: unknown) => Promise<{
+      releaseId: string; version: string; manifestSha256: string;
+    }>;
+    rollback: (input: unknown) => Promise<{
+      releaseId: string; version: string; manifestSha256: string;
+    }>;
+  };
+  backupRunStateProvider?: () => Promise<BackupRunState | undefined>;
+}
+
 async function fixture(
   peer = "127.0.0.1",
-  overrides: { articlePublication?: {
-    publish: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
-    rollback: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
-  } } = {},
+  overrides: FixtureOverrides = {},
 ): Promise<Fixture> {
   const database = createTestDatabase();
   cleanups.push(() => database.close());
@@ -444,6 +456,287 @@ async function login(current: Fixture): Promise<{ cookie: string; csrf: string }
   const [, csrf = ""] = value.split(".");
   return { cookie: sessionCookie, csrf };
 }
+
+describe("administrator automatic backup controls", () => {
+  const observation = {
+    formatVersion: 1,
+    runId: "00000000-0000-4000-8000-000000000702",
+    startedAt: "2026-07-17T03:59:57.111Z",
+    finishedAt: "2026-07-17T04:00:02.222Z",
+    outcome: "verified",
+    controlRevision: 424_242,
+    lastVerifiedAt: "2026-07-17T04:00:03.333Z",
+    lastVerifiedArtifact: "hourly-20260717T040000Z.age",
+    errorCode: null,
+  } satisfies BackupRunState;
+
+  const failedObservation = {
+    ...observation,
+    outcome: "failed",
+    controlRevision: 867_530,
+    errorCode: "BACKUP_OPERATION_FAILED",
+  } satisfies BackupRunState;
+
+  it("protects the page and renders only policy and sanitized observation details", async () => {
+    let currentObservation: BackupRunState = observation;
+    const current = await fixture("127.0.0.1", {
+      backupRunStateProvider: async () => currentObservation,
+    });
+    current.now = Date.parse("2026-07-17T05:00:03.333Z");
+    const hostileActorName = '<img src=x onerror="actor-secret">';
+    current.database.db.sqlite.prepare(`
+      UPDATE admins SET display_name = ? WHERE id = 'admin-1'
+    `).run(hostileActorName);
+    current.database.db.sqlite.prepare(`
+      UPDATE backup_settings SET updated_by_admin_id = 'admin-1' WHERE singleton = 1
+    `).run();
+
+    const anonymous = await current.app.request(`${ADMIN_ORIGIN}/admin/backups`);
+    expect(anonymous.status).toBe(303);
+    expect(anonymous.headers.get("location")).toBe(`${ADMIN_ORIGIN}/admin/login`);
+    expect((await current.app.request(`${PUBLIC_ORIGIN}/admin/backups`)).status).toBe(404);
+
+    const session = await login(current);
+    const page = await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      headers: { cookie: session.cookie },
+    });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    sensitiveHeaders(page);
+    expect(html).toContain("Automatic encrypted backup");
+    expect(html).toContain("Automatic backup is ON");
+    expect(html).toContain('name="rowVersion" value="1"');
+    expect(html).toContain('name="csrf"');
+    expect(html).toContain("verified");
+    expect(html).toContain("2026-07-17T04:00:03.333Z");
+    expect(html).toContain("60 minutes ago");
+    expect(html).toContain("&lt;img src=x onerror=&quot;actor-secret&quot;&gt;");
+    expect(html).not.toContain(hostileActorName);
+    expect(html).toContain("Existing backups are not deleted");
+    expect(html).toContain("Manual backup and restore remain available");
+    expect(html).toContain("already in progress may still complete");
+    expect(html).toContain("60-minute recovery point objective does not apply");
+    expect(html).not.toContain(observation.runId);
+    expect(html).not.toContain(observation.startedAt!);
+    expect(html).not.toContain(observation.finishedAt!);
+    expect(html).not.toContain(String(observation.controlRevision));
+    expect(html).not.toContain(observation.lastVerifiedArtifact);
+    expect(html).not.toMatch(/AGE-SECRET-KEY|keychain:|portal\.sqlite|010-8415-0023|kjihye0023@naver\.com/i);
+
+    const dashboardHtml = await (await current.app.request(`${ADMIN_ORIGIN}/admin`, {
+      headers: { cookie: session.cookie },
+    })).text();
+    expect(dashboardHtml).toContain('<a href="/admin/backups">Backups</a>');
+
+    currentObservation = failedObservation;
+    const failedHtml = await (await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      headers: { cookie: session.cookie },
+    })).text();
+    expect(failedHtml).toContain("<dd>failed</dd>");
+    expect(failedHtml).not.toContain(failedObservation.errorCode!);
+    expect(failedHtml).not.toContain(String(failedObservation.controlRevision));
+    expect(failedHtml).not.toContain(failedObservation.startedAt!);
+    expect(failedHtml).not.toContain(failedObservation.finishedAt!);
+  });
+
+  it("keeps policy control available when observation loading fails", async () => {
+    const providerFailure = "AGE-SECRET-KEY-hidden C:\\private\\portal.sqlite";
+    const current = await fixture("127.0.0.1", {
+      backupRunStateProvider: async () => {
+        throw new Error(providerFailure);
+      },
+    });
+    const session = await login(current);
+
+    const page = await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      headers: { cookie: session.cookie },
+    });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("Observation unavailable");
+    expect(html).toContain("Automatic backup is ON");
+    expect(html).toContain('action="/admin/backups"');
+    expect(html).not.toContain(providerFailure);
+    expect(JSON.stringify(current.logs)).not.toContain(providerFailure);
+  });
+
+  it("requires exact Origin, CSRF, state, revision, and OFF confirmation", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const submit = (
+      values: Record<string, string>,
+      options: { origin?: string; csrf?: string } = {},
+    ) => current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      method: "POST",
+      headers: {
+        origin: options.origin ?? ADMIN_ORIGIN,
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: options.csrf ?? session.csrf, ...values }),
+    });
+    const validOff = {
+      automaticEnabled: "disabled",
+      rowVersion: "1",
+      disableConfirmed: "yes",
+    };
+
+    expect((await submit(validOff, { origin: "https://evil.test" })).status).toBe(403);
+    expect((await submit(validOff, { csrf: "wrong-csrf" })).status).toBe(403);
+    expect((await submit({ automaticEnabled: "invalid", rowVersion: "1" })).status).toBe(422);
+    expect((await submit({ automaticEnabled: "enabled", rowVersion: "0" })).status).toBe(422);
+    expect((await submit({ automaticEnabled: "enabled", rowVersion: "1.5" })).status).toBe(422);
+    expect((await submit({
+      automaticEnabled: "enabled",
+      rowVersion: String(Number.MAX_SAFE_INTEGER + 1),
+    })).status).toBe(422);
+    expect((await submit({ automaticEnabled: "disabled", rowVersion: "1" })).status).toBe(422);
+    const protoField = new URLSearchParams({
+      csrf: session.csrf,
+      automaticEnabled: "enabled",
+      rowVersion: "1",
+    });
+    protoField.append("__proto__", "unexpected");
+    expect((await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      method: "POST",
+      headers: {
+        origin: ADMIN_ORIGIN,
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: protoField,
+    })).status).toBe(422);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT automatic_enabled, row_version FROM backup_settings WHERE singleton = 1
+    `).get()).toEqual({ automatic_enabled: 1, row_version: 1 });
+    expect(current.database.db.sqlite.prepare(`
+      SELECT count(*) count FROM audit_events
+      WHERE action IN ('automatic_backup.enabled', 'automatic_backup.disabled')
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("blocks unauthenticated, public-host, and missing-Origin POSTs without mutation", async () => {
+    const current = await fixture();
+    const form = new URLSearchParams({
+      automaticEnabled: "disabled",
+      rowVersion: "1",
+      disableConfirmed: "yes",
+    });
+    const anonymous = await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      method: "POST",
+      headers: {
+        origin: ADMIN_ORIGIN,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: form,
+    });
+    expect(anonymous.status).toBe(303);
+    expect(anonymous.headers.get("location")).toBe(`${ADMIN_ORIGIN}/admin/login`);
+    expect((await current.app.request(`${PUBLIC_ORIGIN}/admin/backups`, {
+      method: "POST",
+      headers: {
+        origin: ADMIN_ORIGIN,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: form,
+    })).status).toBe(404);
+
+    const session = await login(current);
+    expect((await current.app.request(`${ADMIN_ORIGIN}/admin/backups`, {
+      method: "POST",
+      headers: {
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: session.csrf, ...Object.fromEntries(form) }),
+    })).status).toBe(403);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT automatic_enabled, row_version FROM backup_settings WHERE singleton = 1
+    `).get()).toEqual({ automatic_enabled: 1, row_version: 1 });
+    expect(current.database.db.sqlite.prepare(`
+      SELECT count(*) count FROM audit_events
+      WHERE action IN ('automatic_backup.enabled', 'automatic_backup.disabled')
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("audits OFF, rejects stale changes, redirects unchanged state, and enables without confirmation", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    current.now = 50_000;
+    const submit = (values: Record<string, string>) => current.app.request(
+      `${ADMIN_ORIGIN}/admin/backups`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ csrf: session.csrf, ...values }),
+      },
+    );
+
+    const disabled = await submit({
+      automaticEnabled: "disabled",
+      rowVersion: "1",
+      disableConfirmed: "yes",
+    });
+    expect(disabled.status).toBe(303);
+    expect(disabled.headers.get("location")).toBe(`${ADMIN_ORIGIN}/admin/backups`);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get()).toEqual({
+      automatic_enabled: 0,
+      row_version: 2,
+      updated_at_ms: 50_000,
+      updated_by_admin_id: "admin-1",
+    });
+    expect(current.database.db.sqlite.prepare(`
+      SELECT actor_id, action, target_type, target_id, metadata_json
+      FROM audit_events WHERE action = 'automatic_backup.disabled'
+    `).get()).toEqual({
+      actor_id: "admin-1",
+      action: "automatic_backup.disabled",
+      target_type: "backup_settings",
+      target_id: "1",
+      metadata_json: JSON.stringify({
+        previousAutomaticEnabled: true,
+        automaticEnabled: false,
+        rowVersion: 2,
+      }),
+    });
+
+    const stale = await submit({
+      automaticEnabled: "disabled",
+      rowVersion: "1",
+      disableConfirmed: "yes",
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain("reload");
+
+    const unchanged = await submit({
+      automaticEnabled: "disabled",
+      rowVersion: "2",
+      disableConfirmed: "yes",
+    });
+    expect(unchanged.status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT count(*) count FROM audit_events
+      WHERE action IN ('automatic_backup.enabled', 'automatic_backup.disabled')
+    `).get()).toEqual({ count: 1 });
+
+    const enabled = await submit({ automaticEnabled: "enabled", rowVersion: "2" });
+    expect(enabled.status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT automatic_enabled, row_version FROM backup_settings WHERE singleton = 1
+    `).get()).toEqual({ automatic_enabled: 1, row_version: 3 });
+    expect(current.database.db.sqlite.prepare(`
+      SELECT count(*) count FROM audit_events
+      WHERE action = 'automatic_backup.enabled'
+    `).get()).toEqual({ count: 1 });
+  });
+});
 
 describe("separate host and administrator browser boundary", () => {
   it("rejects unknown/public admin hosts and trusts forwarded routing only from loopback", async () => {
