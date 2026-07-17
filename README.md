@@ -139,9 +139,10 @@ npm.cmd run dev --workspace @wisdom/control
 - 장애·알림 backlog·monitor 대응: [`ops/runbooks/incidents.md`](ops/runbooks/incidents.md)
 - 동의문 활성화와 policy-only 발행: [`docs/operations/consent-publication.md`](docs/operations/consent-publication.md)
 - Google·Naver·AI 발견성 운영: [`docs/operations/search-discovery.md`](docs/operations/search-discovery.md)
+- 다음 작업자용 남은 작업·중단 조건·검증 순서: [`docs/operations/remaining-work-handoff.md`](docs/operations/remaining-work-handoff.md)
 
 로컬 monitor는 5분 주기로 verified backup freshness, 디스크, launchd 서비스, loopback readiness와 안전한 queue 집계만 검사합니다. 상담 본문이나 연락처는 읽지 않으며, 장애 시 알림 worker와 다른 Keychain HMAC으로 loopback Hermes에 오류 코드와 숫자 메트릭만 전달합니다. Mac·전원·LAN 전체 장애는 로컬 monitor가 보고할 수 없으므로 외부 uptime 감시는 별도 필수입니다.
 
 ## 공개 전 남은 작업
 
-실제 공개 전에는 도메인·DNS·Cloudflare Tunnel, Kakao URL, SMTP와 수신 메일, Hermes·Telegram 목적지, owner MFA 등록, 승인된 4개 언어 개인정보·마케팅 문구, 영문·중문 직함, 12/24개월 보유 범위, Search Console·Naver Search Advisor·IndexNow, FileVault·UPS·전원 복구, 실제 Mac 백업·복구·장애 주입과 외부 uptime 감시를 운영자가 확정해야 합니다. 전체 목록과 완료 증거 형식은 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)를 따릅니다.
+실제 공개 전에는 도메인·DNS·Cloudflare Tunnel, Kakao URL, SMTP와 수신 메일, Hermes·Telegram 목적지, owner MFA 등록, 승인된 4개 언어 개인정보·마케팅 문구, 영문·중문 직함, 12/24개월 보유 범위, Search Console·Naver Search Advisor·IndexNow, FileVault·UPS·전원 복구, 실제 Mac 백업·복구·장애 주입과 외부 uptime 감시를 운영자가 확정해야 합니다. 이어서 구현할 코드·보안 작업은 [`docs/operations/remaining-work-handoff.md`](docs/operations/remaining-work-handoff.md), 전체 운영 입력과 완료 증거 형식은 [`docs/operations/release-candidate.md`](docs/operations/release-candidate.md)를 따릅니다.
