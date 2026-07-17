@@ -127,6 +127,11 @@ test("createMacConfigurationAdapters stages privately and invokes exact bounded 
       },
     });
 
+    assert.equal(
+      adapters.resolveTarget("/etc/newsyslog.d/wisdom-portal.conf", { id: "newsyslog" }),
+      "/private/etc/newsyslog.d/wisdom-portal.conf",
+    );
+
     await adapters.validateExternal({ id: "launchd-control", kind: "plist", source: "<plist/>\n" });
     await adapters.validateExternal({ id: "caddy", kind: "caddy", source: "example.test {}\n" });
     await adapters.validateExternal({ id: "cloudflared", kind: "cloudflared", source: "tunnel: example\n" });

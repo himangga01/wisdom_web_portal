@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rename, unlink } from "node:fs/promises";
+import { isIP } from "node:net";
 import path from "node:path";
 
 import { parseMonitoringConfig } from "./monitoring.mjs";
@@ -107,12 +108,12 @@ const absolutePathNames = Object.freeze([
 ]);
 
 function normalizedPosixAbsolute(value) {
-  return value.length <= 4_096 && path.posix.isAbsolute(value) && path.posix.normalize(value) === value &&
-    !value.includes("//");
+  return value.length <= 4_096 && value !== "/" && !value.endsWith("/") &&
+    path.posix.isAbsolute(value) && path.posix.normalize(value) === value && !value.includes("//");
 }
 
 function validHostname(value) {
-  return value.length <= 253 && value === value.toLowerCase() && !value.endsWith(".") &&
+  return value.length <= 253 && isIP(value) === 0 && value === value.toLowerCase() && !value.endsWith(".") &&
     value.split(".").length >= 2 && value.split(".").every((label) => (
       /^(?=.{1,63}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label)
     ));
@@ -123,7 +124,41 @@ function validPort(value) {
 }
 
 function sameOrNested(left, right) {
-  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+  const leftToRight = path.posix.relative(left, right);
+  const rightToLeft = path.posix.relative(right, left);
+  const nested = (relative) => relative === "" ||
+    (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
+  return nested(leftToRight) || nested(rightToLeft);
+}
+
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+function bech32Polymod(values) {
+  const generators = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let checksum = 1;
+  for (const value of values) {
+    const high = checksum >>> 25;
+    checksum = ((checksum & 0x1ffffff) << 5) ^ value;
+    for (let index = 0; index < generators.length; index += 1) {
+      if (((high >>> index) & 1) !== 0) checksum ^= generators[index];
+    }
+  }
+  return checksum >>> 0;
+}
+
+function validAgeRecipient(value) {
+  if (value.length !== 62 || !value.startsWith("age1")) return false;
+  const encoded = [...value.slice(4)].map((character) => BECH32_CHARSET.indexOf(character));
+  if (encoded.some((entry) => entry < 0) || encoded.length !== 58) return false;
+  const humanReadable = [..."age"];
+  const expanded = [
+    ...humanReadable.map((character) => character.charCodeAt(0) >>> 5),
+    0,
+    ...humanReadable.map((character) => character.charCodeAt(0) & 31),
+  ];
+  const data = encoded.slice(0, -6);
+  return data.length === 52 && (data.at(-1) & 0b1111) === 0 &&
+    bech32Polymod([...expanded, ...encoded]) === 1;
 }
 
 function validateProductionValueContracts(values) {
@@ -139,7 +174,7 @@ function validateProductionValueContracts(values) {
     fail("CONFIG_VALUES_INVALID", "Production ports are invalid");
   }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(values.TUNNEL_ID) ||
-    !/^age1[a-z0-9]{20,100}$/u.test(values.AGE_RECIPIENT) ||
+    !validAgeRecipient(values.AGE_RECIPIENT) ||
     !/^[a-z_][a-z0-9_-]{0,31}$/u.test(values.USER_NAME)) {
     fail("CONFIG_VALUES_INVALID", "Production identity reference is invalid");
   }
@@ -216,13 +251,14 @@ export async function readProductionValuesFile(filePath, { platform = process.pl
     }
     handle = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const before = await handle.stat();
-    const source = await handle.readFile({ encoding: "utf8" });
+    const bytes = await handle.readFile();
     const after = await handle.stat();
-    if (!before.isFile() || before.size > 64 * 1024 || Buffer.byteLength(source, "utf8") > 64 * 1024 ||
+    if (!before.isFile() || before.size > 64 * 1024 || bytes.byteLength > 64 * 1024 ||
       before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
       (platform !== "win32" && (after.mode & 0o077) !== 0)) {
       fail("CONFIG_INPUT_INVALID", "Production values file changed during inspection");
     }
+    const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return parseProductionValues(source);
   } catch (error) {
     if (error?.code === "CONFIG_VALUES_INVALID" || error?.code === "CONFIG_INPUT_INVALID") throw error;
@@ -236,8 +272,8 @@ function sha256(source) {
   return createHash("sha256").update(source).digest("hex");
 }
 
-async function defaultReadExistingTarget(target) {
-  return (await inspectTarget(target))?.bytes;
+async function defaultReadExistingTarget(target, { expectedUid } = {}) {
+  return inspectTarget(target, expectedUid);
 }
 
 function validatedValues(values) {
@@ -249,15 +285,67 @@ function validatedValues(values) {
   }
 }
 
-async function prepareConfiguration({ opsRoot, values, scope }, adapters = {}) {
+async function collectTemplateSources(directory, prefix = "") {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) result.push(...await collectTemplateSources(path.join(directory, entry.name), relative));
+    else if (entry.name.endsWith(".template")) {
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Template inventory contains an unsafe entry");
+      result.push(relative);
+    }
+  }
+  return result.sort();
+}
+
+async function readProtectedTemplate(filePath) {
+  let handle;
+  try {
+    await assertNoSymlinkPath(filePath, "CONFIG_VALIDATION_FAILED");
+    const lexical = await lstat(filePath);
+    if (!lexical.isFile() || lexical.isSymbolicLink() || lexical.size > 64 * 1024) {
+      throw new Error("Template is not a bounded regular file");
+    }
+    handle = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const before = await handle.stat();
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    if (!before.isFile() || bytes.byteLength > 64 * 1024 || !identityMatches(lexical, before) ||
+      !identityMatches(before, after)) throw new Error("Template changed during inspection");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function normalizeExistingTarget(value) {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" || Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return Object.freeze({ bytes: Buffer.from(value), mode: undefined, uid: undefined });
+  }
+  if (value === null || typeof value !== "object" ||
+    (!Buffer.isBuffer(value.bytes) && !(value.bytes instanceof Uint8Array)) ||
+    (value.mode !== undefined && (!Number.isInteger(value.mode) || value.mode < 0 || value.mode > 0o777)) ||
+    (value.uid !== undefined && (!Number.isInteger(value.uid) || value.uid < 0))) {
+    throw new Error("Existing target reader returned invalid data");
+  }
+  return Object.freeze({ ...value, bytes: Buffer.from(value.bytes) });
+}
+
+async function prepareConfiguration({ opsRoot, values, scope, platform }, adapters = {}) {
   if (typeof opsRoot !== "string" || !path.isAbsolute(opsRoot) || path.normalize(opsRoot) !== opsRoot ||
     !["user", "system"].includes(scope)) {
     fail("CONFIG_INPUT_INVALID", "Configuration plan input is invalid");
   }
   const parsedValues = validatedValues(values);
-  const readTemplate = adapters.readTemplate ?? ((filePath) => readFile(filePath, "utf8"));
+  const readTemplate = adapters.readTemplate ?? readProtectedTemplate;
   const readExistingTarget = adapters.readExistingTarget ?? defaultReadExistingTarget;
-  const resolveTarget = adapters.resolveTarget ?? ((target) => target);
+  const effectivePlatform = platform ?? adapters.platform ?? process.platform;
+  const resolveTarget = adapters.resolveTarget ?? ((target, { id }) => (
+    effectivePlatform === "darwin" && id === "newsyslog"
+      ? "/private/etc/newsyslog.d/wisdom-portal.conf"
+      : target
+  ));
   if (typeof readTemplate !== "function" || typeof readExistingTarget !== "function" ||
     typeof resolveTarget !== "function") {
     fail("CONFIG_INPUT_INVALID", "Configuration adapters are invalid");
@@ -265,6 +353,12 @@ async function prepareConfiguration({ opsRoot, values, scope }, adapters = {}) {
 
   const prepared = [];
   try {
+    await assertNoSymlinkPath(opsRoot, "CONFIG_VALIDATION_FAILED");
+    const actualTemplates = await collectTemplateSources(opsRoot);
+    const expectedTemplates = CONFIG_TEMPLATE_DESCRIPTORS.map(({ source }) => source).sort();
+    if (actualTemplates.join("\n") !== expectedTemplates.join("\n")) {
+      throw new Error("Template inventory does not match the fixed manifest");
+    }
     for (const descriptor of CONFIG_TEMPLATE_DESCRIPTORS.filter((entry) => entry.scope === scope)) {
       const templatePath = path.resolve(opsRoot, descriptor.source);
       const template = await readTemplate(templatePath);
@@ -290,10 +384,13 @@ async function prepareConfiguration({ opsRoot, values, scope }, adapters = {}) {
         throw new Error("Resolved target is invalid");
       }
       const bytes = Buffer.from(source, "utf8");
-      const existing = await readExistingTarget(target, { id: descriptor.id, scope });
-      if (existing !== undefined && typeof existing !== "string" && !Buffer.isBuffer(existing) &&
-        !(existing instanceof Uint8Array)) throw new Error("Existing target reader returned invalid data");
-      const existingBytes = existing === undefined ? undefined : Buffer.from(existing);
+      const desiredUid = scope === "system" ? 0 : (adapters.getuid ?? process.getuid)?.();
+      const existing = normalizeExistingTarget(await readExistingTarget(target, {
+        id: descriptor.id,
+        scope,
+        expectedUid: desiredUid,
+      }));
+      if (existing?.uid !== undefined && Number.isInteger(desiredUid) && existing.uid !== desiredUid) targetFailure();
       prepared.push(Object.freeze({
         id: descriptor.id,
         logicalTarget,
@@ -301,7 +398,8 @@ async function prepareConfiguration({ opsRoot, values, scope }, adapters = {}) {
         mode: descriptor.mode,
         source: bytes,
         sha256: sha256(bytes),
-        changed: existingBytes === undefined || !bytes.equals(existingBytes),
+        changed: existing === undefined || !bytes.equals(existing.bytes) ||
+          (existing.mode !== undefined && existing.mode !== descriptor.mode),
       }));
     }
   } catch (error) {
@@ -365,6 +463,9 @@ async function inspectParent(parent, expectedUid, enforcePosixMetadata) {
 async function inspectTarget(target, expectedUid) {
   let handle;
   try {
+    if (path.isAbsolute(target)) {
+      await assertNoSymlinkPath(target, "CONFIG_TARGET_INVALID", { allowMissing: true });
+    }
     const lexical = await lstat(target);
     if (!lexical.isFile() || lexical.isSymbolicLink() || lexical.size > 64 * 1024 ||
       (expectedUid !== undefined && lexical.uid !== expectedUid)) targetFailure();
@@ -389,6 +490,19 @@ async function inspectTarget(target, expectedUid) {
     targetFailure();
   } finally {
     await handle?.close().catch(() => undefined);
+  }
+}
+
+async function parentStillCurrent(parent, snapshot, expectedUid, enforcePosixMetadata) {
+  try {
+    await assertNoSymlinkPath(parent, "CONFIG_TARGET_INVALID");
+    const metadata = await lstat(parent);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.dev !== snapshot.dev ||
+      metadata.ino !== snapshot.ino || metadata.uid !== expectedUid ||
+      (enforcePosixMetadata && (metadata.mode & 0o022) !== 0)) targetFailure();
+  } catch (error) {
+    if (error?.code === "CONFIG_TARGET_INVALID") throw error;
+    targetFailure();
   }
 }
 
@@ -440,6 +554,7 @@ async function defaultSyncParent(parent) {
 }
 
 async function verifyInstalled(artifact, expectedUid, enforcePosixMetadata) {
+  await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
   const snapshot = await inspectTarget(artifact.target, expectedUid);
   if (snapshot === undefined || (enforcePosixMetadata && snapshot.mode !== artifact.mode) ||
     snapshot.size !== artifact.source.byteLength ||
@@ -465,17 +580,20 @@ async function rollbackPublished(published, adapters, expectedUid, enforcePosixM
   const syncParent = adapters.syncParent ?? defaultSyncParent;
   for (const artifact of [...published].reverse()) {
     await adapters.beforeRollback?.({ id: artifact.id, target: artifact.target });
+    await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
     await verifyInstalled(artifact, expectedUid, enforcePosixMetadata);
     if (artifact.previous === undefined) {
       await unlink(artifact.target);
     } else {
       const temporary = await writeSiblingTemporary(artifact.target, artifact.previous.bytes, artifact.previous.mode);
       try {
+        await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
         await rename(temporary, artifact.target);
       } finally {
         await unlink(temporary).catch(() => undefined);
       }
     }
+    await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
     await syncParent(path.dirname(artifact.target));
   }
 }
@@ -498,26 +616,33 @@ export async function installConfiguration(input, adapters = {}) {
   try {
     prepared = [];
     for (const artifact of initiallyPrepared) {
-      await inspectParent(path.dirname(artifact.target), expectedUid, enforcePosixMetadata);
+      const parent = path.dirname(artifact.target);
+      const parentSnapshot = await inspectParent(parent, expectedUid, enforcePosixMetadata);
       const previous = await inspectTarget(artifact.target, expectedUid);
       const changed = previous === undefined || (enforcePosixMetadata && previous.mode !== artifact.mode) ||
         !previous.bytes.equals(artifact.source);
-      const entry = { ...artifact, previous, changed, temporary: undefined };
-      if (changed) {
-        entry.temporary = await writeSiblingTemporary(artifact.target, artifact.source, artifact.mode);
-        staged.push(entry);
-      }
+      const entry = { ...artifact, parent, parentSnapshot, previous, changed, temporary: undefined };
+      if (changed) staged.push(entry);
       prepared.push(entry);
+    }
+
+
+    for (const artifact of staged) {
+      await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
+      await adapters.beforeStage?.({ id: artifact.id, target: artifact.target });
+      artifact.temporary = await writeSiblingTemporary(artifact.target, artifact.source, artifact.mode);
     }
 
     for (let index = 0; index < staged.length; index += 1) {
       const artifact = staged[index];
       await adapters.beforePublish?.({ id: artifact.id, index, target: artifact.target });
+      await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
       await snapshotStillCurrent(artifact.target, artifact.previous);
       mutationStarted = true;
       await rename(artifact.temporary, artifact.target);
       artifact.temporary = undefined;
       published.push(artifact);
+      await parentStillCurrent(artifact.parent, artifact.parentSnapshot, expectedUid, enforcePosixMetadata);
       await (adapters.syncParent ?? defaultSyncParent)(path.dirname(artifact.target));
     }
 
@@ -538,6 +663,10 @@ export async function installConfiguration(input, adapters = {}) {
     }
     fail("CONFIG_INSTALL_FAILED", "Production configuration installation failed");
   } finally {
-    await Promise.allSettled(staged.flatMap(({ temporary }) => temporary ? [unlink(temporary)] : []));
+    await Promise.allSettled(staged.flatMap(({ temporary, parent, parentSnapshot }) => temporary ? [
+      parentStillCurrent(parent, parentSnapshot, expectedUid, enforcePosixMetadata)
+        .then(() => unlink(temporary))
+        .catch(() => undefined),
+    ] : []));
   }
 }

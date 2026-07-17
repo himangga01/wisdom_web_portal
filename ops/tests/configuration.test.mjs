@@ -42,7 +42,7 @@ const fixture = Object.freeze({
   ADMIN_HOST: "admin.example.test",
   ADMIN_DUMMY_PASSWORD_HASH: "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY",
   AGE_BINARY: "/opt/homebrew/bin/age",
-  AGE_RECIPIENT: "age1operatorreplacebeforeinstall",
+  AGE_RECIPIENT: "age1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0savhh7m",
   APEX_HOST: "example.test",
   APP_ROOT: "/Users/wisdom/portal",
   BACKUP_ROOT: "/Users/wisdom/Backups/portal",

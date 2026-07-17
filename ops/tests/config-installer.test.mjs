@@ -19,7 +19,7 @@ const fixtureValues = Object.freeze({
   ADMIN_DUMMY_PASSWORD_HASH: "$argon2id$v=19$m=19456,t=2,p=1$example$dummy-public-hash",
   ADMIN_HOST: "admin.example.test",
   AGE_BINARY: "/opt/homebrew/bin/age",
-  AGE_RECIPIENT: "age1operatorreplacebeforeinstall",
+  AGE_RECIPIENT: "age1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0savhh7m",
   APEX_HOST: "example.test",
   APP_ROOT: "/Users/wisdom/portal",
   BACKUP_ROOT: "/Users/wisdom/Backups/portal",
@@ -98,11 +98,13 @@ test("production values reject malformed scalar and network contracts", () => {
     { schemaVersion: 1, values: { ...fixtureValues, PUBLIC_HOST: "https://www.example.test" } },
     { schemaVersion: 1, values: { ...fixtureValues, PUBLIC_HOST: "WWW.example.test" } },
     { schemaVersion: 1, values: { ...fixtureValues, PUBLIC_HOST: fixtureValues.ADMIN_HOST } },
+    { schemaVersion: 1, values: { ...fixtureValues, PUBLIC_HOST: "127.0.0.2" } },
     { schemaVersion: 1, values: { ...fixtureValues, CADDY_PORT: "08080" } },
     { schemaVersion: 1, values: { ...fixtureValues, CADDY_PORT: "65536" } },
     { schemaVersion: 1, values: { ...fixtureValues, CONTROL_PORT: fixtureValues.CADDY_PORT } },
     { schemaVersion: 1, values: { ...fixtureValues, TUNNEL_ID: "not-a-uuid" } },
-    { schemaVersion: 1, values: { ...fixtureValues, AGE_RECIPIENT: "AGE-SECRET-KEY-1PRIVATE" } },
+    { schemaVersion: 1, values: { ...fixtureValues, AGE_RECIPIENT: "AGE-SECRET-KEY-1" } },
+    { schemaVersion: 1, values: { ...fixtureValues, AGE_RECIPIENT: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" } },
     { schemaVersion: 1, values: { ...fixtureValues, USER_NAME: "../root" } },
   ];
 
@@ -124,6 +126,8 @@ test("production values derive one canonical Mac layout and reject unsafe root o
     { BACKUP_TEMP_ROOT: "/Users/wisdom/Backups/portal/temp" },
     { CODEX_TEMP_ROOT: "/Users/wisdom/Library/Application Support/WisdomPortal" },
     { NODE_BINARY: "/opt/homebrew/bin/../bin/node" },
+    { BACKUP_ROOT: "/" },
+    { BACKUP_ROOT: "/Users/wisdom/Backups/portal/" },
   ];
 
   for (const changes of invalidValues) {
@@ -141,6 +145,12 @@ test("production values file must be a protected bounded regular non-symlink", a
   await writeFile(valid, source, { mode: 0o600 });
 
   assert.deepEqual(await readProductionValuesFile(valid), fixtureValues);
+
+  const malformedUtf8 = path.join(root, "malformed-utf8.json");
+  const malformedBytes = Buffer.from(source, "utf8");
+  malformedBytes[malformedBytes.indexOf("dummy-public-hash")] = 0x80;
+  await writeFile(malformedUtf8, malformedBytes, { mode: 0o600 });
+  await assert.rejects(readProductionValuesFile(malformedUtf8), { code: "CONFIG_INPUT_INVALID" });
   await assert.rejects(readProductionValuesFile("production-values.json"), {
     code: "CONFIG_INPUT_INVALID",
   });
@@ -205,6 +215,26 @@ test("dry-run renders and validates every selected artifact without exposing val
   const systemPlan = await buildConfigurationPlan({ opsRoot, values: fixtureValues, scope: "system" }, adapters);
   assert.equal(systemPlan.artifacts.length, 1);
   assert.deepEqual(externalCalls.map(({ kind }) => kind), ["newsyslog"]);
+});
+
+async function createTemplateFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-config-templates-"));
+  for (const { source } of CONFIG_TEMPLATE_DESCRIPTORS) {
+    const destination = path.join(root, source);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, await readFile(path.join(opsRoot, source)));
+  }
+  return root;
+}
+
+test("runtime planning rejects a repository template outside the fixed inventory", async () => {
+  const fixtureRoot = await createTemplateFixture();
+  await writeFile(path.join(fixtureRoot, "config/unowned.template"), "UNOWNED=value\n");
+
+  await assert.rejects(buildConfigurationPlan({ opsRoot: fixtureRoot, values: fixtureValues, scope: "user" }, {
+    validateExternal: async () => undefined,
+    readExistingTarget: async () => undefined,
+  }), { code: "CONFIG_VALIDATION_FAILED" });
 });
 
 test("configuration planning sanitizes parser, template, and external validation failures", async () => {
@@ -290,7 +320,7 @@ test("install is dry-run first and apply requires platform, privilege, and exact
   }, { getuid: () => 0, validateExternal: async () => undefined }), { code: "CONFIG_TARGET_INVALID" });
 });
 
-async function applyFixture({ beforePublish, beforeRollback, beforeVerify } = {}) {
+async function applyFixture({ beforePublish, beforeRollback, beforeStage, beforeVerify } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-config-install-"));
   await chmod(root, 0o700);
   const owner = (await stat(root)).uid;
@@ -301,6 +331,7 @@ async function applyFixture({ beforePublish, beforeRollback, beforeVerify } = {}
     resolveTarget: (_target, { id }) => physical(id),
     beforePublish,
     beforeRollback,
+    beforeStage,
     beforeVerify,
   };
   const input = {
@@ -316,7 +347,8 @@ async function applyFixture({ beforePublish, beforeRollback, beforeVerify } = {}
 }
 
 test("apply atomically publishes all changed files with exact modes and no temporary residue", async () => {
-  const fixture = await applyFixture();
+  let stageCalls = 0;
+  const fixture = await applyFixture({ beforeStage: async () => { stageCalls += 1; } });
   await writeFile(fixture.physical("runtime"), "previous-runtime\n", { mode: 0o600 });
 
   const result = await installConfiguration(fixture.input, fixture.adapters);
@@ -324,6 +356,7 @@ test("apply atomically publishes all changed files with exact modes and no tempo
   assert.equal(result.applied, true);
   assert.equal(result.artifacts.length, 12);
   assert.ok(result.artifacts.every(({ changed }) => changed));
+  assert.equal(stageCalls, 12);
   assert.match(await readFile(fixture.physical("runtime"), "utf8"), /^NODE_ENV=production$/mu);
   if (process.platform !== "win32") {
     assert.equal((await stat(fixture.physical("runtime"))).mode & 0o777, 0o600);
@@ -373,6 +406,26 @@ test("unchanged reapply preserves file identity and reports no changes", async (
   assert.ok(result.artifacts.every(({ changed }) => changed === false));
   assert.equal(after.ino, before.ino);
   assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
+test("dry-run reports byte-identical files with mode drift as changed", async () => {
+  const fixture = await applyFixture();
+  await installConfiguration(fixture.input, fixture.adapters);
+  const runtimeBytes = await readFile(fixture.physical("runtime"));
+
+  const result = await buildConfigurationPlan({
+    opsRoot,
+    values: fixtureValues,
+    scope: "user",
+  }, {
+    validateExternal: async () => undefined,
+    resolveTarget: fixture.adapters.resolveTarget,
+    readExistingTarget: async (_target, { id }) => id === "runtime"
+      ? { bytes: runtimeBytes, mode: 0o644, uid: fixture.owner }
+      : undefined,
+  });
+
+  assert.equal(result.artifacts.find(({ id }) => id === "runtime").changed, true);
 });
 
 test("post-publication verification failure rolls every changed file back", async () => {

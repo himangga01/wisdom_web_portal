@@ -202,6 +202,9 @@ export function createMacConfigurationAdapters(values, {
   return Object.freeze({
     platform,
     getuid,
+    resolveTarget(target, { id }) {
+      return id === "newsyslog" ? "/private/etc/newsyslog.d/wisdom-portal.conf" : target;
+    },
     async validateExternal({ id, kind, source }) {
       if (!/^[a-z0-9-]{1,64}$/u.test(id) || !["plist", "caddy", "cloudflared", "newsyslog"].includes(kind) ||
         (typeof source !== "string" && !Buffer.isBuffer(source)) ||
