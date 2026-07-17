@@ -4,8 +4,39 @@ import path from "node:path";
 import test from "node:test";
 
 import { renderTemplateFile } from "../lib/templates.mjs";
+import {
+  CONFIG_TEMPLATE_DESCRIPTORS,
+  CONFIG_TOKEN_NAMES,
+  parseProductionValues,
+} from "../lib/config-installer.mjs";
 
 const opsRoot = path.resolve(import.meta.dirname, "..");
+
+async function collectTemplates(directory, prefix = "") {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) result.push(...await collectTemplates(path.join(directory, entry.name), relative));
+    else if (entry.isFile() && entry.name.endsWith(".template")) result.push(relative);
+  }
+  return result.sort();
+}
+
+test("production installer inventory owns every template and every repository token", async () => {
+  const actualTemplates = await collectTemplates(opsRoot);
+  const inventoryTemplates = CONFIG_TEMPLATE_DESCRIPTORS.map(({ source }) => source).sort();
+  assert.deepEqual(actualTemplates, inventoryTemplates);
+
+  const tokens = new Set();
+  for (const relative of actualTemplates) {
+    const source = await readFile(path.join(opsRoot, relative), "utf8");
+    for (const match of source.matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/gu)) tokens.add(match[1]);
+  }
+  assert.deepEqual([...tokens].sort(), [...CONFIG_TOKEN_NAMES]);
+
+  const example = await readFile(path.join(opsRoot, "config/production-values.example.json"), "utf8");
+  assert.deepEqual(Object.keys(parseProductionValues(example)).sort(), [...CONFIG_TOKEN_NAMES]);
+});
 
 const fixture = Object.freeze({
   ADMIN_HOST: "admin.example.test",

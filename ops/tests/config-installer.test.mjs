@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
+  buildConfigurationPlan,
   CONFIG_TEMPLATE_DESCRIPTORS,
   CONFIG_TOKEN_NAMES,
+  installConfiguration,
   parseProductionValues,
   readProductionValuesFile,
 } from "../lib/config-installer.mjs";
+
+const opsRoot = path.resolve(import.meta.dirname, "..");
 
 const fixtureValues = Object.freeze({
   ADMIN_DUMMY_PASSWORD_HASH: "$argon2id$v=19$m=19456,t=2,p=1$example$dummy-public-hash",
@@ -56,6 +60,15 @@ test("production configuration inventory owns all thirteen templates and thirty-
   assert.equal(CONFIG_TOKEN_NAMES.length, 35);
   assert.equal(new Set(CONFIG_TOKEN_NAMES).size, CONFIG_TOKEN_NAMES.length);
   assert.deepEqual(CONFIG_TOKEN_NAMES, [...CONFIG_TOKEN_NAMES].sort());
+  assert.equal(CONFIG_TEMPLATE_DESCRIPTORS.find(({ id }) => id === "runtime").target(fixtureValues), "/Users/wisdom/portal/shared/runtime.env");
+  assert.equal(
+    CONFIG_TEMPLATE_DESCRIPTORS.find(({ id }) => id === "launchd-control").target(fixtureValues),
+    "/Users/wisdom/Library/LaunchAgents/com.jihye.portal.control.plist",
+  );
+  assert.equal(
+    CONFIG_TEMPLATE_DESCRIPTORS.find(({ id }) => id === "newsyslog").target(fixtureValues),
+    "/etc/newsyslog.d/wisdom-portal.conf",
+  );
 });
 
 test("production values require the exact versioned thirty-five-token object", () => {
@@ -164,4 +177,217 @@ test("production values example is exact, parseable, and credential-free", async
 
   assert.deepEqual(Object.keys(parsed).sort(), [...CONFIG_TOKEN_NAMES]);
   assert.doesNotMatch(source, /AGE-SECRET-KEY-1|ghp_[A-Za-z0-9]+|sk-[A-Za-z0-9]{20,}|TELEGRAM.*TOKEN|CODEX_API_KEY/u);
+});
+
+test("dry-run renders and validates every selected artifact without exposing values or targets", async () => {
+  const externalCalls = [];
+  const adapters = {
+    validateExternal: async ({ id, kind, source }) => {
+      externalCalls.push({ id, kind, bytes: Buffer.byteLength(source, "utf8") });
+    },
+    readExistingTarget: async () => undefined,
+  };
+
+  const userPlan = await buildConfigurationPlan({ opsRoot, values: fixtureValues, scope: "user" }, adapters);
+  assert.equal(userPlan.schemaVersion, 1);
+  assert.equal(userPlan.scope, "user");
+  assert.equal(userPlan.applied, false);
+  assert.equal(userPlan.artifacts.length, 12);
+  assert.ok(userPlan.artifacts.every((artifact) => (
+    Object.keys(artifact).sort().join(",") === "changed,id,sha256" &&
+    artifact.changed === true && /^[0-9a-f]{64}$/u.test(artifact.sha256)
+  )));
+  assert.equal(externalCalls.length, 10);
+  assert.deepEqual(new Set(externalCalls.map(({ kind }) => kind)), new Set(["plist", "caddy", "cloudflared"]));
+  assert.doesNotMatch(JSON.stringify(userPlan), /example\.test|\/Users\/wisdom|127\.0\.0\.1/u);
+
+  externalCalls.length = 0;
+  const systemPlan = await buildConfigurationPlan({ opsRoot, values: fixtureValues, scope: "system" }, adapters);
+  assert.equal(systemPlan.artifacts.length, 1);
+  assert.deepEqual(externalCalls.map(({ kind }) => kind), ["newsyslog"]);
+});
+
+test("configuration planning sanitizes parser, template, and external validation failures", async () => {
+  const cases = [
+    {
+      readTemplate: async (templatePath) => templatePath.endsWith("runtime.env.template")
+        ? "UNKNOWN=value\n"
+        : readFile(templatePath, "utf8"),
+      validateExternal: async () => undefined,
+    },
+    {
+      readTemplate: async () => "{{MISSING_TOKEN}}\n",
+      validateExternal: async () => undefined,
+    },
+    {
+      validateExternal: async () => { throw new Error(`validator leaked ${fixtureValues.APEX_HOST}`); },
+    },
+  ];
+
+  for (const adapters of cases) {
+    await assert.rejects(
+      buildConfigurationPlan({ opsRoot, values: fixtureValues, scope: "user" }, {
+        readExistingTarget: async () => undefined,
+        ...adapters,
+      }),
+      (error) => error.code === "CONFIG_VALIDATION_FAILED" &&
+        !error.message.includes(fixtureValues.APEX_HOST) && !error.message.includes("MISSING_TOKEN"),
+    );
+  }
+});
+
+test("dry-run refuses a symlink or non-regular existing target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-config-plan-target-"));
+  const real = path.join(root, "real-runtime");
+  const linked = path.join(root, "linked-runtime");
+  await writeFile(real, "not-the-rendered-value\n");
+  try {
+    await symlink(real, linked);
+  } catch (error) {
+    if (error.code === "EPERM") {
+      t.diagnostic("symlink fixture unavailable on this Windows host");
+      return;
+    }
+    throw error;
+  }
+
+  await assert.rejects(buildConfigurationPlan({ opsRoot, values: fixtureValues, scope: "user" }, {
+    validateExternal: async () => undefined,
+    resolveTarget: (_target, { id }) => id === "runtime" ? linked : path.join(root, `${id}.missing`),
+  }), { code: "CONFIG_TARGET_INVALID" });
+});
+
+test("install is dry-run first and apply requires platform, privilege, and exact confirmations", async () => {
+  const base = { opsRoot, values: fixtureValues, scope: "user" };
+  let mutations = 0;
+  const dryRun = await installConfiguration(base, {
+    validateExternal: async () => undefined,
+    readExistingTarget: async () => undefined,
+    beforePublish: async () => { mutations += 1; },
+  });
+  assert.equal(dryRun.applied, false);
+  assert.equal(mutations, 0);
+
+  for (const changes of [
+    { platform: "win32", confirmAppRoot: fixtureValues.APP_ROOT, confirmUserHome: "/Users/wisdom" },
+    { platform: "darwin", confirmAppRoot: "/Users/wisdom/wrong", confirmUserHome: "/Users/wisdom" },
+    { platform: "darwin", confirmAppRoot: fixtureValues.APP_ROOT, confirmUserHome: "/Users/other" },
+  ]) {
+    await assert.rejects(installConfiguration({ ...base, apply: true, ...changes }, {
+      validateExternal: async () => undefined,
+      readExistingTarget: async () => undefined,
+    }), { code: "CONFIG_TARGET_INVALID" });
+  }
+
+  const system = { opsRoot, values: fixtureValues, scope: "system", apply: true, platform: "darwin" };
+  await assert.rejects(installConfiguration({
+    ...system,
+    confirmSystemTarget: "/etc/newsyslog.d/wisdom-portal.conf",
+  }, { getuid: () => 501, validateExternal: async () => undefined }), { code: "CONFIG_TARGET_INVALID" });
+  await assert.rejects(installConfiguration({
+    ...system,
+    confirmSystemTarget: "/etc/newsyslog.d/wrong.conf",
+  }, { getuid: () => 0, validateExternal: async () => undefined }), { code: "CONFIG_TARGET_INVALID" });
+});
+
+async function applyFixture({ beforePublish, beforeRollback, beforeVerify } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-config-install-"));
+  await chmod(root, 0o700);
+  const owner = (await stat(root)).uid;
+  const physical = (id) => path.join(root, `${id}.installed`);
+  const adapters = {
+    getuid: () => owner,
+    validateExternal: async () => undefined,
+    resolveTarget: (_target, { id }) => physical(id),
+    beforePublish,
+    beforeRollback,
+    beforeVerify,
+  };
+  const input = {
+    opsRoot,
+    values: fixtureValues,
+    scope: "user",
+    apply: true,
+    platform: "darwin",
+    confirmAppRoot: fixtureValues.APP_ROOT,
+    confirmUserHome: "/Users/wisdom",
+  };
+  return { adapters, input, owner, physical, root };
+}
+
+test("apply atomically publishes all changed files with exact modes and no temporary residue", async () => {
+  const fixture = await applyFixture();
+  await writeFile(fixture.physical("runtime"), "previous-runtime\n", { mode: 0o600 });
+
+  const result = await installConfiguration(fixture.input, fixture.adapters);
+
+  assert.equal(result.applied, true);
+  assert.equal(result.artifacts.length, 12);
+  assert.ok(result.artifacts.every(({ changed }) => changed));
+  assert.match(await readFile(fixture.physical("runtime"), "utf8"), /^NODE_ENV=production$/mu);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(fixture.physical("runtime"))).mode & 0o777, 0o600);
+    assert.equal((await stat(fixture.physical("launchd-control"))).mode & 0o777, 0o600);
+  }
+  assert.deepEqual((await readdir(fixture.root)).filter((name) => name.includes(".wisdom-config-")), []);
+});
+
+test("a mid-publication failure restores replaced files, removes created files, and cleans temporary files", async () => {
+  const fixture = await applyFixture({
+    beforePublish: async ({ index }) => {
+      if (index === 2) throw new Error("injected publication failure");
+    },
+  });
+  await writeFile(fixture.physical("runtime"), "previous-runtime\n", { mode: 0o600 });
+
+  await assert.rejects(installConfiguration(fixture.input, fixture.adapters), {
+    code: "CONFIG_INSTALL_FAILED",
+  });
+  assert.equal(await readFile(fixture.physical("runtime"), "utf8"), "previous-runtime\n");
+  await assert.rejects(lstat(fixture.physical("monitoring")), { code: "ENOENT" });
+  assert.deepEqual((await readdir(fixture.root)).filter((name) => name.includes(".wisdom-config-")), []);
+});
+
+test("rollback failure has a distinct sanitized fatal code", async () => {
+  const fixture = await applyFixture({
+    beforePublish: async ({ index }) => {
+      if (index === 1) throw new Error("injected publication failure");
+    },
+    beforeRollback: async () => { throw new Error(`rollback leaked ${fixtureValues.APP_ROOT}`); },
+  });
+  await writeFile(fixture.physical("runtime"), "previous-runtime\n", { mode: 0o600 });
+
+  await assert.rejects(installConfiguration(fixture.input, fixture.adapters), (error) => (
+    error.code === "CONFIG_ROLLBACK_FAILED" && !error.message.includes(fixtureValues.APP_ROOT)
+  ));
+});
+
+test("unchanged reapply preserves file identity and reports no changes", async () => {
+  const fixture = await applyFixture();
+  await installConfiguration(fixture.input, fixture.adapters);
+  const before = await stat(fixture.physical("runtime"));
+
+  const result = await installConfiguration(fixture.input, fixture.adapters);
+  const after = await stat(fixture.physical("runtime"));
+
+  assert.ok(result.artifacts.every(({ changed }) => changed === false));
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
+test("post-publication verification failure rolls every changed file back", async () => {
+  let verificationCalls = 0;
+  const fixture = await applyFixture({
+    beforeVerify: async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 1) throw new Error("injected verification failure");
+    },
+  });
+  await writeFile(fixture.physical("runtime"), "previous-runtime\n", { mode: 0o600 });
+
+  await assert.rejects(installConfiguration(fixture.input, fixture.adapters), {
+    code: "CONFIG_INSTALL_FAILED",
+  });
+  assert.equal(await readFile(fixture.physical("runtime"), "utf8"), "previous-runtime\n");
+  await assert.rejects(lstat(fixture.physical("monitoring")), { code: "ENOENT" });
 });

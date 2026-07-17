@@ -43,9 +43,9 @@ function integer(value, minimum, maximum) {
   return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 }
 
-function absolutePath(value) {
-  return typeof value === "string" && value.length <= 4_096 && path.isAbsolute(value) &&
-    !/[\0\r\n]/u.test(value) && path.normalize(value) === value;
+function absolutePath(value, pathApi = path) {
+  return typeof value === "string" && value.length <= 4_096 && pathApi.isAbsolute(value) &&
+    !/[\0\r\n]/u.test(value) && pathApi.normalize(value) === value;
 }
 
 function parsedUrl(value, code) {
@@ -64,7 +64,7 @@ function literalLoopback(url) {
     : version === 6 && hostname === "::1";
 }
 
-function validateConfig(value) {
+function validateConfig(value, pathApi = path) {
   if (!exactKeys(value, ["externalPublic", "local"])) fail("MONITOR_CONFIG_INVALID", "Monitoring config keys are invalid");
   const external = value.externalPublic;
   const local = value.local;
@@ -82,15 +82,15 @@ function validateConfig(value) {
     external.expectedText.length < 1 || external.expectedText.length > 128 || /[\0\r\n]/u.test(external.expectedText)
   ) fail("MONITOR_CONFIG_INVALID", "External uptime contract is invalid");
 
-  if (![local.backupRoot, local.databasePath, local.diskPath].every(absolutePath)) {
+  if (![local.backupRoot, local.databasePath, local.diskPath].every((value) => absolutePath(value, pathApi))) {
     fail("MONITOR_CONFIG_INVALID", "Local monitoring paths must be normalized absolute paths");
   }
   const incidentState = local.incidentState;
   if (
-    !exactKeys(incidentState, ["cooldownMinutes", "path"]) || !absolutePath(incidentState.path) ||
+    !exactKeys(incidentState, ["cooldownMinutes", "path"]) || !absolutePath(incidentState.path, pathApi) ||
     !integer(incidentState.cooldownMinutes, 1, 1_440) ||
-    path.dirname(local.databasePath) !== local.diskPath ||
-    path.dirname(incidentState.path) !== local.diskPath ||
+    pathApi.dirname(local.databasePath) !== local.diskPath ||
+    pathApi.dirname(incidentState.path) !== local.diskPath ||
     incidentState.path === local.databasePath
   ) fail("MONITOR_CONFIG_INVALID", "Monitor database and incident state must be bounded direct children of the data root");
   const readyUrl = parsedUrl(local.controlReadyUrl, "MONITOR_CONFIG_INVALID");
@@ -144,7 +144,7 @@ function validateConfig(value) {
   return value;
 }
 
-export function parseMonitoringConfig(source) {
+export function parseMonitoringConfig(source, { pathApi = path } = {}) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_CONFIG_BYTES || source.includes("\0")) {
     fail("MONITOR_CONFIG_INVALID", "Monitoring config is invalid or too large");
   }
@@ -154,7 +154,7 @@ export function parseMonitoringConfig(source) {
   } catch {
     fail("MONITOR_CONFIG_INVALID", "Monitoring config must be JSON");
   }
-  return validateConfig(value);
+  return validateConfig(value, pathApi);
 }
 
 export async function loadMonitoringConfigFile(configPath) {
