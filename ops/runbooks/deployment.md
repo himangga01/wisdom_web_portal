@@ -1,5 +1,7 @@
 # macOS 배포 운영 절차
 
+실장비 최초 준비, 필요한 계정·발급값·Keychain 비밀과 공개 차단 항목은 먼저 [`docs/operations/mac-mini-setup.md`](../../docs/operations/mac-mini-setup.md)를 따른다. 이 런북은 검증된 입력과 설치 파일이 준비된 뒤의 간결한 배포·rollback 절차다.
+
 ## 운영 경계
 
 - Apple silicon Mac mini, macOS, Node.js 24, SQLite 3.51.3 이상을 전제로 한다. 배포 시 실제 SQLite 버전을 기록하며 예상 버전 3.53.2를 맹신하지 않는다.

@@ -5,15 +5,17 @@
 ## 처음 읽을 문서
 
 1. [`README.md`](../README.md): 시스템 구성, 설치·검증, 주요 기능과 Mac mini 운영 개요
-2. [`docs/superpowers/plans/2026-07-15-production-portal.md`](superpowers/plans/2026-07-15-production-portal.md): Task 1~8의 승인된 구현 범위와 전역 제약
-3. [`docs/operations/release-candidate.md`](operations/release-candidate.md): 구현 추적표, 실제 공개 전 필수 입력과 실기기 점검
-4. [`AGENT.md`](../AGENT.md): 구현 결정과 작업 단위별 기술 기록
-5. [`work-log.md`](../work-log.md): 날짜순 작업·검증 이력
+2. [`docs/operations/mac-mini-setup.md`](operations/mac-mini-setup.md): Mac mini M4 계정·발급값·비밀 인벤토리, 설치 순서, 공개 차단 항목, backup/restore와 cold-boot 인수
+3. [`docs/superpowers/plans/2026-07-15-production-portal.md`](superpowers/plans/2026-07-15-production-portal.md): Task 1~8의 승인된 구현 범위와 전역 제약
+4. [`docs/operations/release-candidate.md`](operations/release-candidate.md): 구현 추적표, 실제 공개 전 필수 입력과 실기기 점검
+5. [`AGENT.md`](../AGENT.md): 구현 결정과 작업 단위별 기술 기록
+6. [`work-log.md`](../work-log.md): 날짜순 작업·검증 이력
 
 ## 운영 런북
 
 | 상황 | 문서 | 핵심 내용 |
 |---|---|---|
+| 최초 Mac 실장비 준비·인수 | [`docs/operations/mac-mini-setup.md`](operations/mac-mini-setup.md) | 외부 계정·운영 결정·로컬 비밀, FileVault/age/PII 경계, 정확한 명령과 중단 조건, 8개 공개 차단 항목 |
 | 최초 설치·배포·rollback | [`ops/runbooks/deployment.md`](../ops/runbooks/deployment.md) | no-Docker Mac, Caddy/cloudflared/launchd, Keychain, application·public release 포인터, preflight와 guarded lock 복구 |
 | 동의문 변경·발행 | [`docs/operations/consent-publication.md`](operations/consent-publication.md) | 4개 언어 개인정보·마케팅 8문서, bundle 활성화, policy-only 발행, release authority와 rollback |
 | 검색 등록·발견성 | [`docs/operations/search-discovery.md`](operations/search-discovery.md) | canonical/hreflang, JSON-LD, sitemap/RSS/robots, Google·Naver 소유권 확인, IndexNow |

@@ -455,3 +455,94 @@ test("runbooks and release gate require local monitor and independent external u
   assert.match(releaseCandidate, /Mac.*LAN 밖[\s\S]*별도/i);
   assert.match(incidents, /Telegram bot[\s\S]*직접 호출하지 않는다/i);
 });
+
+test("Mac mini guide inventories inputs, uses real commands, and names every launch blocker", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+
+  for (const required of [
+    "외부 발급",
+    "운영자 결정",
+    "Mac 로컬 생성",
+    "민감도",
+    "저장 위치",
+    "검증 방법",
+    "분실 영향",
+    "AGE-SECRET-KEY-1",
+    "PII_ENCRYPTION_KEY",
+    "FileVault",
+    "Cloudflare Tunnel",
+    "Google Search Console",
+    "Naver Search Advisor",
+    "IndexNow",
+    "SMTP",
+    "Hermes",
+    "Telegram",
+    "TOTP",
+    "recovery code",
+    "Codex",
+    "npm run verify",
+    "--automatic-backup-after-restore",
+    "BACKUP_ADMIN_DISABLED",
+    "공개 전 구현 필요",
+    "현재 수동 검증 가능",
+  ]) assert.match(guide, new RegExp(required, "i"), required);
+
+  const commandText = guide
+    .replace(/\\\r?\n\s*/gu, " ")
+    .replaceAll('"', "")
+    .replace(/\s+/gu, " ");
+  for (const commandContract of [
+    "secret-bootstrap.mjs --account",
+    "secret-import.mjs --account",
+    "seed-public.mjs --source-dist",
+    "preflight.mjs --monitor-config",
+    "deploy.mjs --source",
+    "monitor.mjs --config",
+    "--validate-only",
+    "--dry-run",
+    "admin:bootstrap",
+    "admin:mfa-replace",
+    "/admin/publish",
+    "/admin/backups",
+    "backup.mjs",
+    "restore.mjs",
+    "--confirm-destroy",
+    "launchctl print gui/$PORTAL_UID",
+  ]) assert.ok(commandText.includes(commandContract), commandContract);
+
+  for (const blocker of [
+    "production template render/install CLI",
+    "first normal publication bootstrap",
+    "Kakao URL publication allowlist",
+    "Hermes HMAC provisioning",
+    "tunnel-off Host-aware health probe",
+    "all-Keychain offline recovery bundle",
+    "automatic offsite backup replication",
+    "stale PUBLIC_ORIGINS README mismatch",
+  ]) assert.ok(guide.includes(blocker), blocker);
+
+  for (const notRequired of [
+    "Docker 계정·설치: 불필요",
+    "WordPress 계정: 불필요",
+    "Caddy 계정: 불필요",
+    "age 서비스 계정: 불필요",
+    "공유기 inbound port forwarding: 불필요",
+    "수동 TLS 인증서: 불필요",
+    "Kakao Developers API: 단순 링크에는 불필요",
+    "Penpot 운영 runtime 접근: 불필요",
+  ]) assert.ok(guide.includes(notRequired), notRequired);
+});
+
+test("operator entry points link the Mac guide and document only the singular public origin key", async () => {
+  const readme = await readFile(path.resolve(opsRoot, "../README.md"), "utf8");
+  const documentMap = await readFile(path.resolve(opsRoot, "../docs/00-document-map.md"), "utf8");
+  const deployment = await readFile(path.join(opsRoot, "runbooks/deployment.md"), "utf8");
+  const recovery = await readFile(path.join(opsRoot, "runbooks/recovery.md"), "utf8");
+
+  assert.match(readme, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(documentMap, /operations\/mac-mini-setup\.md/u);
+  assert.match(deployment, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(recovery, /docs\/operations\/mac-mini-setup\.md/u);
+  assert.match(readme, /`PUBLIC_ORIGIN`/u);
+  assert.doesNotMatch(readme, /\bPUBLIC_ORIGINS\b/u);
+});

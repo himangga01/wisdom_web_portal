@@ -1,5 +1,7 @@
 # 백업·복구 훈련
 
+age/PII/FileVault 키 경계, 자동 백업 ON/OFF, Keychain 준비, 별도 target drill과 cold-boot 인수는 [`docs/operations/mac-mini-setup.md`](../../docs/operations/mac-mini-setup.md)를 먼저 따른다. 이 런북은 실제 사고와 정기 훈련 때의 간결한 복구 계약이다.
+
 ## Bounded restore and retention work
 
 Restore-time expiry enforcement enables SQLite `secure_delete` before changing staged data.
