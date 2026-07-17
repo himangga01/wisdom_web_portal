@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { applyBackupRetention, createOnlineBackup } from "../lib/backup.mjs";
+import { automaticBackupDecision } from "../lib/backup-control.mjs";
 import {
   acquireDatabaseMaintenanceLock,
   databaseMaintenanceLockPath,
@@ -35,6 +36,12 @@ function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptEr
       }),
       schemaCompatible: async ({ schemaVersion }) => schemaVersion === 3,
       enforceRetention: async () => ({ purgedCount: 0 }),
+      readBackupControl: async () => ({ automaticEnabled: true, rowVersion: 1, updatedAtMs: 0 }),
+      applyBackupControl: async (_databasePath, { automaticEnabled, nowMs }) => ({
+        automaticEnabled,
+        rowVersion: 2,
+        updatedAtMs: nowMs,
+      }),
     },
     age: {
       encrypt: async ({ input, output }) => {
@@ -52,6 +59,53 @@ function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptEr
         }
         await writeFile(output, Buffer.from(data.subarray(prefix.length).map((byte) => byte ^ 0xaa)));
       },
+    },
+  };
+}
+
+async function createPolicyRestoreFixture(name, {
+  backupAutomaticEnabled,
+  targetAutomaticEnabled,
+} = {}) {
+  const root = await fixtureDirectory(name);
+  const sourceDb = path.join(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  const now = new Date("2026-07-17T08:09:10.000Z");
+  await writeFile(sourceDb, JSON.stringify({
+    schemaVersion: 3,
+    automaticEnabled: backupAutomaticEnabled,
+    marker: "restored",
+  }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-17T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, JSON.stringify({
+    schemaVersion: 3,
+    automaticEnabled: targetAutomaticEnabled,
+    marker: "original",
+  }));
+  return {
+    root,
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    now,
+    input: {
+      backupRoot,
+      backup: backup.hourlyArtifact,
+      target,
+      tempRoot: path.join(root, "restore-temp"),
+      ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+      confirmDestroy: path.resolve(target),
+      dryRun: false,
+      now,
     },
   };
 }
@@ -624,6 +678,345 @@ test("restore is dry-run by default and apply requires exact absolute target con
   assert.throws(() => planRestore({ backupRoot, backup, target: "portal.sqlite", tempRoot }), { code: "RESTORE_INPUT_INVALID" });
 });
 
+test("restore policy resolution preserves readable current state and only falls back when unreadable", async () => {
+  const { resolveRestoreAutomaticBackupPolicy } = await import("../lib/restore.mjs");
+  const target = path.join(path.parse(process.cwd()).root, "fixture", "portal.sqlite");
+
+  assert.deepEqual(await resolveRestoreAutomaticBackupPolicy({ target }, {
+    readBackupControl: async () => ({ automaticEnabled: true, rowVersion: 4, updatedAtMs: 10 }),
+  }), { automaticEnabled: true, source: "current-target" });
+  assert.deepEqual(await resolveRestoreAutomaticBackupPolicy({ target, explicitMode: false }, {
+    readBackupControl: async () => {
+      throw Object.assign(new Error("unreadable"), { code: "BACKUP_CONTROL_INVALID" });
+    },
+  }), { automaticEnabled: false, source: "explicit" });
+  await assert.rejects(resolveRestoreAutomaticBackupPolicy({ target }, {
+    readBackupControl: async () => {
+      throw Object.assign(new Error("unreadable"), { code: "BACKUP_CONTROL_INVALID" });
+    },
+  }), { code: "RESTORE_BACKUP_POLICY_REQUIRED" });
+  await assert.rejects(resolveRestoreAutomaticBackupPolicy({ target, explicitMode: false }, {
+    readBackupControl: async () => ({ automaticEnabled: true, rowVersion: 4, updatedAtMs: 10 }),
+  }), { code: "RESTORE_BACKUP_POLICY_CONFLICT" });
+});
+
+test("restore rejects an unsafe target before reading its backup policy", async () => {
+  const fixture = await createPolicyRestoreFixture("restore-policy-unsafe-target", {
+    backupAutomaticEnabled: true,
+    targetAutomaticEnabled: false,
+  });
+  await rm(fixture.target);
+  await mkdir(fixture.target);
+  const adapters = fakeAdapters();
+  let policyReads = 0;
+  let decrypts = 0;
+  adapters.sqlite.readBackupControl = async () => {
+    policyReads += 1;
+    return { automaticEnabled: false, rowVersion: 1, updatedAtMs: 0 };
+  };
+  const originalDecrypt = adapters.age.decrypt;
+  adapters.age.decrypt = async (input) => {
+    decrypts += 1;
+    return originalDecrypt(input);
+  };
+
+  await assert.rejects(restoreBackup(fixture.input, {
+    ...adapters,
+    services: {
+      assertStopped: async () => undefined,
+      start: async () => undefined,
+      checkReady: async () => undefined,
+    },
+  }), { code: "RESTORE_TARGET_UNSAFE" });
+
+  assert.equal(policyReads, 0);
+  assert.equal(decrypts, 0);
+});
+
+test("restore applies the current target policy after retention and before final inspection", async (t) => {
+  for (const scenario of [
+    { name: "backup OFF and current ON", backupAutomaticEnabled: false, targetAutomaticEnabled: true },
+    { name: "backup ON and current OFF", backupAutomaticEnabled: true, targetAutomaticEnabled: false },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = await createPolicyRestoreFixture(`restore-policy-${scenario.name.replaceAll(" ", "-")}`, scenario);
+      const adapters = fakeAdapters();
+      const calls = [];
+      const originalDecrypt = adapters.age.decrypt;
+      const originalInspect = adapters.sqlite.inspect;
+      let appliedControl;
+      adapters.age.decrypt = async (input) => {
+        calls.push(["decrypt"]);
+        return originalDecrypt(input);
+      };
+      adapters.sqlite.readBackupControl = async (databasePath) => {
+        calls.push(["read-policy", databasePath]);
+        assert.equal(databasePath, fixture.target);
+        return {
+          automaticEnabled: scenario.targetAutomaticEnabled,
+          rowVersion: 7,
+          updatedAtMs: 1,
+        };
+      };
+      adapters.sqlite.inspect = async (databasePath) => {
+        calls.push(["inspect", path.basename(databasePath)]);
+        return originalInspect(databasePath);
+      };
+      adapters.sqlite.enforceRetention = async (databasePath, nowMs) => {
+        calls.push(["retention", path.basename(databasePath), nowMs]);
+        return { purgedCount: 0 };
+      };
+      adapters.sqlite.applyBackupControl = async (databasePath, input) => {
+        calls.push(["apply-policy", path.basename(databasePath), input]);
+        const staged = JSON.parse(await readFile(databasePath, "utf8"));
+        assert.equal(staged.automaticEnabled, scenario.backupAutomaticEnabled);
+        staged.automaticEnabled = input.automaticEnabled;
+        await writeFile(databasePath, JSON.stringify(staged));
+        appliedControl = {
+          automaticEnabled: input.automaticEnabled,
+          rowVersion: 8,
+          updatedAtMs: input.nowMs,
+        };
+        return appliedControl;
+      };
+
+      const result = await restoreBackup(fixture.input, {
+        ...adapters,
+        services: {
+          assertStopped: async () => calls.push(["stopped"]),
+          stop: async () => calls.push(["stop"]),
+          start: async () => calls.push(["start"]),
+          checkReady: async () => calls.push(["ready"]),
+        },
+      });
+
+      assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).automaticEnabled, scenario.targetAutomaticEnabled);
+      assert.equal(result.automaticBackupAfterRestore, scenario.targetAutomaticEnabled);
+      assert.equal(result.automaticBackupPolicySource, "current-target");
+      assert.equal("backupControl" in result, false);
+      const labels = calls.map(([label]) => label);
+      assert.deepEqual(labels.slice(0, 4), ["stopped", "stop", "stopped", "read-policy"]);
+      assert.ok(labels.indexOf("read-policy") < labels.indexOf("decrypt"));
+      assert.ok(labels.indexOf("retention") < labels.indexOf("apply-policy"));
+      assert.ok(labels.indexOf("apply-policy") < labels.lastIndexOf("inspect"));
+      assert.ok(labels.lastIndexOf("inspect") < labels.lastIndexOf("stopped"));
+      const applyInput = calls.find(([label]) => label === "apply-policy")[2];
+      assert.equal(applyInput.nowMs, fixture.now.valueOf());
+      assert.match(applyInput.requestId, /^restore-policy-\d{8}T\d{6}Z$/u);
+      if (scenario.targetAutomaticEnabled) {
+        assert.equal(automaticBackupDecision({
+          control: appliedControl,
+          newestVerified: { createdAt: new Date(fixture.now.valueOf() - 1).toISOString() },
+          now: fixture.now,
+        }), "run");
+      }
+    });
+  }
+});
+
+test("unreadable target policy requires an explicit mode before decrypt or quarantine", async () => {
+  const fixture = await createPolicyRestoreFixture("restore-policy-required", {
+    backupAutomaticEnabled: true,
+    targetAutomaticEnabled: false,
+  });
+  const adapters = fakeAdapters();
+  const calls = [];
+  let decryptCalled = false;
+  adapters.sqlite.readBackupControl = async () => {
+    calls.push("read-policy");
+    throw Object.assign(new Error("unreadable"), { code: "BACKUP_CONTROL_INVALID" });
+  };
+  adapters.age.decrypt = async () => { decryptCalled = true; };
+
+  await assert.rejects(restoreBackup(fixture.input, {
+    ...adapters,
+    services: {
+      assertStopped: async () => calls.push("stopped"),
+      stop: async () => calls.push("stop"),
+      start: async () => calls.push("start"),
+      checkReady: async () => calls.push("ready"),
+    },
+  }), { code: "RESTORE_BACKUP_POLICY_REQUIRED" });
+
+  assert.deepEqual(calls, ["stopped", "stop", "stopped", "read-policy", "start", "ready"]);
+  assert.equal(decryptCalled, false);
+  assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).marker, "original");
+  assert.equal((await readdir(path.dirname(fixture.target))).some((name) => name.includes(".quarantine-")), false);
+});
+
+test("a physically missing target requires an explicit mode before decrypt", async () => {
+  const fixture = await createPolicyRestoreFixture("restore-policy-missing-target", {
+    backupAutomaticEnabled: true,
+    targetAutomaticEnabled: false,
+  });
+  await rm(fixture.target);
+  const adapters = fakeAdapters();
+  const sqlite = createSqliteAdapter();
+  let decrypts = 0;
+  adapters.sqlite.readBackupControl = sqlite.readBackupControl;
+  adapters.age.decrypt = async () => { decrypts += 1; };
+
+  await assert.rejects(restoreBackup(fixture.input, {
+    ...adapters,
+    services: { assertStopped: async () => undefined },
+  }), { code: "RESTORE_BACKUP_POLICY_REQUIRED" });
+
+  assert.equal(decrypts, 0);
+  await assert.rejects(lstat(fixture.target), { code: "ENOENT" });
+  assert.equal((await readdir(path.dirname(fixture.target))).some((name) => name.includes(".quarantine-")), false);
+});
+
+test("unreadable target policy accepts explicit enabled and disabled modes", async (t) => {
+  for (const explicitMode of [true, false]) {
+    await t.test(explicitMode ? "enabled" : "disabled", async () => {
+      const fixture = await createPolicyRestoreFixture(`restore-policy-explicit-${explicitMode}`, {
+        backupAutomaticEnabled: !explicitMode,
+        targetAutomaticEnabled: !explicitMode,
+      });
+      const adapters = fakeAdapters();
+      let appliedMode;
+      adapters.sqlite.readBackupControl = async () => {
+        throw Object.assign(new Error("unreadable"), { code: "BACKUP_CONTROL_INVALID" });
+      };
+      adapters.sqlite.applyBackupControl = async (databasePath, input) => {
+        appliedMode = input.automaticEnabled;
+        const staged = JSON.parse(await readFile(databasePath, "utf8"));
+        staged.automaticEnabled = input.automaticEnabled;
+        await writeFile(databasePath, JSON.stringify(staged));
+        return { automaticEnabled: input.automaticEnabled, rowVersion: 2, updatedAtMs: input.nowMs };
+      };
+
+      const result = await restoreBackup({
+        ...fixture.input,
+        automaticBackupAfterRestore: explicitMode,
+      }, {
+        ...adapters,
+        services: {
+          assertStopped: async () => undefined,
+          start: async () => undefined,
+          checkReady: async () => undefined,
+        },
+      });
+
+      assert.equal(appliedMode, explicitMode);
+      assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).automaticEnabled, explicitMode);
+      assert.equal(result.automaticBackupAfterRestore, explicitMode);
+      assert.equal(result.automaticBackupPolicySource, "explicit");
+    });
+  }
+});
+
+test("conflicting explicit policy fails before decrypt or quarantine in both directions", async (t) => {
+  for (const currentMode of [true, false]) {
+    await t.test(currentMode ? "current ON and explicit disabled" : "current OFF and explicit enabled", async () => {
+      const fixture = await createPolicyRestoreFixture(`restore-policy-conflict-${currentMode}`, {
+        backupAutomaticEnabled: !currentMode,
+        targetAutomaticEnabled: currentMode,
+      });
+      const adapters = fakeAdapters();
+      let decryptCalled = false;
+      adapters.sqlite.readBackupControl = async () => ({
+        automaticEnabled: currentMode,
+        rowVersion: 3,
+        updatedAtMs: 1,
+      });
+      adapters.age.decrypt = async () => { decryptCalled = true; };
+
+      await assert.rejects(restoreBackup({
+        ...fixture.input,
+        automaticBackupAfterRestore: !currentMode,
+      }, {
+        ...adapters,
+        services: {
+          assertStopped: async () => undefined,
+          start: async () => undefined,
+          checkReady: async () => undefined,
+        },
+      }), { code: "RESTORE_BACKUP_POLICY_CONFLICT" });
+
+      assert.equal(decryptCalled, false);
+      assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).marker, "original");
+      assert.equal((await readdir(path.dirname(fixture.target))).some((name) => name.includes(".quarantine-")), false);
+    });
+  }
+});
+
+test("staged policy or audit failure never replaces or quarantines the target", async () => {
+  const fixture = await createPolicyRestoreFixture("restore-policy-apply-failure", {
+    backupAutomaticEnabled: true,
+    targetAutomaticEnabled: false,
+  });
+  const adapters = fakeAdapters();
+  const calls = [];
+  const originalInspect = adapters.sqlite.inspect;
+  adapters.sqlite.readBackupControl = async () => ({ automaticEnabled: false, rowVersion: 1, updatedAtMs: 0 });
+  adapters.sqlite.enforceRetention = async () => {
+    calls.push("retention");
+    return { purgedCount: 0 };
+  };
+  adapters.sqlite.applyBackupControl = async () => {
+    calls.push("apply-policy");
+    throw Object.assign(new Error("audit insert failed"), { code: "BACKUP_CONTROL_INVALID" });
+  };
+  adapters.sqlite.inspect = async (databasePath) => {
+    calls.push("inspect");
+    return originalInspect(databasePath);
+  };
+
+  await assert.rejects(restoreBackup(fixture.input, {
+    ...adapters,
+    services: {
+      assertStopped: async () => calls.push("stopped"),
+      stop: async () => calls.push("stop"),
+      start: async () => calls.push("start"),
+      checkReady: async () => calls.push("ready"),
+    },
+  }), { code: "BACKUP_CONTROL_INVALID" });
+
+  assert.ok(calls.indexOf("retention") < calls.indexOf("apply-policy"));
+  assert.equal(calls.filter((call) => call === "inspect").length, 1);
+  assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).marker, "original");
+  assert.equal((await readdir(path.dirname(fixture.target))).some((name) => name.includes(".quarantine-")), false);
+});
+
+test("readiness rollback restores the original target policy", async () => {
+  const fixture = await createPolicyRestoreFixture("restore-policy-readiness-rollback", {
+    backupAutomaticEnabled: true,
+    targetAutomaticEnabled: false,
+  });
+  const originalTarget = await readFile(fixture.target, "utf8");
+  const adapters = fakeAdapters();
+  let applied = false;
+  let readinessChecks = 0;
+  adapters.sqlite.readBackupControl = async () => ({ automaticEnabled: false, rowVersion: 5, updatedAtMs: 2 });
+  adapters.sqlite.applyBackupControl = async (databasePath, input) => {
+    applied = true;
+    const staged = JSON.parse(await readFile(databasePath, "utf8"));
+    staged.automaticEnabled = input.automaticEnabled;
+    await writeFile(databasePath, JSON.stringify(staged));
+    return { automaticEnabled: false, rowVersion: 6, updatedAtMs: input.nowMs };
+  };
+
+  await assert.rejects(restoreBackup(fixture.input, {
+    ...adapters,
+    services: {
+      assertStopped: async () => undefined,
+      stop: async () => undefined,
+      start: async () => undefined,
+      checkReady: async () => {
+        readinessChecks += 1;
+        if (readinessChecks === 1) {
+          throw Object.assign(new Error("restored service not ready"), { code: "RESTORED_SERVICE_NOT_READY" });
+        }
+      },
+    },
+  }), { code: "RESTORED_SERVICE_NOT_READY" });
+
+  assert.equal(applied, true);
+  assert.equal(await readFile(fixture.target, "utf8"), originalTarget);
+  assert.equal(JSON.parse(await readFile(fixture.target, "utf8")).automaticEnabled, false);
+});
+
 test("restore rejects a verified hash when the encrypted byte count does not match", async () => {
   const root = await fixtureDirectory("restore-size-mismatch");
   const backupRoot = path.join(root, "backups");
@@ -1062,6 +1455,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
     tempRoot: path.join(root, "restore-temp"),
     ageIdentity: "AGE-SECRET-KEY-FIXTURE",
     confirmDestroy: path.resolve(target),
+    automaticBackupAfterRestore: true,
     dryRun: false,
   }, {
     sqlite,
@@ -1103,6 +1497,14 @@ test("restore rejects stale SQLite sidecars before decrypting", async () => {
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "old");
   await writeFile(`${target}-wal`, "stale-wal");
+  const adapters = fakeAdapters();
+  let policyReads = 0;
+  let decrypts = 0;
+  adapters.sqlite.readBackupControl = async () => {
+    policyReads += 1;
+    return { automaticEnabled: true, rowVersion: 1, updatedAtMs: 0 };
+  };
+  adapters.age.decrypt = async () => { decrypts += 1; };
 
   await assert.rejects(restoreBackup({
     backupRoot,
@@ -1113,9 +1515,11 @@ test("restore rejects stale SQLite sidecars before decrypting", async () => {
     confirmDestroy: path.resolve(target),
     dryRun: false,
   }, {
-    ...fakeAdapters(),
+    ...adapters,
     services: { assertStopped: async () => undefined },
   }), { code: "RESTORE_SIDECAR_PRESENT" });
+  assert.equal(policyReads, 0);
+  assert.equal(decrypts, 0);
   assert.equal(await readFile(target, "utf8"), "old");
 });
 

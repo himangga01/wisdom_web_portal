@@ -108,6 +108,12 @@ export function planRestore(input) {
     fail("RESTORE_INPUT_INVALID", "Restore paths violate isolation rules");
   }
   const dryRun = input.dryRun !== false;
+  if (
+    input.automaticBackupAfterRestore !== undefined &&
+    typeof input.automaticBackupAfterRestore !== "boolean"
+  ) {
+    fail("RESTORE_INPUT_INVALID", "Restore backup policy fallback is invalid");
+  }
   if (!dryRun && input.confirmDestroy !== target) {
     fail("RESTORE_CONFIRMATION_MISMATCH", "--confirm-destroy must exactly equal the resolved target");
   }
@@ -118,8 +124,34 @@ export function planRestore(input) {
     status: backup.replace(/\.age$/u, ".json"),
     target,
     tempRoot,
-    steps: ["assert-services-stopped", "verify-encrypted-hash", "decrypt", "integrity-and-schema", "enforce-current-retention", "quarantine-old", "atomic-replace", "start-and-ready"],
+    steps: ["assert-services-stopped", "resolve-current-backup-policy", "verify-encrypted-hash", "decrypt", "integrity-and-schema", "enforce-current-retention", "preserve-backup-policy", "quarantine-old", "atomic-replace", "start-and-ready"],
+    ...(dryRun ? {
+      automaticBackupPolicy: "preserve-current",
+      explicitFallback: input.automaticBackupAfterRestore === undefined
+        ? null
+        : input.automaticBackupAfterRestore ? "enabled" : "disabled",
+      inputRequiredIfCurrentUnreadable: true,
+    } : {}),
   };
+}
+
+export async function resolveRestoreAutomaticBackupPolicy({
+  target,
+  explicitMode,
+}, sqlite) {
+  try {
+    const current = await sqlite.readBackupControl(target);
+    if (explicitMode !== undefined && explicitMode !== current.automaticEnabled) {
+      fail("RESTORE_BACKUP_POLICY_CONFLICT", "Explicit restore policy conflicts with current policy");
+    }
+    return { automaticEnabled: current.automaticEnabled, source: "current-target" };
+  } catch (error) {
+    if (error?.code === "RESTORE_BACKUP_POLICY_CONFLICT") throw error;
+    if (explicitMode === undefined) {
+      fail("RESTORE_BACKUP_POLICY_REQUIRED", "An explicit restore policy is required");
+    }
+    return { automaticEnabled: explicitMode, source: "explicit" };
+  }
 }
 
 export async function restoreBackup(input, adapters) {
@@ -144,6 +176,7 @@ async function restoreBackupLocked(input, plan, adapters) {
   let replaced = false;
   let serviceStopAttempted = false;
   let retentionPurgedCount = 0;
+  let automaticBackupPolicy;
   try {
     await adapters.services.assertStopped();
     if (adapters.services.stop) {
@@ -151,15 +184,26 @@ async function restoreBackupLocked(input, plan, adapters) {
       await adapters.services.stop();
       await adapters.services.assertStopped();
     }
+    if (await exists(plan.target)) {
+      await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
+      const targetMetadata = await lstat(plan.target);
+      if (!targetMetadata.isFile() || targetMetadata.isSymbolicLink()) {
+        fail("RESTORE_TARGET_UNSAFE", "Restore target is unsafe");
+      }
+    }
+    for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
+      if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
+    }
+    automaticBackupPolicy = await resolveRestoreAutomaticBackupPolicy({
+      target: plan.target,
+      explicitMode: input.automaticBackupAfterRestore,
+    }, adapters.sqlite);
 
     await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
     await assertNoSymlinkPath(plan.backup, "RESTORE_INPUT_INVALID");
     await assertNoSymlinkPath(plan.status, "RESTORE_INPUT_INVALID");
     await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
     if (await exists(plan.target)) await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
-    for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
-      if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
-    }
 
     for (const candidate of [plan.backup, plan.status]) {
       const metadata = await lstat(candidate);
@@ -206,6 +250,14 @@ async function restoreBackupLocked(input, plan, adapters) {
       fail("RESTORE_RETENTION_INVALID", "Restore retention returned an invalid result");
     }
     retentionPurgedCount = retention.purgedCount;
+    if (typeof adapters.sqlite.applyBackupControl !== "function") {
+      fail("BACKUP_CONTROL_INVALID", "Backup control state is invalid");
+    }
+    await adapters.sqlite.applyBackupControl(staged, {
+      automaticEnabled: automaticBackupPolicy.automaticEnabled,
+      nowMs: now.valueOf(),
+      requestId: `restore-policy-${stamp(now)}`,
+    });
     const retainedInspection = await adapters.sqlite.inspect(staged);
     if (
       retainedInspection.integrity !== "ok" ||
@@ -237,6 +289,8 @@ async function restoreBackupLocked(input, plan, adapters) {
       dryRun: false,
       quarantinePath: quarantined ? quarantinePath : undefined,
       retentionPurgedCount,
+      automaticBackupAfterRestore: automaticBackupPolicy.automaticEnabled,
+      automaticBackupPolicySource: automaticBackupPolicy.source,
     };
   } catch (error) {
     let recoveryCause;

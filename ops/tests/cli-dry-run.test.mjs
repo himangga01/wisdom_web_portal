@@ -196,14 +196,90 @@ test("monitor CLI validates an absolute config without checks, secrets, or sends
 
 test("restore CLI is dry-run unless both apply and exact confirmation are supplied", async () => {
   const backupRoot = path.join(drive, "fixture", "backups");
+  const target = path.join(drive, "fixture", "data", "portal.sqlite");
+  const args = [
+    "--backup-root", backupRoot,
+    "--backup", path.join(backupRoot, "hourly-20260716T010203Z.age"),
+    "--target", target,
+    "--temp-root", path.join(drive, "fixture", "temp"),
+    "--age", path.join(drive, "opt", "bin", "age"),
+  ];
   const result = await dryRun("restore.mjs", [
+    ...args,
+  ]);
+  assert.match(result.steps.join(" "), /assert-services-stopped/);
+  assert.deepEqual({
+    automaticBackupPolicy: result.automaticBackupPolicy,
+    explicitFallback: result.explicitFallback,
+    inputRequiredIfCurrentUnreadable: result.inputRequiredIfCurrentUnreadable,
+  }, {
+    automaticBackupPolicy: "preserve-current",
+    explicitFallback: null,
+    inputRequiredIfCurrentUnreadable: true,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /AGE_IDENTITY|AGE-SECRET|keychain/iu);
+
+  await assert.rejects(execute(process.execPath, [
+    path.join(opsRoot, "scripts", "restore.mjs"),
+    ...args,
+    "--apply",
+    "--confirm-destroy", `${target}-different`,
+  ], {
+    cwd: path.dirname(opsRoot),
+    env: {
+      PATH: process.env.PATH,
+      WISDOM_KEYCHAIN_EXEC: "1",
+      AGE_IDENTITY: "AGE-SECRET-KEY-OPERATOR",
+    },
+    timeout: 10_000,
+    windowsHide: true,
+  }), (error) => {
+    assert.match(error.stderr, /RESTORE_CONFIRMATION_MISMATCH/u);
+    assert.doesNotMatch(error.stderr, /AGE-SECRET-KEY/u);
+    return true;
+  });
+});
+
+test("restore CLI accepts only one exact automatic-backup fallback value", async () => {
+  const backupRoot = path.join(drive, "fixture", "backups");
+  const args = [
     "--backup-root", backupRoot,
     "--backup", path.join(backupRoot, "hourly-20260716T010203Z.age"),
     "--target", path.join(drive, "fixture", "data", "portal.sqlite"),
     "--temp-root", path.join(drive, "fixture", "temp"),
     "--age", path.join(drive, "opt", "bin", "age"),
-  ]);
-  assert.match(result.steps.join(" "), /assert-services-stopped/);
+  ];
+
+  for (const mode of ["enabled", "disabled"]) {
+    const result = await dryRun("restore.mjs", [
+      ...args,
+      "--automatic-backup-after-restore", mode,
+    ]);
+    assert.equal(result.automaticBackupPolicy, "preserve-current");
+    assert.equal(result.explicitFallback, mode);
+    assert.equal(result.inputRequiredIfCurrentUnreadable, true);
+  }
+
+  for (const invalid of [
+    [...args, "--automatic-backup-after-restore", "on"],
+    [...args, "--automatic-backup-after-restore", "enabled", "--automatic-backup-after-restore", "disabled"],
+    [...args, "--automatic-backup-after-restore=enabled"],
+    [...args, "--unknown"],
+    [...args, "--apply", "--apply", "--confirm-destroy", args[5]],
+  ]) {
+    await assert.rejects(execute(process.execPath, [
+      path.join(opsRoot, "scripts", "restore.mjs"),
+      ...invalid,
+    ], {
+      cwd: path.dirname(opsRoot),
+      env: { PATH: process.env.PATH },
+      timeout: 10_000,
+      windowsHide: true,
+    }), (error) => {
+      assert.match(error.stderr, /CLI_USAGE/u);
+      return true;
+    });
+  }
 });
 
 test("deploy and rollback CLIs default to plans without invoking macOS tools", async () => {

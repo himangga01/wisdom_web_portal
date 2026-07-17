@@ -134,6 +134,103 @@ async function createBackupControlFixture({
   return databasePath;
 }
 
+async function createWritableBackupControlFixture({
+  rows = [{
+    singleton: 1,
+    automaticEnabled: 1,
+    rowVersion: 1,
+    updatedAtMs: 0,
+    updatedByAdminId: "admin-before-restore",
+  }],
+  schemaVersion = 7,
+  rejectAudit = false,
+  ignoreAudit = false,
+  deleteAuditAfterInsert = false,
+  mutatePolicyAfterAudit = false,
+} = {}) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-backup-control-"));
+  const databasePath = path.join(directory, "staged.sqlite");
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath);
+  database.pragma(`user_version = ${schemaVersion}`);
+  database.exec(`
+    CREATE TABLE backup_settings (
+      singleton INTEGER PRIMARY KEY,
+      automatic_enabled INTEGER NOT NULL,
+      row_version INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      updated_by_admin_id TEXT
+    );
+    CREATE TABLE audit_events (
+      id TEXT PRIMARY KEY,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      request_id TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at_ms INTEGER NOT NULL
+    );
+  `);
+  const insert = database.prepare(`
+    INSERT INTO backup_settings (
+      singleton, automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+    ) VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const row of rows) {
+    insert.run(
+      row.singleton,
+      row.automaticEnabled,
+      row.rowVersion,
+      row.updatedAtMs,
+      row.updatedByAdminId ?? null,
+    );
+  }
+  if (rejectAudit) {
+    database.exec(`
+      CREATE TRIGGER reject_restore_policy_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected restore policy audit failure');
+      END;
+    `);
+  }
+  if (ignoreAudit) {
+    database.exec(`
+      CREATE TRIGGER ignore_restore_policy_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+  }
+  if (deleteAuditAfterInsert) {
+    database.exec(`
+      CREATE TRIGGER delete_restore_policy_audit
+      AFTER INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        DELETE FROM audit_events WHERE id = NEW.id;
+      END;
+    `);
+  }
+  if (mutatePolicyAfterAudit) {
+    database.exec(`
+      CREATE TRIGGER mutate_policy_after_restore_audit
+      AFTER INSERT ON audit_events
+      WHEN NEW.action = 'automatic_backup.restore_preserved'
+      BEGIN
+        UPDATE backup_settings SET automatic_enabled = 1 WHERE singleton = 1;
+      END;
+    `);
+  }
+  database.close();
+  return databasePath;
+}
+
 function assertSanitizedBackupControlFailure(databasePath) {
   return assert.rejects(
     createSqliteAdapter().readBackupControl(databasePath),
@@ -373,6 +470,164 @@ test("SQLite backup policy reads reject malformed singleton, boolean, revision, 
 
   for (const row of invalidRows) {
     await assertSanitizedBackupControlFailure(await createBackupControlFixture({ rows: [row] }));
+  }
+});
+
+test("SQLite injects the restore-time backup policy and system audit atomically", async () => {
+  const databasePath = await createWritableBackupControlFixture();
+  const nowMs = Date.parse("2026-07-17T08:09:10.000Z");
+  const adapter = createSqliteAdapter();
+
+  const applied = await adapter.applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs,
+    requestId: "restore-policy-00000001",
+  });
+
+  assert.deepEqual(applied, {
+    automaticEnabled: false,
+    rowVersion: 2,
+    updatedAtMs: nowMs,
+  });
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 0,
+      row_version: 2,
+      updated_at_ms: nowMs,
+      updated_by_admin_id: null,
+    });
+    assert.deepEqual(database.prepare(`
+      SELECT actor_type, actor_id, action, target_type, target_id,
+             request_id, metadata_json, created_at_ms
+      FROM audit_events WHERE request_id = 'restore-policy-00000001'
+    `).get(), {
+      actor_type: "system",
+      actor_id: null,
+      action: "automatic_backup.restore_preserved",
+      target_type: "backup_settings",
+      target_id: "1",
+      request_id: "restore-policy-00000001",
+      metadata_json: JSON.stringify({ automaticEnabled: false, rowVersion: 2 }),
+      created_at_ms: nowMs,
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite rolls back restore policy injection when its system audit fails", async () => {
+  const databasePath = await createWritableBackupControlFixture({ rejectAudit: true });
+
+  await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs: 42,
+    requestId: "restore-policy-00000002",
+  }), { code: "BACKUP_CONTROL_INVALID" });
+
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 1,
+      row_version: 1,
+      updated_at_ms: 0,
+      updated_by_admin_id: "admin-before-restore",
+    });
+    assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite rolls back restore policy injection when its audit is silently ignored", async () => {
+  const databasePath = await createWritableBackupControlFixture({ ignoreAudit: true });
+
+  await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+    automaticEnabled: false,
+    nowMs: 43,
+    requestId: "restore-policy-00000004",
+  }), { code: "BACKUP_CONTROL_INVALID" });
+
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare(`
+      SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+      FROM backup_settings WHERE singleton = 1
+    `).get(), {
+      automatic_enabled: 1,
+      row_version: 1,
+      updated_at_ms: 0,
+      updated_by_admin_id: "admin-before-restore",
+    });
+    assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("SQLite revalidates the audit and policy after restore audit triggers", async () => {
+  const databasePaths = [
+    await createWritableBackupControlFixture({ deleteAuditAfterInsert: true }),
+    await createWritableBackupControlFixture({ mutatePolicyAfterAudit: true }),
+  ];
+
+  for (const databasePath of databasePaths) {
+    await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+      automaticEnabled: false,
+      nowMs: 44,
+      requestId: "restore-policy-00000005",
+    }), { code: "BACKUP_CONTROL_INVALID" });
+
+    const { default: Database } = await import("better-sqlite3");
+    const database = new Database(databasePath, { readonly: true });
+    try {
+      assert.deepEqual(database.prepare(`
+        SELECT automatic_enabled, row_version, updated_at_ms, updated_by_admin_id
+        FROM backup_settings WHERE singleton = 1
+      `).get(), {
+        automatic_enabled: 1,
+        row_version: 1,
+        updated_at_ms: 0,
+        updated_by_admin_id: "admin-before-restore",
+      });
+      assert.equal(database.prepare("SELECT count(*) count FROM audit_events").get().count, 0);
+    } finally {
+      database.close();
+    }
+  }
+});
+
+test("SQLite restore policy injection fails closed for missing or malformed staged policy", async () => {
+  const invalidPolicies = [
+    await createBackupControlFixture({ createTable: false }),
+    await createBackupControlFixture({ rows: [] }),
+    await createBackupControlFixture({
+      rows: [
+        { singleton: 1, automaticEnabled: 1, rowVersion: 1, updatedAtMs: 0 },
+        { singleton: 1, automaticEnabled: 0, rowVersion: 2, updatedAtMs: 1 },
+      ],
+    }),
+    await createBackupControlFixture({
+      rows: [{ singleton: 1, automaticEnabled: 2, rowVersion: 1, updatedAtMs: 0 }],
+    }),
+    await createBackupControlFixture({ schemaVersion: 6 }),
+  ];
+
+  for (const databasePath of invalidPolicies) {
+    await assert.rejects(createSqliteAdapter().applyBackupControl(databasePath, {
+      automaticEnabled: true,
+      nowMs: 42,
+      requestId: "restore-policy-00000003",
+    }), { code: "BACKUP_CONTROL_INVALID" });
   }
 });
 
