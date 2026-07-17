@@ -547,6 +547,22 @@ test("operator entry points link the Mac guide and document only the singular pu
   assert.doesNotMatch(readme, /\bPUBLIC_ORIGINS\b/u);
 });
 
+test("Mac guide stops existing schema-v6 deployments until a reviewed maintenance migration exists", async () => {
+  const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
+  const upgradeGate = guide.slice(
+    guide.indexOf("### 3.1 기존 schema v6 설치의 추가 배포 중단 조건"),
+    guide.indexOf("## 4. 필요하지 않은 계정·설정"),
+  );
+
+  assert.ok(upgradeGate.length > 0, "schema-v6 deployment stop section");
+  assert.match(upgradeGate, /신규 빈 DB[\s\S]*user_version[\s\S]*0[\s\S]*schema v7/u);
+  assert.match(upgradeGate, /기존 schema v6[\s\S]*deploy\.mjs --apply[\s\S]*실행하지 않는다/u);
+  assert.match(upgradeGate, /DATABASE_MIGRATION_ROLLBACK_INCOMPATIBLE/u);
+  assert.match(upgradeGate, /전용 v6→v7 maintenance migration[\s\S]*현재 구현되어 있지 않/u);
+  assert.match(upgradeGate, /require-rollback-compatible[\s\S]*우회[\s\S]*user_version[\s\S]*수동/u);
+  assert.match(upgradeGate, /ops\/runbooks\/deployment\.md#rollback-비호환-migration/u);
+});
+
 test("Mac guide classifies every input and gives every operational secret a lifecycle", async () => {
   const guide = await readFile(path.resolve(opsRoot, "../docs/operations/mac-mini-setup.md"), "utf8");
   const lines = guide.split(/\r?\n/u);

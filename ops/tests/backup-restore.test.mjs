@@ -627,6 +627,7 @@ test("backup freshness alerts after 90 minutes", async () => {
   const status = await loadNewestBackupStatus(backupRoot);
 
   assert.equal(backupFreshness(status, new Date("2026-07-16T02:29:59.123Z")).state, "healthy");
+  assert.equal(backupFreshness(status, new Date("2026-07-16T02:30:00.123Z")).state, "stale");
   assert.equal(backupFreshness(status, new Date("2026-07-16T02:30:01.123Z")).state, "stale");
   assert.equal(backupFreshness(undefined, new Date()).state, "missing");
 

@@ -230,7 +230,7 @@ export function backupFreshness(status, now, staleAfterMs = 90 * 60 * 1000) {
   if (!status) return { state: "missing", ageMs: undefined };
   const ageMs = now.valueOf() - Date.parse(status.createdAt);
   if (!Number.isFinite(ageMs) || ageMs < 0) return { state: "invalid", ageMs };
-  return { state: ageMs > staleAfterMs ? "stale" : "healthy", ageMs };
+  return { state: ageMs >= staleAfterMs ? "stale" : "healthy", ageMs };
 }
 
 async function within(timeoutMs, operation) {

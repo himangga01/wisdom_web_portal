@@ -145,6 +145,14 @@ FileVault              protects the Mac storage at rest before login
 
 차단 항목을 해결하지 않은 상태에서 Tunnel을 열거나 실상담을 받지 않는다. Cloudflare·Google·Naver·SMTP·OpenAI·외부 uptime 계정 생성, 결제와 소유권 확인은 저장소가 대신하지 않는 운영자 입력 작업이다.
 
+### 3.1 기존 schema v6 설치의 추가 배포 중단 조건
+
+위 8개는 모든 공개 설치에 적용되는 차단 항목이다. 다음 조건은 **이미 schema v6 DB를 운영 중인 설치에만 추가로 적용되는 배포 차단 항목**이며, 신규 설치와 구분한다. 신규 빈 DB(`user_version = 0`)는 rollback compatibility gate를 통과해 schema v7까지 생성할 수 있고, 이미 정확한 schema v7인 DB도 정상 배포 대상이다.
+
+기존 schema v6 DB에는 일반 `deploy.mjs --apply`를 실행하지 않는다. 배포기가 강제하는 rollback compatibility gate가 `DATABASE_MIGRATION_ROLLBACK_INCOMPATIBLE`로 중단하는 것이 현재의 의도된 안전 동작이다. schema v7을 모르는 보존 release로 rollback하면 DB를 안전하게 사용할 수 없으므로, 이 중단을 배포 실패로 오인해 우회해서는 안 된다.
+
+전용 v6→v7 maintenance migration은 현재 구현되어 있지 않다. 별도 변경으로 정지 범위, 방금 검증한 암호화 backup, maintenance lock, 구 release retirement 승인, 전환 후 데이터 검증과 복구 drill을 구현·검토·실장비 시험하기 전까지 기존 v6 설치의 업그레이드는 **STOP** 상태다. `--require-rollback-compatible`를 제거하거나 우회 flag를 추가하지 말고, SQLite `user_version`을 수동 수정하지 않는다. 상세한 필수 절차는 [`ops/runbooks/deployment.md`의 rollback 비호환 migration](../../ops/runbooks/deployment.md#rollback-비호환-migration)을 따른다.
+
 ## 4. 필요하지 않은 계정·설정
 
 - Docker 계정·설치: 불필요. 이 운영안은 Docker를 사용하지 않는다.

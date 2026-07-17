@@ -62,7 +62,7 @@
 - Consumes: `ControlDatabase` from `apps/control/src/db/client.ts`; existing `audit_events` schema and `BEGIN IMMEDIATE` transaction pattern.
 - Produces: `BackupSettings`, `readBackupSettings(db)`, and `changeAutomaticBackupSetting(db, input, options)` for Tasks 2, 3, 4, and 5; SQLite schema version 7.
 
-- [ ] **Step 1: Write failing v7 migration and readiness tests**
+- [x] **Step 1: Write failing v7 migration and readiness tests**
 
 Add exact assertions to `apps/control/src/db/database.test.ts` for the default row, constraints, migration history, and readiness:
 
@@ -88,7 +88,7 @@ expect(isDatabaseReady(db)).toBe(false);
 
 Also migrate a database stopped at v6 and assert the v7 row appears without changing existing admin and consultation rows. Change every exact migration count/list expectation from six to seven while keeping the first six fingerprints unchanged.
 
-- [ ] **Step 2: Run the focused migration test and observe failure**
+- [x] **Step 2: Run the focused migration test and observe failure**
 
 Run:
 
@@ -98,7 +98,7 @@ npm.cmd run test --workspace @wisdom/control -- src/db/database.test.ts
 
 Expected: FAIL because `SCHEMA_VERSION` is 6 and `backup_settings` does not exist.
 
-- [ ] **Step 3: Append the exact v7 schema and migration**
+- [x] **Step 3: Append the exact v7 schema and migration**
 
 Add this Drizzle declaration to `apps/control/src/db/schema.ts`, include it in `REQUIRED_TABLES` and `drizzleSchema`, and set `SCHEMA_VERSION = 7`:
 
@@ -134,13 +134,13 @@ INSERT INTO backup_settings (
 
 Add all five columns to the `isDatabaseReady()` required-column map and require exactly one valid singleton row.
 
-- [ ] **Step 4: Run the migration test and observe pass**
+- [x] **Step 4: Run the migration test and observe pass**
 
 Run the Step 2 command.
 
 Expected: PASS with the v6→v7 and fresh-v7 cases green.
 
-- [ ] **Step 5: Write failing policy service tests**
+- [x] **Step 5: Write failing policy service tests**
 
 Create `apps/control/src/backups/settings.test.ts` covering:
 
@@ -172,7 +172,7 @@ expect(db.sqlite.prepare(`
 
 Test default ON, OFF→ON action, unchanged/no-audit, stale revision/409, singleton missing/malformed as `BACKUP_CONTROL_INVALID`, CAS changes=0, and rollback at injected `after-settings` and `after-audit` fault points.
 
-- [ ] **Step 6: Run the service test and observe failure**
+- [x] **Step 6: Run the service test and observe failure**
 
 Run:
 
@@ -182,7 +182,7 @@ npm.cmd run test --workspace @wisdom/control -- src/backups/settings.test.ts
 
 Expected: FAIL because `settings.ts` is absent.
 
-- [ ] **Step 7: Implement the typed policy service**
+- [x] **Step 7: Implement the typed policy service**
 
 Implement these exact exports:
 
@@ -220,7 +220,7 @@ export function changeAutomaticBackupSetting(
 
 Validate all integer/boolean/string fields when reading. Wrap all storage parsing failures with a sanitized error whose `code` is `BACKUP_CONTROL_INVALID`. Inside `BEGIN IMMEDIATE`, reread, return conflict for stale revision, return unchanged without audit for the same boolean, perform a CAS update on singleton/revision/old boolean, insert the action-specific audit event, and roll back on every exception.
 
-- [ ] **Step 8: Run policy, database, and Control type checks**
+- [x] **Step 8: Run policy, database, and Control type checks**
 
 Run:
 
@@ -231,7 +231,7 @@ npm.cmd run typecheck --workspace @wisdom/control
 
 Expected: both test files PASS and TypeScript exits 0.
 
-- [ ] **Step 9: Commit Task 1**
+- [x] **Step 9: Commit Task 1**
 
 ```powershell
 git add apps/control/src/backups/settings.ts apps/control/src/backups/settings.test.ts apps/control/src/db/schema.ts apps/control/src/db/client.ts apps/control/src/db/database.test.ts
@@ -257,7 +257,7 @@ git commit -m "feat: add audited automatic backup policy"
 - Consumes: Task 1 `readBackupSettings` and `changeAutomaticBackupSetting`.
 - Produces: `backupRunStateSchema`, `BackupRunState`, `readBackupRunState(path)`, optional `backupRunStateProvider` dependency, and secured `/admin/backups` GET/POST routes.
 
-- [ ] **Step 1: Write failing shared run-state contract tests**
+- [x] **Step 1: Write failing shared run-state contract tests**
 
 Create strict schema tests that accept only this shape and reject extra keys, non-UTC times, absolute artifact paths, unknown outcomes, and unknown error codes:
 
@@ -278,7 +278,7 @@ expect(value.outcome).toBe("verified");
 
 The allowed errors are exactly `BACKUP_CONTROL_INVALID` and `BACKUP_OPERATION_FAILED`; all detailed child errors map to the latter.
 
-- [ ] **Step 2: Run shared test and observe failure**
+- [x] **Step 2: Run shared test and observe failure**
 
 Run:
 
@@ -288,7 +288,7 @@ npm.cmd run test --workspace @wisdom/shared -- src/backup-run-state.test.ts
 
 Expected: FAIL because the module is absent.
 
-- [ ] **Step 3: Implement and export the shared contract**
+- [x] **Step 3: Implement and export the shared contract**
 
 Implement:
 
@@ -317,7 +317,7 @@ export type BackupRunState = z.infer<typeof backupRunStateSchema>;
 
 Add the export to `packages/shared/src/index.ts` and keep cross-field outcome checks in `.superRefine`: running has no `finishedAt`; verified requires both verified fields; non-failed states require a positive control revision and `errorCode: null`; `BACKUP_CONTROL_INVALID` may use a null revision because no trustworthy row exists.
 
-- [ ] **Step 4: Write failing protected reader tests**
+- [x] **Step 4: Write failing protected reader tests**
 
 In `apps/control/src/backups/run-state.test.ts`, create owner-only fixtures and assert:
 
@@ -331,11 +331,11 @@ await expect(readBackupRunState(oversizedPath)).rejects.toMatchObject({
 
 Cover non-absolute paths, final symlink, linked parent, non-regular file, over 4 KiB, permissive POSIX mode, malformed JSON, and schema-invalid JSON. Error messages must not contain source content or the absolute path.
 
-- [ ] **Step 5: Implement the bounded Control-side reader**
+- [x] **Step 5: Implement the bounded Control-side reader**
 
 Implement `readBackupRunState(statePath: string): Promise<BackupRunState | undefined>` using `lstat`, `realpath`, an `open` handle, a post-open identity check, a 4 KiB maximum, `0600` enforcement on POSIX, and `backupRunStateSchema.parse`. Treat `ENOENT` as no observation; map every other failure to sanitized `BACKUP_RUN_STATE_INVALID`.
 
-- [ ] **Step 6: Write failing administrator HTTP tests**
+- [x] **Step 6: Write failing administrator HTTP tests**
 
 Extend `apps/control/src/admin/admin-http.test.ts` with:
 
@@ -353,7 +353,7 @@ expect(html).not.toMatch(/AGE-SECRET-KEY|keychain:|portal\.sqlite|010-8415-0023|
 
 Test login redirect, public-host 404, sensitive headers, nav link, default ON, validated observation display, unavailable observation, wrong Origin/CSRF, invalid state/revision, missing OFF confirmation, successful OFF, audit row, stale 409, unchanged redirect, and ON without confirmation.
 
-- [ ] **Step 7: Run administrator test and observe failure**
+- [x] **Step 7: Run administrator test and observe failure**
 
 Run:
 
@@ -364,7 +364,7 @@ npm.cmd run test --workspace @wisdom/control -- src/admin/admin-http.test.ts src
 
 Expected: FAIL because the routes/provider are absent.
 
-- [ ] **Step 8: Implement the provider and secured routes**
+- [x] **Step 8: Implement the provider and secured routes**
 
 Add to `ControlAppDependencies` and `Task4RouteDependencies`:
 
@@ -385,7 +385,7 @@ backupRunStateProvider: () => readBackupRunState(backupRunStatePath),
 
 Add `Backups` to `page()` navigation. `GET /admin/backups` uses `protectedSession`, reads policy, catches observation errors as “Observation unavailable,” and renders only status, last change, sanitized actor display, last run outcome, verified timestamp/age, the OFF risks, and a form. `POST /admin/backups` uses `protectedPost`, accepts exactly `automaticEnabled=enabled|disabled`, parses a positive safe integer revision, requires `disableConfirmed=yes` only for OFF, calls Task 1, returns 409 for conflict, and redirects 303 for updated/unchanged.
 
-- [ ] **Step 9: Run Task 2 focused verification**
+- [x] **Step 9: Run Task 2 focused verification**
 
 Run:
 
@@ -397,7 +397,7 @@ npm.cmd run typecheck
 
 Expected: all focused tests PASS and root type checking exits 0.
 
-- [ ] **Step 10: Commit Task 2**
+- [x] **Step 10: Commit Task 2**
 
 ```powershell
 git add packages/shared/src/backup-run-state.ts packages/shared/src/backup-run-state.test.ts packages/shared/src/index.ts apps/control/src/backups/run-state.ts apps/control/src/backups/run-state.test.ts apps/control/src/admin/routes.ts apps/control/src/admin/admin-http.test.ts apps/control/src/app.ts apps/control/src/server.ts
@@ -427,7 +427,7 @@ git commit -m "feat: add administrator backup controls"
 - Consumes: schema-v7 `backup_settings`, shared `backupRunStateSchema`, `loadNewestBackupStatus`, existing database-maintenance lock, Keychain wrapper, age adapter.
 - Produces: `validateBackupControlRows`, `readBackupControl`, `automaticBackupDecision`, `loadBackupRunState`, `writeBackupRunState`, `runBackupDispatcher`, `backup-dispatcher.mjs`, and `createOnlineBackup({ automatic })` skip result.
 
-- [ ] **Step 1: Write failing SQLite policy-adapter tests**
+- [x] **Step 1: Write failing SQLite policy-adapter tests**
 
 Extend `ops/tests/system-adapters.test.mjs` for:
 
@@ -442,7 +442,7 @@ assert.deepEqual(policy, {
 
 Cover missing table/row, invalid boolean/revision/time, multiple rows, and SQLite failure as `BACKUP_CONTROL_INVALID`; update fixture `PRAGMA user_version = 7` and expected schema compatibility.
 
-- [ ] **Step 2: Implement one fail-closed SQLite policy reader**
+- [x] **Step 2: Implement one fail-closed SQLite policy reader**
 
 Set `createSqliteAdapter({ expectedSchemaVersion = 7 })` and add:
 
@@ -456,7 +456,7 @@ readBackupControl: async (databasePath) => ({
 
 Open readonly with `fileMustExist`, enable `query_only`, require schema v7, and select the singleton with a bounded `LIMIT 2`. Export `validateBackupControlRows(rows)` from `ops/lib/backup-control.mjs` so this adapter and the monitor helper use the same exact integer/boolean validation; map all failures to sanitized `BACKUP_CONTROL_INVALID`. This method is injected into dispatcher, automatic backup, and restore.
 
-- [ ] **Step 3: Write failing decision, no-secret, and run-state tests**
+- [x] **Step 3: Write failing decision, no-secret, and run-state tests**
 
 Create `ops/tests/backup-dispatcher.test.mjs`. Pin the boundary:
 
@@ -476,7 +476,7 @@ assert.equal(automaticBackupDecision({
 
 Assert OFF calls neither verified-pair scan nor child; missing pair and a pair older than `updatedAtMs` run; post-enable verified pair avoids duplicates; child skip becomes `admin-disabled`; bad exit/oversized stdout/bad JSON writes only `BACKUP_OPERATION_FAILED`; not-due/disabled preserve only verified timestamp and basename. Test protected `0600`, 4 KiB, symlink rejection, atomic replacement, and no absolute paths/identity/raw stderr in state or returned JSON.
 
-- [ ] **Step 4: Run dispatcher tests and observe failure**
+- [x] **Step 4: Run dispatcher tests and observe failure**
 
 Run:
 
@@ -487,7 +487,7 @@ node --test ops/tests/backup-dispatcher.test.mjs ops/tests/system-adapters.test.
 
 Expected: FAIL because the control library and adapter method are absent.
 
-- [ ] **Step 5: Implement dispatcher library contracts**
+- [x] **Step 5: Implement dispatcher library contracts**
 
 Implement in `ops/lib/backup-control.mjs`:
 
@@ -512,7 +512,7 @@ export function automaticBackupDecision({ control, newestVerified, now }) {
 
 In the same module export `validateBackupControlRows(rows)`, `loadBackupRunState(statePath)`, `writeBackupRunState(statePath, value)`, and `runBackupDispatcher(input, adapters)`. `runBackupDispatcher` reads policy first. OFF loads only the prior run-state (never the backup directory), writes `admin-disabled`, and does not call `loadNewestBackupStatus` or `runChild`. ON loads the newest verified pair, returns `not-due` until the exact interval, writes `running` before the child, strictly parses bounded child JSON, reloads the verified pair after success, and atomically writes final state. Every state is validated with `backupRunStateSchema`; use an actual parent directory, sibling temp file, `0600`, fsync, rename, and directory fsync.
 
-- [ ] **Step 6: Write failing automatic second-check and manual-bypass tests**
+- [x] **Step 6: Write failing automatic second-check and manual-bypass tests**
 
 Add to `ops/tests/backup-restore.test.mjs`:
 
@@ -540,7 +540,7 @@ assert.equal(fixture.calls.encrypt, 0);
 
 Also assert the reader is called while the maintenance lock exists, ON follows the old flow, manual input without `automatic` never calls the policy reader even when policy is OFF, and an OFF change after the locked check does not interrupt the current backup.
 
-- [ ] **Step 7: Move the locked check before backup filesystem mutation**
+- [x] **Step 7: Move the locked check before backup filesystem mutation**
 
 Extend `createOnlineBackup` so it validates the source path, acquires the database-maintenance lock, checks `readBackupControl` only when `config.automatic === true`, and returns the skip object before backup/temp directory validation, chmod, checkpoint, snapshot, age, publication, or retention. Manual calls omit `automatic` and keep the existing behavior.
 
@@ -550,11 +550,11 @@ Extend `ops/scripts/backup.mjs` with exact `--automatic` parsing. On apply, requ
 {"dryRun":false,"verified":false,"outcome":"admin-disabled","controlRevision":4}
 ```
 
-- [ ] **Step 8: Write failing dispatcher CLI, plist, and release-seal tests**
+- [x] **Step 8: Write failing dispatcher CLI, plist, and release-seal tests**
 
 Assert dry-run needs no SQLite/Keychain/filesystem; apply accepts fixed child argv after `--`; child execution is `shell: false`, bounded, and has no secret in argv. In `configuration.test.mjs`, parse the plist and assert its first executable script is `backup-dispatcher.mjs`, `StartInterval` is 60, Keychain appears only in dispatcher child argv, and `--automatic --apply` are present. In `release-system.test.mjs`, require both new runtime files.
 
-- [ ] **Step 9: Implement the CLI and LaunchAgent switch**
+- [x] **Step 9: Implement the CLI and LaunchAgent switch**
 
 `ops/scripts/backup-dispatcher.mjs` must be dry-run by default and export a guarded `main`. With `--apply`, split the fixed child command at `--`, validate absolute executable/script/config/data paths and bounded argv, then call `runBackupDispatcher` with `spawn`/`execFile` configured `shell: false`, bounded stdout/stderr, and a timeout longer than the normal encrypted backup bound. Never copy child stderr into state or normal output.
 
@@ -567,7 +567,7 @@ Replace the plist top-level program with:
 
 Pass `--source`, `--root`, `--run-state {{DATA_ROOT}}/backup-run-state.json`, `--apply`, then the fixed child after `--`. Change `StartInterval` from `3600` to `60`; retain `RunAtLoad` and `ThrottleInterval=60`. Add `ops/lib/backup-control.mjs` and `ops/scripts/backup-dispatcher.mjs` to sealed `REQUIRED_ARTIFACTS` and test fixtures.
 
-- [ ] **Step 10: Run Task 3 focused verification**
+- [x] **Step 10: Run Task 3 focused verification**
 
 Run:
 
@@ -579,7 +579,7 @@ npm.cmd run typecheck
 
 Expected: all focused tests PASS, including disabled no-secret/no-write and manual bypass.
 
-- [ ] **Step 11: Commit Task 3**
+- [x] **Step 11: Commit Task 3**
 
 ```powershell
 git add ops/lib/backup-control.mjs ops/scripts/backup-dispatcher.mjs ops/tests/backup-dispatcher.test.mjs ops/lib/backup.mjs ops/scripts/backup.mjs ops/lib/system-adapters.mjs ops/tests/backup-restore.test.mjs ops/tests/system-adapters.test.mjs ops/tests/cli-dry-run.test.mjs ops/launchd/com.jihye.portal.backup.plist.template ops/tests/configuration.test.mjs ops/lib/release-system.mjs ops/tests/release-system.test.mjs
@@ -602,7 +602,7 @@ git commit -m "feat: dispatch scheduled backups without early secret access"
 - Consumes: Task 3 `readBackupControl`, newest verified status, existing protected incident-state storage and Hermes handoff.
 - Produces: strict backup control observation, `grace` monitor state, `BACKUP_ADMIN_DISABLED`, `BACKUP_CONTROL_INVALID`, a 10-minute transition gate, and indefinite suppression for an unchanged disabled-only incident.
 
-- [ ] **Step 1: Write failing protected database policy-query tests**
+- [x] **Step 1: Write failing protected database policy-query tests**
 
 Extend `ops/tests/monitoring.test.mjs` around `queryDatabaseAggregates`/the new policy helper. A valid v7 database returns only:
 
@@ -616,7 +616,7 @@ assert.deepEqual(await queryBackupControl(databasePath), {
 
 Assert missing table/row, malformed values, wrong schema version, path replacement, timeout, and corrupt DB map to the fixed monitor-facing code `BACKUP_CONTROL_INVALID` without exposing SQLite text or paths.
 
-- [ ] **Step 2: Implement a separate bounded helper protocol**
+- [x] **Step 2: Implement a separate bounded helper protocol**
 
 In `ops/scripts/monitor-db-check.mjs`, export `queryBackupControl(databasePath, hooks = {})` using the same independent secure path walk, readonly/query-only database, before/after identity checks, 100 ms SQLite timeout, and 4 KiB child-output bound as aggregate queries. Pass the selected rows through Task 3 `validateBackupControlRows` so dispatcher, backup, restore, and monitor cannot interpret the singleton differently. Add an exact CLI mode:
 
@@ -626,7 +626,7 @@ monitor-db-check.mjs --database /absolute/portal.sqlite --backup-control
 
 Keep backlog mode unchanged. In `createSystemMonitoringAdapters`, add `readBackupControl(databasePath, options)` that invokes this helper with absolute Node/script paths, no shell, bounded output, and strict exact-key validation.
 
-- [ ] **Step 3: Write failing monitor state and incident tests**
+- [x] **Step 3: Write failing monitor state and incident tests**
 
 Add cases that assert:
 
@@ -648,7 +648,7 @@ assert.deepEqual(disabled.checks.find(({ id }) => id === "backup"), {
 
 Cover: invalid control; one disabled Hermes send; same disabled fingerprint suppressed even after normal cooldown; new disk/control failure changes fingerprint and sends immediately; ON with no post-transition pair is `grace` before exactly 10 minutes; at exactly 10 minutes it fails; grace returns exit 0 but does not clear the prior disabled incident; a post-transition verified pair clears the incident; OFF does not stop disk, service, readiness, queue, or retention checks.
 
-- [ ] **Step 4: Run monitor tests and observe failure**
+- [x] **Step 4: Run monitor tests and observe failure**
 
 Run:
 
@@ -658,7 +658,7 @@ node --test ops/tests/monitoring.test.mjs
 
 Expected: FAIL because policy-aware backup health and `grace` do not exist.
 
-- [ ] **Step 5: Implement policy-aware backup health**
+- [x] **Step 5: Implement policy-aware backup health**
 
 Add `backupResumeGraceMinutes: 10` to the strict threshold object in `ops/monitoring/checks.json.template` and config parser. Read control before backup freshness evaluation and use this exact order:
 
@@ -676,7 +676,7 @@ if (!postTransition) return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
 
 After the transition gate, apply the existing 90-minute timestamp/freshness checks. Overall `ok` accepts only `healthy` and `grace`. A report containing `grace` sends no handoff and exits 0 but deliberately leaves a prior incident state untouched.
 
-- [ ] **Step 6: Implement exact disabled-only suppression**
+- [x] **Step 6: Implement exact disabled-only suppression**
 
 Use failed checks only for the incident fingerprint. Add:
 
@@ -691,7 +691,7 @@ const suppress = prior?.fingerprint === fingerprint &&
 
 The first disabled report is signed and sent; later identical disabled-only reports are suppressed without rewriting the incident timestamp. Any added real failure changes the fingerprint and sends immediately. Only a fully healthy post-enable verified report clears the stored incident.
 
-- [ ] **Step 7: Update fixtures and run focused monitoring verification**
+- [x] **Step 7: Update fixtures and run focused monitoring verification**
 
 Add the threshold to every strict config fixture in `monitoring.test.mjs` and `cli-dry-run.test.mjs`. Extend `configuration.test.mjs` to require the literal 10-minute template value.
 
@@ -703,7 +703,7 @@ node --test ops/tests/monitoring.test.mjs ops/tests/cli-dry-run.test.mjs ops/tes
 
 Expected: all focused tests PASS.
 
-- [ ] **Step 8: Commit Task 4**
+- [x] **Step 8: Commit Task 4**
 
 ```powershell
 git add ops/scripts/monitor-db-check.mjs ops/lib/monitoring.mjs ops/monitoring/checks.json.template ops/tests/monitoring.test.mjs ops/tests/cli-dry-run.test.mjs ops/tests/configuration.test.mjs
@@ -727,7 +727,7 @@ git commit -m "feat: monitor automatic backup policy"
 - Consumes: Task 3 `readBackupControl`; schema-v7 `backup_settings`; existing retention, integrity, quarantine, rollback, service readiness contracts.
 - Produces: `resolveRestoreAutomaticBackupPolicy`, `sqlite.applyBackupControl`, and CLI flag `--automatic-backup-after-restore enabled|disabled`.
 
-- [ ] **Step 1: Write failing SQLite policy-injection tests**
+- [x] **Step 1: Write failing SQLite policy-injection tests**
 
 Extend `ops/tests/system-adapters.test.mjs` for:
 
@@ -754,11 +754,11 @@ assert.deepEqual(database.prepare(`
 
 Assert `updated_by_admin_id` becomes NULL, the policy update and system audit are atomic, injected audit failure rolls back, and malformed/missing staged policy fails closed.
 
-- [ ] **Step 2: Implement staged policy injection**
+- [x] **Step 2: Implement staged policy injection**
 
 Add `applyBackupControl(databasePath, { automaticEnabled, nowMs, requestId })` to `createSqliteAdapter`. Require schema v7 and one valid singleton, use one SQLite transaction, set `automatic_enabled`, increment `row_version`, set `updated_at_ms = nowMs`, clear `updated_by_admin_id`, and insert `automatic_backup.restore_preserved`. Return the validated new public policy only.
 
-- [ ] **Step 3: Write failing restore resolution and rollback tests**
+- [x] **Step 3: Write failing restore resolution and rollback tests**
 
 Add to `ops/tests/backup-restore.test.mjs`:
 
@@ -773,7 +773,7 @@ Add to `ops/tests/backup-restore.test.mjs`:
 
 Use adapter spies to assert policy resolution occurs after services are stopped and before age decrypt, and injection occurs after retention but before final inspection/replacement.
 
-- [ ] **Step 4: Write failing dry-run and CLI tests**
+- [x] **Step 4: Write failing dry-run and CLI tests**
 
 In `ops/tests/cli-dry-run.test.mjs`, assert dry-run remains secret-free and returns:
 
@@ -787,7 +787,7 @@ In `ops/tests/cli-dry-run.test.mjs`, assert dry-run remains secret-free and retu
 
 Assert exact flag values `enabled|disabled`, reject duplicates/unknown values, keep `--confirm-destroy` exact-target behavior, and require the fallback only when apply cannot read the current target policy.
 
-- [ ] **Step 5: Run restore tests and observe failure**
+- [x] **Step 5: Run restore tests and observe failure**
 
 Run:
 
@@ -797,7 +797,7 @@ node --test ops/tests/system-adapters.test.mjs ops/tests/backup-restore.test.mjs
 
 Expected: FAIL because policy resolution/injection and the flag are absent.
 
-- [ ] **Step 6: Implement restore policy resolution without weakening rollback**
+- [x] **Step 6: Implement restore policy resolution without weakening rollback**
 
 Add:
 
@@ -828,13 +828,13 @@ export async function resolveRestoreAutomaticBackupPolicy({
 
 In `restoreBackupLocked`, after services are confirmed stopped, resolve current/fallback policy before decrypting. After copying to staged and enforcing retention, call `applyBackupControl` with restore time and a fixed sanitized request ID, then rerun integrity/schema checks. Do not change quarantine, atomic rename, service start, readiness, failed-copy, or rollback ordering. Include only `automaticBackupAfterRestore` and `automaticBackupPolicySource: "current-target"|"explicit"` in the result.
 
-- [ ] **Step 7: Implement strict CLI parsing and update the recovery runbook**
+- [x] **Step 7: Implement strict CLI parsing and update the recovery runbook**
 
 Parse `--automatic-backup-after-restore` only when present; accept exactly `enabled` or `disabled`, convert to boolean at the library boundary, and never default silently. Dry-run prints the policy rule without opening SQLite. Apply continues to require `WISDOM_KEYCHAIN_EXEC=1`, `AGE_IDENTITY`, `--apply`, and exact `--confirm-destroy`.
 
 In `ops/runbooks/recovery.md`, document dry-run first, current-policy preservation, the fallback condition, both exact flag values, the ON immediate-backup consequence, the OFF preservation consequence, and a post-restore verification query through the admin page rather than direct secret output.
 
-- [ ] **Step 8: Run focused restore verification**
+- [x] **Step 8: Run focused restore verification**
 
 Run:
 
@@ -844,7 +844,7 @@ node --test ops/tests/system-adapters.test.mjs ops/tests/backup-restore.test.mjs
 
 Expected: all focused tests PASS and all pre-existing readiness/rollback cases remain green.
 
-- [ ] **Step 9: Commit Task 5**
+- [x] **Step 9: Commit Task 5**
 
 ```powershell
 git add ops/lib/system-adapters.mjs ops/lib/restore.mjs ops/scripts/restore.mjs ops/tests/system-adapters.test.mjs ops/tests/backup-restore.test.mjs ops/tests/cli-dry-run.test.mjs ops/runbooks/recovery.md
@@ -867,7 +867,7 @@ git commit -m "feat: preserve backup policy across restores"
 - Consumes: Tasks 1–5 CLI names, paths, policy behavior, schema v7, existing templates/runbooks, approved design inventory.
 - Produces: a single operator entry point with exact commands, expected output, stop conditions, secret-handling rules, externally issued values, locally generated values, validation, loss impact, and honest launch blockers.
 
-- [ ] **Step 1: Write failing documentation-contract tests**
+- [x] **Step 1: Write failing documentation-contract tests**
 
 Extend `ops/tests/configuration.test.mjs` to load `docs/operations/mac-mini-setup.md` and require all of these literal sections or terms:
 
@@ -885,7 +885,7 @@ for (const required of [
 
 Also require exact command names/flags currently present in the repository, all eight known launch blockers, and explicit statements that Docker, WordPress, Caddy account, age service account, router forwarding, manual TLS certificates, Kakao Developers API for a simple link, and Penpot runtime access are not required.
 
-- [ ] **Step 2: Run the documentation test and observe failure**
+- [x] **Step 2: Run the documentation test and observe failure**
 
 Run:
 
@@ -895,7 +895,7 @@ node --test ops/tests/configuration.test.mjs
 
 Expected: FAIL because `mac-mini-setup.md` is absent.
 
-- [ ] **Step 3: Write the preparation inventory first**
+- [x] **Step 3: Write the preparation inventory first**
 
 Create an opening table with these columns:
 
@@ -922,7 +922,7 @@ Populate every approved item:
 
 Mark values as secret/public/operator decision and prohibit storing secrets in Git, runtime templates, shell history, screenshots, Telegram, or the guide.
 
-- [ ] **Step 4: Document encryption and recovery boundaries**
+- [x] **Step 4: Document encryption and recovery boundaries**
 
 Explain exactly:
 
@@ -935,7 +935,7 @@ FileVault              protects the Mac storage at rest before login
 
 State that a complete recovery needs a verified `.age`/`.json` pair, age identity, PII key, remaining application secrets, source/config, and an operator who can unlock/login after cold boot. Mark the missing all-Keychain offline recovery bundle and automatic offsite encrypted replication as public-launch blockers, not implemented commands.
 
-- [ ] **Step 5: Document exact Mac preparation and coexistence checks**
+- [x] **Step 5: Document exact Mac preparation and coexistence checks**
 
 Use computed paths, never a hardcoded username:
 
@@ -957,35 +957,35 @@ export BACKUP_TEMP_ROOT="$HOME/Library/Caches/WisdomPortalBackup"
 
 Include `uname -m = arm64`, `sw_vers`, `fdesetup status`, reversible `pmset` inspection, `xcode-select -p`, free space, and port/process checks for Gemma/Hermes plus 8787, 8788, 8080, 2019, and 18787. Stop if the login short name violates the current Keychain account validator, a required port conflicts, FileVault has no recovery path, or no on-site cold-boot plan exists.
 
-- [ ] **Step 6: Document exact software, source, and filesystem setup**
+- [x] **Step 6: Document exact software, source, and filesystem setup**
 
 Require Node major 24, npm 12, Caddy, cloudflared, exact age 1.3.1, SQLite at least 3.51.3, and Codex CLI. Pin installation-source and checksum verification rather than assuming Homebrew still supplies age 1.3.1. Require clone of `https://github.com/himangga01/wisdom_web_portal.git` or a verified `git bundle`, Mac-local `npm ci`, Playwright browser install, `npm run verify`, recorded commit SHA, and clean `git status`. Explicitly prohibit copying Windows `node_modules`.
 
 Create real non-symlink directories with `0700`; require rendered runtime/monitor files to be `0600`. Since no production render/install CLI exists, label template rendering `공개 전 구현 필요`; if manually inspected for a local rehearsal, require unresolved-token scan, `plutil -lint`, and Caddy validation and do not claim this is a supported production installer.
 
-- [ ] **Step 7: Document secrets, bootstrap, services, and publication in dependency order**
+- [x] **Step 7: Document secrets, bootstrap, services, and publication in dependency order**
 
 Use only real repository commands for `secret-bootstrap.mjs`, `secret-import.mjs`, `seed-public.mjs`, `preflight.mjs`, `deploy.mjs`, monitor validation/dry-run, admin owner/MFA, policy publication, and launchd inspection. Every command block includes expected safe output and a stop condition. Never use `security ... -w`; verify Keychain item existence without printing values.
 
 Clearly label the first normal publication bootstrap deadlock, Kakao runtime allowlist gap, Hermes HMAC provisioning gap, and tunnel-off Host health-probe gap as `공개 전 구현 필요`; do not invent workarounds that weaken Secure cookies or tunnel preflight.
 
-- [ ] **Step 8: Document automatic/manual backup and guarded restore drills**
+- [x] **Step 8: Document automatic/manual backup and guarded restore drills**
 
 Show administrator ON/OFF behavior and the manual Keychain-wrapped backup command without `--automatic`. Document that OFF leaves existing artifacts and restore intact, stops scheduled creation/retention, voids the 60-minute RPO target, and allows an already-started backup to finish. After ON, require observation of one start within 60 seconds and no duplicate before 60 minutes.
 
 Show restore dry-run and apply with exact target confirmation. Explain current-policy preservation and when the fallback flag is mandatory. Require a separate-target restore drill, wrong-age-identity failure, verified artifact/hash/size checks, measured RPO/RTO, and restoration of services/readiness.
 
-- [ ] **Step 9: Document search, channels, monitoring, reboot, and acceptance**
+- [x] **Step 9: Document search, channels, monitoring, reboot, and acceptance**
 
 Include Google/Naver DNS verification, sitemap/robots/RSS/IndexNow checks, canonical blog/map/Kakao links, SMTP receipt/full-inquiry modes, Hermes metadata-only Telegram behavior, local monitor validation, independent outside-Mac/LAN uptime, FileVault cold boot/manual unlock, UPS/wired-network/power-loss drill, and final external checks for public/admin hosts.
 
 List these eight current blockers exactly and assign one status to each: production template render/install CLI; first normal publication bootstrap; Kakao URL publication allowlist; Hermes HMAC provisioning; tunnel-off Host-aware health probe; all-Keychain offline recovery bundle; automatic offsite backup replication; stale `PUBLIC_ORIGINS` README mismatch. State that external account creation/payment/ownership remains an operator action.
 
-- [ ] **Step 10: Add entry-point links and fix only the misleading README key**
+- [x] **Step 10: Add entry-point links and fix only the misleading README key**
 
 Add the guide to `docs/00-document-map.md`, link it from `README.md`, and update the stale plural `PUBLIC_ORIGINS` wording to the implemented singular `PUBLIC_ORIGIN` without changing runtime behavior. Add cross-links from deployment and recovery runbooks to the guide and preserve their concise emergency procedures.
 
-- [ ] **Step 11: Run documentation verification**
+- [x] **Step 11: Run documentation verification**
 
 Run:
 
@@ -996,7 +996,7 @@ rg -n "T[B]D|T[O]DO|implement later|AGE-SECRET-KEY-1[A-Z0-9]+|CODEX_API_KEY=|TEL
 
 Expected: configuration tests PASS; the scan returns no placeholder or embedded-secret assignment. The explanatory literal `AGE-SECRET-KEY-1...` is allowed only with ellipsis and must not match a real key.
 
-- [ ] **Step 12: Commit Task 6**
+- [x] **Step 12: Commit Task 6**
 
 ```powershell
 git add docs/operations/mac-mini-setup.md docs/00-document-map.md README.md ops/runbooks/deployment.md ops/runbooks/recovery.md ops/tests/configuration.test.mjs
@@ -1016,7 +1016,7 @@ git commit -m "docs: add Mac mini installation and recovery guide"
 - Consumes: all Task 1–6 deliverables.
 - Produces: a clean verified feature branch, review evidence, GitHub push, and draft pull request.
 
-- [ ] **Step 1: Run focused cross-boundary suites**
+- [x] **Step 1: Run focused cross-boundary suites**
 
 Run:
 
@@ -1028,7 +1028,7 @@ node --test ops/tests/backup-dispatcher.test.mjs ops/tests/backup-restore.test.m
 
 Expected: every focused suite PASS with zero failures.
 
-- [ ] **Step 2: Run static secret, placeholder, and artifact-boundary scans**
+- [x] **Step 2: Run static secret, placeholder, and artifact-boundary scans**
 
 Run:
 
@@ -1041,7 +1041,7 @@ git status --short
 
 Expected: no newly introduced placeholders or credential assignments; `git diff --check` exits 0; only intentional tracked changes are present.
 
-- [ ] **Step 3: Run the full fresh verification gate**
+- [x] **Step 3: Run the full fresh verification gate**
 
 Run:
 
@@ -1051,7 +1051,7 @@ npm.cmd run verify
 
 Expected: typecheck, all unit/integration/Ops suites, builds, Astro validation, and Chromium/Firefox/WebKit E2E all PASS. Record exact counts and elapsed time from this run.
 
-- [ ] **Step 4: Perform two-stage independent review**
+- [x] **Step 4: Perform two-stage independent review**
 
 Dispatch one fresh reviewer for specification compliance and a separate fresh reviewer for code quality/security/operations. Give each `origin/master...HEAD`, the approved design, this plan, and verification output. Required review questions:
 
@@ -1067,7 +1067,7 @@ Does the guide name only real commands and honestly mark all blockers?
 
 Reproduce every Important/Critical finding with a failing test or direct evidence. Apply only valid findings, rerun the smallest affected suite, and ask the corresponding reviewer to re-review until no Important/Critical finding remains.
 
-- [ ] **Step 5: Re-run verification after review fixes**
+- [x] **Step 5: Re-run verification after review fixes**
 
 Run:
 
@@ -1079,7 +1079,7 @@ git status --short --branch
 
 Expected: fresh full verification PASS, clean whitespace check, and no uncommitted implementation changes.
 
-- [ ] **Step 6: Commit any final review corrections**
+- [x] **Step 6: Commit any final review corrections**
 
 If review produced valid changes, commit only those files:
 
