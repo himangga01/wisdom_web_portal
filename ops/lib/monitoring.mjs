@@ -269,8 +269,14 @@ function boundedCount(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : undefined;
 }
 
-function validatedBackupControl(value) {
-  return validateBackupControlRows([{
+function validatedBackupControl(value, nowMs) {
+  if (
+    !exactKeys(value, ["automaticEnabled", "rowVersion", "updatedAtMs"]) ||
+    typeof value.automaticEnabled !== "boolean"
+  ) {
+    throw new Error("Backup control object is invalid");
+  }
+  const control = validateBackupControlRows([{
     singleton: 1,
     automatic_enabled: value?.automaticEnabled === true
       ? 1
@@ -278,6 +284,8 @@ function validatedBackupControl(value) {
     row_version: value?.rowVersion,
     updated_at_ms: value?.updatedAtMs,
   }]);
+  if (control.updatedAtMs > nowMs) throw new Error("Backup control timestamp is invalid");
+  return control;
 }
 
 function safeRunId(value) {
@@ -345,11 +353,19 @@ export async function runLocalMonitor({
 }, adapters) {
   validateConfig(config);
   safeRunId(runId);
-  if (!(now instanceof Date) || !Number.isFinite(now.valueOf())) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  let nowMs;
+  try {
+    nowMs = now instanceof Date ? now.valueOf() : undefined;
+  } catch {
+    fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  }
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
+  const observedNow = new Date(nowMs);
+  if (!Number.isFinite(observedNow.valueOf())) fail("MONITOR_TIME_INVALID", "Monitor time is invalid");
   if (!adapters || typeof adapters !== "object") fail("MONITOR_ADAPTER_INVALID", "Monitoring adapters are required");
   const local = config.local;
   const checkMs = local.timeouts.checkMs;
-  const observedAt = now.toISOString();
+  const observedAt = observedNow.toISOString();
   if (!dryRun && (!(secret instanceof Uint8Array) || secret.byteLength < 32 || secret.byteLength > 512)) {
     return boundedReport({
       schemaVersion: 1,
@@ -370,7 +386,7 @@ export async function runLocalMonitor({
         control = validatedBackupControl(await adapters.readBackupControl(local.databasePath, {
           signal,
           timeoutMs: checkMs,
-        }));
+        }), nowMs);
       } catch {
         return failed("backup", "BACKUP_CONTROL_INVALID");
       }
@@ -378,12 +394,12 @@ export async function runLocalMonitor({
       const status = await adapters.loadNewestBackupStatus(local.backupRoot, { signal });
       const createdAtMs = status ? Date.parse(status.createdAt) : undefined;
       const postTransition = Number.isFinite(createdAtMs) && createdAtMs >= control.updatedAtMs;
-      const transitionAgeMs = now.valueOf() - control.updatedAtMs;
+      const transitionAgeMs = nowMs - control.updatedAtMs;
       if (!postTransition && transitionAgeMs < local.thresholds.backupResumeGraceMinutes * 60_000) {
         return { id: "backup", state: "grace", code: "BACKUP_RESUME_GRACE" };
       }
       if (!postTransition) return failed("backup", "BACKUP_VERIFIED_PAIR_MISSING");
-      const freshness = backupFreshness(status, now, local.thresholds.backupFreshnessMinutes * 60_000);
+      const freshness = backupFreshness(status, observedNow, local.thresholds.backupFreshnessMinutes * 60_000);
       const ageMinutes = freshness.ageMs === undefined ? undefined : Math.floor(freshness.ageMs / 60_000);
       if (freshness.state === "invalid") return failed("backup", "BACKUP_TIMESTAMP_INVALID");
       if (freshness.state === "stale") return failed("backup", "BACKUP_VERIFIED_PAIR_STALE", ageMinutes);
@@ -412,7 +428,6 @@ export async function runLocalMonitor({
         ? healthy("control-ready")
         : failed("control-ready", "CONTROL_NOT_READY")),
     safeCheck("backlogs", "BACKLOG_CHECK_FAILED", checkMs, async (signal) => {
-      const nowMs = now.valueOf();
       const values = await adapters.readBacklogs(local.databasePath, {
         signal,
         timeoutMs: checkMs,
@@ -503,8 +518,8 @@ export async function runLocalMonitor({
     return operationalFailure(base, "INCIDENT_STATE_READ_FAILED");
   }
   const lastSentAt = prior === undefined ? undefined : Date.parse(prior.lastSentAt);
-  const withinCooldown = lastSentAt <= now.valueOf() &&
-    now.valueOf() - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
+  const withinCooldown = lastSentAt <= nowMs &&
+    nowMs - lastSentAt < local.incidentState.cooldownMinutes * 60_000;
   const suppress = prior?.fingerprint === fingerprint && (disabledOnly || withinCooldown);
   if (suppress) {
     return boundedReport({ ...base, handoff: "cooldown-suppressed", exitCode: 2 });
@@ -516,7 +531,7 @@ export async function runLocalMonitor({
       secret,
       payload: handoffPayload(base),
       deliveryId: runId,
-      timestampMs: now.valueOf(),
+      timestampMs: nowMs,
       nonce,
       timeoutMs: local.timeouts.hermesRequestMs,
       maximumAttempts: local.hermes.maximumAttempts,

@@ -285,6 +285,114 @@ test("unreadable and malformed backup control both become one sanitized monitor 
   }
 });
 
+test("runLocalMonitor requires an exact own-key boolean backup control object", async (t) => {
+  const updatedAtMs = Date.parse("2026-07-17T04:00:00.000Z");
+  const inherited = Object.assign(Object.create({ automaticEnabled: true }), {
+    rowVersion: 6,
+    updatedAtMs,
+  });
+  const cases = [
+    ["numeric-zero", { automaticEnabled: 0, rowVersion: 6, updatedAtMs }],
+    ["numeric-one", { automaticEnabled: 1, rowVersion: 6, updatedAtMs }],
+    ["string", { automaticEnabled: "enabled", rowVersion: 6, updatedAtMs }],
+    ["null", { automaticEnabled: null, rowVersion: 6, updatedAtMs }],
+    ["extra-key", { automaticEnabled: true, rowVersion: 6, updatedAtMs, extra: "private" }],
+    ["inherited", inherited],
+  ];
+
+  for (const [index, [label, control]] of cases.entries()) {
+    await t.test(label, async () => {
+      const report = await runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now: new Date("2026-07-17T04:01:00.000Z"),
+        runId: `00000000-0000-4000-8000-00000000027${index}`,
+        dryRun: true,
+      }, healthyAdapters({
+        readBackupControl: async () => control,
+      }));
+
+      assert.deepEqual(report.checks.find(({ id }) => id === "backup"), {
+        id: "backup",
+        state: "failed",
+        code: "BACKUP_CONTROL_INVALID",
+      });
+      assert.doesNotMatch(JSON.stringify(report), /private|enabled/i);
+    });
+  }
+});
+
+test("future backup-control timestamps fail closed before backup scanning while equality remains valid", async () => {
+  const now = new Date("2026-07-17T04:01:00.000Z");
+  let backupStatusReads = 0;
+  let updatedAtMs = now.valueOf() + 1;
+  const adapters = healthyAdapters({
+    readBackupControl: async () => ({
+      automaticEnabled: true,
+      rowVersion: 7,
+      updatedAtMs,
+    }),
+    loadNewestBackupStatus: async () => {
+      backupStatusReads += 1;
+      return undefined;
+    },
+  });
+
+  const future = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now,
+    runId: "00000000-0000-4000-8000-000000000280",
+    dryRun: true,
+  }, adapters);
+  assert.deepEqual(future.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "failed",
+    code: "BACKUP_CONTROL_INVALID",
+  });
+  assert.equal(backupStatusReads, 0);
+
+  updatedAtMs = now.valueOf();
+  const equal = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now,
+    runId: "00000000-0000-4000-8000-000000000281",
+    dryRun: true,
+  }, adapters);
+  assert.deepEqual(equal.checks.find(({ id }) => id === "backup"), {
+    id: "backup",
+    state: "grace",
+    code: "BACKUP_RESUME_GRACE",
+  });
+  assert.equal(backupStatusReads, 1);
+});
+
+test("monitor time must be a nonnegative safe integer before any adapter operation", async (t) => {
+  const cases = [
+    ["negative", new Date(-1)],
+    ["fractional", Object.assign(new Date(0), { valueOf: () => 0.5 })],
+    ["unsafe", Object.assign(new Date(0), { valueOf: () => Number.MAX_SAFE_INTEGER + 1 })],
+    ["outside-date-range", Object.assign(new Date(0), { valueOf: () => Number.MAX_SAFE_INTEGER })],
+  ];
+  for (const [index, [label, now]] of cases.entries()) {
+    await t.test(label, async () => {
+      let adapterCalls = 0;
+      const adapters = Object.fromEntries([
+        "readBackupControl", "loadNewestBackupStatus", "diskFreePercent", "launchdRunning",
+        "controlReady", "readBacklogs", "loadIncidentState", "writeIncidentState",
+        "clearIncidentState", "deliverHermes",
+      ].map((name) => [name, async () => {
+        adapterCalls += 1;
+      }]));
+      await assert.rejects(runLocalMonitor({
+        config: parseMonitoringConfig(JSON.stringify(configValue())),
+        now,
+        runId: `00000000-0000-4000-8000-00000000029${index}`,
+        dryRun: true,
+      }, adapters), { code: "MONITOR_TIME_INVALID" });
+      assert.equal(adapterCalls, 0);
+    });
+  }
+});
+
 test("ON without a post-transition verified pair has grace only before the exact ten-minute boundary", async (t) => {
   const transitionMs = Date.parse("2026-07-17T04:00:00.000Z");
   const control = {
@@ -817,7 +925,7 @@ test("protected backup control query returns only the validated schema-v7 single
     updatedAtMs: Date.UTC(2026, 6, 17, 4),
   });
   assert.deepEqual(
-    await createSystemMonitoringAdapters().readBackupControl(databasePath, { timeoutMs: 1_000 }),
+    await createSystemMonitoringAdapters().readBackupControl(databasePath, { timeoutMs: 3_000 }),
     {
       automaticEnabled: false,
       rowVersion: 3,
