@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -614,7 +614,7 @@ test("mac release normalizes node_modules to production dependencies before seal
 });
 
 test("preflight CLI maps --current into path validation", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "wisdom-preflight-cli-"));
+  const tempRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-preflight-cli-")));
   const releaseRoot = path.join(tempRoot, "portal", "releases");
   const dataRoot = path.join(tempRoot, "data");
   await mkdir(releaseRoot, { recursive: true });

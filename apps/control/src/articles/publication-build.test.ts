@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -193,7 +194,7 @@ ${escaped.map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "wisdom-publication-build-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wisdom-publication-build-")));
   mkdirSync(join(root, "snapshot"));
   mkdirSync(join(root, "site"));
   mkdirSync(join(root, "home"));
@@ -231,7 +232,9 @@ describe("isolated Astro publication build", () => {
         NODE_ENV: "production",
         NAVER_SITE_VERIFICATION_META: NAVER_META_TOKEN,
         NO_COLOR: "1",
-        PATH: dirname(resolve(root, "bin", "node")),
+        PATH: process.platform === "win32"
+          ? dirname(resolve(root, "bin", "node"))
+          : `${dirname(resolve(root, "bin", "node"))}:/usr/bin:/bin`,
         PUBLIC_ORIGIN: PRODUCTION_PUBLIC_ORIGIN,
         WISDOM_PUBLISHED_CONTENT_DIR: resolve(root, "snapshot"),
       },
@@ -240,6 +243,31 @@ describe("isolated Astro publication build", () => {
       stderrLimit: 65_536,
     });
     expect(JSON.stringify(observed)).not.toContain("SECRET");
+  });
+
+  it("returns a bounded diagnostic code for a failed isolated build", async () => {
+    await expect(runPublicationBuild({
+      siteSourceRoot: resolve(root, "site"),
+      snapshotDirectory: resolve(root, "snapshot"),
+      outputDirectory: resolve(root, "dist"),
+      buildHome: resolve(root, "home"),
+      npmBinary: resolve(root, "bin", "npm"),
+      nodeBinary: resolve(root, "bin", "node"),
+      timeoutMs: 120_000,
+      publicOrigin: PRODUCTION_PUBLIC_ORIGIN,
+    }, {
+      runProcess() {
+        return Promise.resolve({
+          exitCode: 254,
+          stdout: "private output must not escape",
+          stderr: "npm error syscall spawn sh\nnpm error spawn sh ENOENT\n/private/customer/path",
+        });
+      },
+    })).rejects.toMatchObject({
+      message: "PUBLICATION_BUILD_FAILED",
+      exitCode: 254,
+      diagnosticCode: "BUILD_SHELL_UNAVAILABLE",
+    });
   });
 
   it("rejects non-exact HTTPS origins and ambiguous Naver verification before spawning", async () => {

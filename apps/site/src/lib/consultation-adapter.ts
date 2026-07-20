@@ -44,7 +44,7 @@ export interface ConsultationSubmission {
 
 export type ConsultationPostResult =
   | { ok: true; receipt: ConsultationReceipt }
-  | { ok: false; status: number; error?: ApiError };
+  | { ok: false; status: number; error?: ApiError; retryAfterSeconds?: number };
 
 export function createConsultationIdempotencyKeyCache(
   createKey: () => string = () => globalThis.crypto.randomUUID(),
@@ -208,7 +208,21 @@ export async function postConsultation(
   }
 
   const error = apiErrorSchema.safeParse(body);
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterSeconds = retryAfter && /^\d{1,5}$/u.test(retryAfter)
+    ? Number(retryAfter)
+    : undefined;
+  const boundedRetryAfter = retryAfterSeconds !== undefined
+    && retryAfterSeconds >= 1
+    && retryAfterSeconds <= 86_400
+    ? retryAfterSeconds
+    : undefined;
   return error.success
-    ? { ok: false, status: response.status, error: error.data }
+    ? {
+      ok: false,
+      status: response.status,
+      error: error.data,
+      ...(boundedRetryAfter === undefined ? {} : { retryAfterSeconds: boundedRetryAfter }),
+    }
     : { ok: false, status: response.status };
 }

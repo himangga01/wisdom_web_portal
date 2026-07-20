@@ -36,6 +36,20 @@ const MAX_RELEASE_FILE_BYTES = 16 * 1_048_576;
 const MAX_RELEASE_BYTES = 256 * 1_048_576;
 const LAUNCH_LOCALES = new Set<Locale>(["ko", "en", "zh-Hans", "zh-Hant"]);
 
+class PublicationBuildFailure extends Error {
+  readonly exitCode: number;
+  readonly diagnosticCode: "BUILD_SHELL_UNAVAILABLE" | "BUILD_PROCESS_FAILED";
+
+  constructor(exitCode: number, stderr: string) {
+    super("PUBLICATION_BUILD_FAILED");
+    this.name = "PublicationBuildFailure";
+    this.exitCode = exitCode;
+    this.diagnosticCode = /(?:spawn sh ENOENT|syscall spawn sh)/u.test(stderr)
+      ? "BUILD_SHELL_UNAVAILABLE"
+      : "BUILD_PROCESS_FAILED";
+  }
+}
+
 export interface PublicationProcessRequest {
   command: string;
   args: readonly string[];
@@ -220,7 +234,9 @@ export async function runPublicationBuild(
         ? { NAVER_SITE_VERIFICATION_FILE: verification.naverFile.filename }
         : {}),
       NO_COLOR: "1",
-      PATH: dirname(input.nodeBinary),
+      PATH: process.platform === "win32"
+        ? dirname(input.nodeBinary)
+        : `${dirname(input.nodeBinary)}:/usr/bin:/bin`,
       PUBLIC_ORIGIN: publicOrigin,
       WISDOM_PUBLISHED_CONTENT_DIR: snapshotDirectory,
     },
@@ -228,7 +244,7 @@ export async function runPublicationBuild(
     stdoutLimit: 65_536,
     stderrLimit: 65_536,
   });
-  if (result.exitCode !== 0) throw new Error("PUBLICATION_BUILD_FAILED");
+  if (result.exitCode !== 0) throw new PublicationBuildFailure(result.exitCode, result.stderr);
 }
 
 interface InventoryFile {

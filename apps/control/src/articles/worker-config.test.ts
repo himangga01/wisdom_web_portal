@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function validEnvironment() {
-  const root = mkdtempSync(join(tmpdir(), "wisdom-worker-config-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wisdom-worker-config-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const codexBinary = join(root, "codex-bin");
   const gitBinary = join(root, "git-bin");

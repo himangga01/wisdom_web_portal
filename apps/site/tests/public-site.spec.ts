@@ -93,7 +93,7 @@ function physicalViewportSize(browserName: string, width: number, height: number
 test("serves all sixty-four localized public routes", async ({ request }) => {
   for (const { pathname } of PUBLIC_ROUTE_ENTRIES) {
     const response = await request.get(pathname);
-    expect([200, 404], `${pathname} response`).toContain(response.status());
+    expect(response.status(), `${pathname} response`).toBe(200);
     expect(await response.text(), `${pathname} document`).toContain("<!DOCTYPE html>");
   }
 });
@@ -556,6 +556,7 @@ test("reloads stale consent, clears choices, and requires a fresh explicit agree
   await page.check('[name="privacyConsent"]');
   const submit = page.getByRole("button", { name: "Send consultation request" });
   await submit.click();
+  await expect.poll(() => submissions).toBe(1);
 
   await expect(page.locator("[data-form-status]")).toContainText("consent documents changed");
   await expect(page.locator('[name="privacyConsent"]')).not.toBeChecked();
@@ -794,6 +795,54 @@ test("submits checked marketing consent and shows localized API failure", async 
     formToken: "signed-form-token-zh-hans",
     website: "",
   });
+});
+
+test("maps structured field errors and Retry-After into accessible localized feedback", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(consentResponse("en")) });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "VALIDATION_FAILED",
+          message: "Invalid request",
+          fieldErrors: { email: ["Email rejected by server"] },
+          requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 429,
+      headers: { "Retry-After": "7" },
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "RATE_LIMITED",
+        message: "Try later",
+        requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZY",
+      }),
+    });
+  });
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "other");
+  await page.fill('[name="name"]', "Test Client");
+  await page.fill('[name="phone"]', "01012345678");
+  await page.fill('[name="email"]', "client@example.com");
+  await page.fill('[name="message"]', "Please review the administrative process and required documents.");
+  await page.check('[name="privacyConsent"]');
+  const submit = page.getByRole("button", { name: "Send consultation request" });
+  await submit.click();
+  await expect(page.locator('[name="email"]')).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator('[name="email"]')).toBeFocused();
+  await page.fill('[name="email"]', "updated@example.com");
+  await expect(page.locator('[name="email"]')).not.toHaveAttribute("aria-invalid", "true");
+  await submit.click();
+  await expect(page.locator("[data-form-status]")).toContainText("Try again in 7 seconds");
 });
 
 for (const path of ["/", "/consultation"]) {

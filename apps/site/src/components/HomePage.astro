@@ -17,6 +17,7 @@ const content = siteContent[locale];
 const narrative = content.pages.home;
 const kakaoUrl = getKakaoChatUrl(import.meta.env.PUBLIC_KAKAO_CHAT_URL);
 const consultationHref = toLocalizedPath(locale, "/consultation");
+const insightsHref = toLocalizedPath(locale, "/insights");
 const revealAttributes = (key: RevealKey) => {
   const target = HOME_REVEAL_TARGETS.find((candidate) => candidate.key === key);
   if (!target) throw new Error(`Missing reveal target: ${key}`);
@@ -43,8 +44,8 @@ const revealAttributes = (key: RevealKey) => {
       </div>
       <div class="secondary-actions" aria-label={content.accessibility.additionalContactOptions}>
         {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
-        <a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a>
-        <a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a>
+        <a href={OFFICE.blogUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.blog} (${content.accessibility.newWindow})`}>{content.buttons.blog}</a>
+        <a href={OFFICE.mapUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.map} (${content.accessibility.newWindow})`}>{content.buttons.map}</a>
       </div>
     </div>
 
@@ -137,9 +138,9 @@ const revealAttributes = (key: RevealKey) => {
       <h2>{narrative.insightsTitle}</h2>
     </div>
     <div class="three-column-grid insight-grid">
-      <article {...revealAttributes("insight-procurement")}><span>{narrative.insightCategories[0]}</span><h3>{narrative.insights[0].title}</h3><p>{narrative.insights[0].body}</p></article>
-      <article {...revealAttributes("insight-enterprise")}><span>{narrative.insightCategories[1]}</span><h3>{narrative.insights[1].title}</h3><p>{narrative.insights[1].body}</p></article>
-      <article {...revealAttributes("insight-visa")}><span>{narrative.insightCategories[2]}</span><h3>{narrative.insights[2].title}</h3><p>{narrative.insights[2].body}</p></article>
+      <article {...revealAttributes("insight-procurement")}><span>{narrative.insightCategories[0]}</span><h3><a href={insightsHref}>{narrative.insights[0].title}</a></h3><p>{narrative.insights[0].body}</p></article>
+      <article {...revealAttributes("insight-enterprise")}><span>{narrative.insightCategories[1]}</span><h3><a href={insightsHref}>{narrative.insights[1].title}</a></h3><p>{narrative.insights[1].body}</p></article>
+      <article {...revealAttributes("insight-visa")}><span>{narrative.insightCategories[2]}</span><h3><a href={insightsHref}>{narrative.insights[2].title}</a></h3><p>{narrative.insights[2].body}</p></article>
     </div>
   </div>
 </section>

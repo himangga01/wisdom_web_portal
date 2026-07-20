@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,7 +17,7 @@ import {
 } from "../lib/release-system.mjs";
 
 async function releaseFixture() {
-  const appRoot = await mkdtemp(path.join(os.tmpdir(), "wisdom-release-system-"));
+  const appRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-release-system-")));
   const sourceRoot = path.join(appRoot, "source");
   const releaseRoot = path.join(appRoot, "deployed", "releases");
   const currentLink = path.join(appRoot, "deployed", "current");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -103,7 +103,7 @@ function createRestoreRetentionFixtureSchema(database) {
 }
 
 test("age decrypt streams identity through stdin, never a file or process argument", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-age-adapter-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-age-adapter-")));
   const input = path.join(directory, "backup.age");
   const output = path.join(directory, "restored.sqlite");
   const calls = [];
@@ -135,7 +135,7 @@ test("age decrypt streams identity through stdin, never a file or process argume
 });
 
 test("age decrypt fails closed when a legacy identity residue exists in the output directory", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-age-residue-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-age-residue-")));
   const input = path.join(directory, "backup.age");
   const output = path.join(directory, "restored.sqlite");
   const residue = path.join(directory, "previous.sqlite.identity-abandoned");
@@ -157,7 +157,7 @@ test("age decrypt fails closed when a legacy identity residue exists in the outp
 });
 
 test("age encryption accepts only an age recipient and absolute paths", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-age-encrypt-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-age-encrypt-")));
   const input = path.join(directory, "snapshot.sqlite");
   const output = path.join(directory, "snapshot.age");
   const calls = [];
@@ -180,7 +180,7 @@ test("age encryption accepts only an age recipient and absolute paths", async ()
 });
 
 test("SQLite restore retention removes expired PII and cancels its queued delivery", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-")));
   const databasePath = path.join(directory, "restored.sqlite");
   const rawCanary = `EXPIRED-RAW-CANARY-${"R".repeat(512)}`;
   const { default: Database } = await import("better-sqlite3");
@@ -279,7 +279,7 @@ test("SQLite restore retention removes expired PII and cancels its queued delive
 });
 
 test("SQLite restore retention rejects an excessive initial due set before mutation", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-limit-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-limit-")));
   const databasePath = path.join(directory, "restored.sqlite");
   const { default: Database } = await import("better-sqlite3");
   const database = new Database(databasePath);
@@ -314,7 +314,7 @@ test("SQLite restore retention rejects an excessive initial due set before mutat
 });
 
 test("SQLite restore retention fails closed when a due batch makes no progress", async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-progress-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-restore-retention-progress-")));
   const databasePath = path.join(directory, "restored.sqlite");
   const { default: Database } = await import("better-sqlite3");
   const database = new Database(databasePath);

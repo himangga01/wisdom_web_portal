@@ -18,11 +18,12 @@ const labels: Record<Locale, {
   modified: string;
   reviewedBy: string;
   sources: string;
+  newWindow: string;
 }> = {
-  ko: { firstPublished: "최초 공개", modified: "최종 수정", reviewedBy: "검수", sources: "출처" },
-  en: { firstPublished: "First published", modified: "Last modified", reviewedBy: "Reviewed by", sources: "Sources" },
-  "zh-Hans": { firstPublished: "首次发布", modified: "最后修改", reviewedBy: "审查", sources: "来源" },
-  "zh-Hant": { firstPublished: "首次發布", modified: "最後修改", reviewedBy: "審查", sources: "來源" },
+  ko: { firstPublished: "최초 공개", modified: "최종 수정", reviewedBy: "검수", sources: "출처", newWindow: "새 창에서 열림" },
+  en: { firstPublished: "First published", modified: "Last modified", reviewedBy: "Reviewed by", sources: "Sources", newWindow: "opens in a new window" },
+  "zh-Hans": { firstPublished: "首次发布", modified: "最后修改", reviewedBy: "审查", sources: "来源", newWindow: "在新窗口中打开" },
+  "zh-Hant": { firstPublished: "首次發布", modified: "最後修改", reviewedBy: "審查", sources: "來源", newWindow: "在新視窗中開啟" },
 };
 const copy = labels[article.locale];
 ---
@@ -63,7 +64,7 @@ const copy = labels[article.locale];
             <ol>
               {article.sources.map((source) => (
                 <li>
-                  <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
+                  <a href={source.url} target="_blank" rel="noreferrer" aria-label={`${source.url} (${copy.newWindow})`}>{source.url}</a>
                   <time datetime={source.sourceTimestamp}>{source.sourceTimestamp.slice(0, 10)}</time>
                 </li>
               ))}

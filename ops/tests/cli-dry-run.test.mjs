@@ -123,7 +123,7 @@ test("deploy and rollback CLIs default to plans without invoking macOS tools", a
 });
 
 test("stale lock recovery CLI is dry-run and binds release and database paths exactly", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-")));
   const owner = (kind) => `${JSON.stringify({
     formatVersion: 2,
     kind,
@@ -162,7 +162,7 @@ test("stale lock recovery CLI is dry-run and binds release and database paths ex
 });
 
 test("stale lock recovery CLI rejects lexical aliases in the lock and confirmation paths", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-alias-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-alias-")));
   const releaseRoot = path.join(root, "releases");
   const releaseLock = path.join(releaseRoot, ".release-operation-lock");
   await mkdir(releaseLock, { recursive: true });

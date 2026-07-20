@@ -61,6 +61,8 @@ describe("public Astro page DOM", () => {
     expect(html).toContain('href="/zh-hans"');
     expect(html).toContain('href="/zh-hant"');
     expect(html).toContain('href="/en/consultation"');
+    expect(html.match(/href="\/en\/insights"/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(html).toContain('aria-label="Naver Blog (opens in a new window)"');
     expect(html.match(/data-reveal(?:=|\s)/g)).toHaveLength(18);
     expect(html.match(/rel="canonical"/g)).toHaveLength(1);
     expect(html).toContain(`rel="canonical" href="${searchOrigin}/en"`);

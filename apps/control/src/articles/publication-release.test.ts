@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   rmSync,
@@ -95,7 +96,7 @@ beforeEach(() => {
   fixture = createTestDatabase();
   seedCompleteConsentBundles(fixture.db, consentBundle(), NOW - 10_000);
   activateConsentBundle(fixture.db, "bundle-2026-07-16", NOW - 9_000);
-  root = mkdtempSync(join(tmpdir(), "wisdom-publication-release-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wisdom-publication-release-")));
   mkdirSync(join(root, "releases"));
   mkdirSync(join(root, "site"));
   config = {

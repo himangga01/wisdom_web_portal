@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -34,7 +34,7 @@ const currentIdentity = Object.freeze({
 });
 
 async function fixture(name) {
-  const root = await mkdtemp(path.join(os.tmpdir(), `wisdom-${name}-`));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), `wisdom-${name}-`)));
   return { root, lockPath: path.join(root, ".fixture-lock") };
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -91,7 +91,7 @@ test("runtime config accepts only the non-secret allowlist", () => {
 });
 
 test("runtime config file must be absolute and cannot be a symlink", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "wisdom-runtime-"));
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-runtime-")));
   const config = path.join(directory, "runtime.env");
   await writeFile(config, "NODE_ENV=production\n", { mode: 0o600 });
 

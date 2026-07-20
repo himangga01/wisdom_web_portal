@@ -806,7 +806,7 @@ p {
 }
 
 .service-card > span {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   font-family: var(--wisdom-font-serif);
 }
 
@@ -894,7 +894,7 @@ p {
 }
 
 .service-list span {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   font-family: var(--wisdom-font-serif);
 }
 
@@ -925,7 +925,7 @@ p {
 .insight-notice > span,
 .not-found-card > span {
   display: block;
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   font-family: var(--wisdom-font-serif);
   font-size: clamp(4rem, 12vw, 8rem);
   line-height: 1;
@@ -965,7 +965,7 @@ p {
 
 .insight-meta {
   margin: 0;
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -1011,7 +1011,7 @@ p {
 }
 
 .article-dates dt {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.05em;
@@ -1385,7 +1385,7 @@ p {
 .withdrawal-steps li::before {
   margin-left: -3rem;
   padding-right: 1.4rem;
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-bronze-text);
   content: counter(withdrawal, decimal-leading-zero);
   font-family: var(--wisdom-font-serif);
 }

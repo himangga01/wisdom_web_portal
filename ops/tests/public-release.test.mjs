@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -56,7 +56,7 @@ async function writeWisdomRelease(release, files) {
 }
 
 test("explicit ops bootstrap manifest binds the whole initial static tree", async () => {
-  const release = await mkdtemp(path.join(os.tmpdir(), "wisdom-public-release-"));
+  const release = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-public-release-")));
   await mkdir(path.join(release, "_astro"));
   await writeFile(path.join(release, "index.html"), "<!doctype html><title>Wisdom</title>");
   await writeFile(path.join(release, "_astro", "app.abcdef.js"), "export default true;");
@@ -74,7 +74,7 @@ test("explicit ops bootstrap manifest binds the whole initial static tree", asyn
 });
 
 test("authoritative Wisdom manifest requires canonical exact inventory, size, and every hash", async () => {
-  const release = await mkdtemp(path.join(os.tmpdir(), "wisdom-authoritative-release-"));
+  const release = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-authoritative-release-")));
   await writeWisdomRelease(release, {
     "_astro/app.abcdef.js": "export default true;",
     "index.html": "<!doctype html><title>Wisdom</title>",
@@ -93,7 +93,7 @@ test("authoritative Wisdom manifest requires canonical exact inventory, size, an
 });
 
 test("authoritative Wisdom manifest rejects an incomplete approved policy snapshot", async () => {
-  const release = await mkdtemp(path.join(os.tmpdir(), "wisdom-policy-release-"));
+  const release = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-policy-release-")));
   await writeWisdomRelease(release, { "index.html": "published" });
   const invalid = consentBundle();
   invalid.documents.pop();
@@ -111,7 +111,7 @@ test("authoritative Wisdom manifest rejects an incomplete approved policy snapsh
 });
 
 test("bootstrap current is refused after any normal Wisdom publication exists", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-public-current-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-public-current-")));
   const publicReleaseRoot = path.join(root, "public-releases");
   const bootstrap = path.join(publicReleaseRoot, "20260716T010203Z-abcdef1");
   const published = path.join(publicReleaseRoot, "20260716T020304Z-bbbbbbb");
@@ -137,7 +137,7 @@ test("bootstrap current is refused after any normal Wisdom publication exists", 
 });
 
 test("public release refuses symlinked content", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-public-symlink-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-public-symlink-")));
   const release = path.join(root, "release");
   const external = path.join(root, "external.js");
   await mkdir(release);

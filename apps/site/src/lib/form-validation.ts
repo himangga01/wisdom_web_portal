@@ -67,6 +67,26 @@ export function initializeConsultationForms(documentRef: Document = document): v
       status.textContent = "";
     };
 
+    const applyServerFieldErrors = (errors: Record<string, string[]> | undefined): boolean => {
+      if (!errors) return false;
+      let first: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | undefined;
+      for (const [name, messages] of Object.entries(errors)) {
+        const control = form.elements.namedItem(name);
+        if (
+          !(control instanceof HTMLInputElement)
+          && !(control instanceof HTMLSelectElement)
+          && !(control instanceof HTMLTextAreaElement)
+        ) continue;
+        control.setCustomValidity(messages[0] ?? form.dataset.statusInvalid ?? "");
+        control.setAttribute("aria-invalid", "true");
+        control.dataset.serverError = "true";
+        first ??= control;
+      }
+      first?.focus();
+      first?.reportValidity();
+      return first !== undefined;
+    };
+
     const setConsentRetryAvailable = (available: boolean): void => {
       if (!consentRetry) return;
       consentRetry.hidden = !available;
@@ -166,6 +186,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
         || control instanceof HTMLSelectElement
         || control instanceof HTMLTextAreaElement
       ) {
+        if (control.dataset.serverError === "true") return;
         control.setCustomValidity("");
         control.setCustomValidity(validationMessage(control));
       }
@@ -179,6 +200,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
         || control instanceof HTMLTextAreaElement
       ) {
         control.setCustomValidity("");
+        control.removeAttribute("aria-invalid");
+        delete control.dataset.serverError;
       }
       updateEmailConstraint();
     });
@@ -237,6 +260,18 @@ export function initializeConsultationForms(documentRef: Document = document): v
                 terminalStatus = {
                   state: "error",
                   message: form.dataset.statusConsentUpdated ?? "",
+                };
+                return;
+              }
+              if (result.status === 422 && applyServerFieldErrors(result.error?.fieldErrors)) {
+                terminalStatus = { state: "error", message: form.dataset.statusInvalid ?? "" };
+                return;
+              }
+              if (result.status === 429) {
+                terminalStatus = {
+                  state: "error",
+                  message: (form.dataset.statusRateLimited ?? form.dataset.statusFailure ?? "")
+                    .replace("{seconds}", String(result.retryAfterSeconds ?? 60)),
                 };
                 return;
               }

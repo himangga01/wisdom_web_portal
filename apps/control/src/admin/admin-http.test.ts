@@ -245,6 +245,17 @@ describe("administrator article review and explicit translation routes", () => {
     });
     expect(releases.status).toBe(200);
     expect(await releases.text()).toContain("Preview approved content");
+    const publishConfirmation = await current.app.request(`${ADMIN_ORIGIN}/admin/publish/confirm`, {
+      method: "POST",
+      headers: {
+        origin: ADMIN_ORIGIN,
+        cookie: session.cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: session.csrf }),
+    });
+    expect(publishConfirmation.status).toBe(200);
+    const publishToken = confirmationToken(await publishConfirmation.text());
     const unavailablePublish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
       method: "POST",
       headers: {
@@ -252,9 +263,7 @@ describe("administrator article review and explicit translation routes", () => {
         cookie: session.cookie,
         "content-type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({
-        confirmation: "publish-approved", csrf: session.csrf,
-      }),
+      body: new URLSearchParams({ confirmationToken: publishToken, csrf: session.csrf }),
     });
     expect(unavailablePublish.status).toBe(503);
   });
@@ -267,6 +276,11 @@ describe("administrator publication failure recovery", () => {
       rollback: vi.fn(async () => { throw new Error("secret rollback storage path"); }),
     };
     const current = await fixture("127.0.0.1", { articlePublication: publication });
+    current.database.db.sqlite.prepare(`
+      INSERT INTO releases (
+        id, version, path, manifest_sha256, state, created_at_ms, created_by
+      ) VALUES ('release-1', 'release-v1', '/safe/release-v1', ?, 'retired', 1, 'admin')
+    `).run(Buffer.alloc(32, 7));
     const session = await login(current);
     const headers = {
       origin: ADMIN_ORIGIN,
@@ -274,10 +288,20 @@ describe("administrator publication failure recovery", () => {
       "content-type": "application/x-www-form-urlencoded",
     };
 
-    const publish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
+    const legacyPublish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
       method: "POST",
       headers,
       body: new URLSearchParams({ confirmation: "publish-approved", csrf: session.csrf }),
+    });
+    expect(legacyPublish.status).toBe(422);
+    expect(publication.publish).not.toHaveBeenCalled();
+    const publishConfirmation = await current.app.request(`${ADMIN_ORIGIN}/admin/publish/confirm`, {
+      method: "POST", headers, body: new URLSearchParams({ csrf: session.csrf }),
+    });
+    const publishToken = confirmationToken(await publishConfirmation.text());
+    const publish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
+      method: "POST", headers,
+      body: new URLSearchParams({ confirmationToken: publishToken, csrf: session.csrf }),
     });
     expect(publish.status).toBe(503);
     expect(publish.headers.get("content-type")).toContain("text/html");
@@ -286,13 +310,15 @@ describe("administrator publication failure recovery", () => {
     expect(publishHtml).toContain('href="/admin/publish/preview"');
     expect(publishHtml).not.toContain("private-release");
 
-    const rollback = await current.app.request(`${ADMIN_ORIGIN}/admin/releases/release-1/rollback`, {
+    const rollbackConfirmation = await current.app.request(`${ADMIN_ORIGIN}/admin/releases/release-1/rollback/confirm`, {
       method: "POST",
       headers,
-      body: new URLSearchParams({
-        confirmation: "rollback-retained-release",
-        csrf: session.csrf,
-      }),
+      body: new URLSearchParams({ csrf: session.csrf }),
+    });
+    const rollbackToken = confirmationToken(await rollbackConfirmation.text());
+    const rollback = await current.app.request(`${ADMIN_ORIGIN}/admin/releases/release-1/rollback`, {
+      method: "POST", headers,
+      body: new URLSearchParams({ confirmationToken: rollbackToken, csrf: session.csrf }),
     });
     expect(rollback.status).toBe(503);
     expect(rollback.headers.get("content-type")).toContain("text/html");
@@ -300,6 +326,10 @@ describe("administrator publication failure recovery", () => {
     expect(rollbackHtml).toContain("Publication was not changed");
     expect(rollbackHtml).toContain('href="/admin/releases"');
     expect(rollbackHtml).not.toContain("storage path");
+    expect((await current.app.request(`${ADMIN_ORIGIN}/admin/releases/release-1/rollback`, {
+      method: "POST", headers,
+      body: new URLSearchParams({ confirmationToken: rollbackToken, csrf: session.csrf }),
+    })).status).toBe(422);
   });
 });
 
@@ -405,6 +435,12 @@ function sensitiveHeaders(response: Response): void {
   expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
   expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   expect(response.headers.get("strict-transport-security")).toBeNull();
+}
+
+function confirmationToken(html: string): string {
+  const token = /name="confirmationToken" value="([^"]+)"/u.exec(html)?.[1];
+  expect(token).toBeTruthy();
+  return token!;
 }
 
 function cookiePair(response: Response): string {
@@ -703,11 +739,16 @@ describe("separate host and administrator browser boundary", () => {
     const firstPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?page=1`, {
       headers: { cookie: session.cookie },
     });
-    expect(await firstPage.text()).toContain("receipt-22");
+    const firstPageHtml = await firstPage.text();
+    expect(firstPageHtml).toContain("receipt-22");
+    expect(firstPageHtml).toContain('href="/admin/consultations?page=2"');
+    expect(firstPageHtml).toContain("22 total");
     const secondPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?page=2`, {
       headers: { cookie: session.cookie },
     });
-    expect(await secondPage.text()).toContain("receipt-1");
+    const secondPageHtml = await secondPage.text();
+    expect(secondPageHtml).toContain("receipt-1");
+    expect(secondPageHtml).toContain('href="/admin/consultations?page=1"');
     const consents = await current.app.request(`${ADMIN_ORIGIN}/admin/consents`, {
       headers: { cookie: session.cookie },
     });
@@ -720,6 +761,10 @@ describe("separate host and administrator browser boundary", () => {
     for (const field of ["smtpHost", "smtpPort", "smtpFrom", "smtpTo", "smtpTlsMode", "smtpSecretRef"]) {
       expect(notificationHtml).toContain(`name="${field}"`);
     }
+    expect(notificationHtml).toContain('id="notification-email-settings"');
+    expect(notificationHtml).toContain('id="notification-hermes-settings"');
+    expect(notificationHtml).toContain('name="channel" value="email"');
+    expect(notificationHtml).toContain('name="channel" value="hermes-telegram"');
     expect(notificationHtml).not.toMatch(/name="(?:smtp)?password"/i);
     const notificationCsrf = /action="\/admin\/notifications"[^>]*>[\s\S]*?name="csrf" value="([^"]+)"/.exec(notificationHtml)?.[1];
     expect(notificationCsrf).toBe(session.csrf);

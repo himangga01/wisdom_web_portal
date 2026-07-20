@@ -217,6 +217,26 @@ describe("consultation form adapter", () => {
     });
   });
 
+  it("returns structured field errors and a bounded Retry-After value", async () => {
+    const { buildConsultationSubmission, postConsultation } = await import("./consultation-adapter.js");
+    const error = {
+      code: "RATE_LIMITED",
+      message: "Try later",
+      fieldErrors: { email: ["Email is invalid"] },
+      requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+    };
+    const result = await postConsultation(
+      buildConsultationSubmission(formData(), consentConfiguration),
+      {
+        fetchRef: async () => new Response(JSON.stringify(error), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "37" },
+        }),
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 429, error, retryAfterSeconds: 37 });
+  });
+
   it("aborts a hung consultation submission with a bounded timeout signal", async () => {
     const { buildConsultationSubmission, postConsultation } = await import("./consultation-adapter.js");
     const timeoutController = new AbortController();

@@ -24,8 +24,8 @@ const content = siteContent[locale];
       <ul class="footer-links">
         <li><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></li>
         <li><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></li>
-        <li><a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a></li>
-        <li><a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a></li>
+        <li><a href={OFFICE.blogUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.blog} (${content.accessibility.newWindow})`}>{content.buttons.blog}</a></li>
+        <li><a href={OFFICE.mapUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.map} (${content.accessibility.newWindow})`}>{content.buttons.map}</a></li>
       </ul>
     </div>
     <div>

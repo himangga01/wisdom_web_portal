@@ -83,12 +83,30 @@ const MAX_FORM_BYTES = 16 * 1_024;
 const MAX_FORM_FIELDS = 32;
 const MAX_FORM_FIELD_NAME = 128;
 const MAX_FORM_FIELD_VALUE = 4_096;
+const ARTICLE_PAGE_SIZE = 50;
+const CONSULTATION_PAGE_SIZE = 20;
+const RELEASE_PAGE_SIZE = 25;
+
+function requestedPage(value: string | undefined): number {
+  const parsed = Number(value ?? "1");
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function pagination(path: string, pageNumber: number, pageSize: number, total: number): string {
+  const previous = pageNumber > 1
+    ? `<a rel="prev" href="${path}?page=${pageNumber - 1}">Previous</a>`
+    : "";
+  const next = pageNumber * pageSize < total
+    ? `<a rel="next" href="${path}?page=${pageNumber + 1}">Next</a>`
+    : "";
+  return `<nav class="pagination" aria-label="Pagination"><span>${total} total · Page ${pageNumber}</span>${previous}${next}</nav>`;
+}
 
 function page(title: string, body: string, lang = "en", csrfToken?: string): string {
   const logout = csrfToken === undefined
     ? ""
     : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">Sign out</button></form>`;
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
+  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/admin/styles.css"></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -330,6 +348,58 @@ function consultationDetail(
 }
 
 function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
+  const pendingConfirmations = new Map<string, {
+    action: "publish" | "rollback";
+    target: string;
+    adminId: string;
+    sessionToken: string;
+    expiresAtMs: number;
+  }>();
+  const issueConfirmation = (
+    session: ResolvedAdminSession,
+    action: "publish" | "rollback",
+    target: string,
+  ): string => {
+    const now = dependencies.now();
+    for (const [token, value] of pendingConfirmations) {
+      if (value.expiresAtMs <= now) pendingConfirmations.delete(token);
+    }
+    while (pendingConfirmations.size >= 256) {
+      const oldest = pendingConfirmations.keys().next().value as string | undefined;
+      if (!oldest) break;
+      pendingConfirmations.delete(oldest);
+    }
+    const token = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
+    pendingConfirmations.set(token, {
+      action,
+      target,
+      adminId: session.adminId,
+      sessionToken: session.sessionToken,
+      expiresAtMs: now + 2 * 60_000,
+    });
+    return token;
+  };
+  const consumeConfirmation = (
+    token: string | undefined,
+    session: ResolvedAdminSession,
+    action: "publish" | "rollback",
+    target: string,
+  ): boolean => {
+    if (!token || !/^[0-9a-f]{64}$/u.test(token)) return false;
+    const pending = pendingConfirmations.get(token);
+    pendingConfirmations.delete(token);
+    return pending !== undefined
+      && pending.expiresAtMs > dependencies.now()
+      && pending.action === action
+      && pending.target === target
+      && pending.adminId === session.adminId
+      && pending.sessionToken === session.sessionToken;
+  };
+
+  app.get("/admin/styles.css", (context) => context.body(`
+:root{color-scheme:light;font:16px/1.5 system-ui,sans-serif;color:#2f251d;background:#f7f3ed}*{box-sizing:border-box}body{margin:0}header,main{width:min(76rem,calc(100% - 2rem));margin:auto}header{display:flex;flex-wrap:wrap;align-items:center;gap:1rem;padding:1rem 0;border-bottom:1px solid #cbbda9}header>a{font-weight:800}nav{display:flex;flex-wrap:wrap;gap:.75rem}a{color:#5c3b23}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #245da8;outline-offset:2px}main{padding:2rem 0}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;text-align:left;border-bottom:1px solid #d8cec0}form,fieldset{display:grid;gap:.75rem;max-width:48rem;margin:1rem 0;padding:1rem;border:1px solid #cbbda9;background:#fff}label{display:grid;gap:.25rem}input,select,button{font:inherit;padding:.55rem}.danger{border-color:#9f2f2f;background:#fff5f5}.pagination{display:flex;align-items:center;gap:1rem;margin:1rem 0;overflow-wrap:anywhere}pre{overflow:auto;padding:1rem;background:#fff}@media(max-width:44rem){table{display:block;overflow-x:auto}header{align-items:flex-start;flex-direction:column}}
+`, 200, { "content-type": "text/css; charset=utf-8", "cache-control": "no-store" }));
+
   app.get("/admin/login", (context) => context.html(page("Administrator sign in", `<h1>Administrator sign in</h1><form method="post" action="/admin/login"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Continue</button></form>`)));
 
   app.post("/admin/login", async (context) => {
@@ -412,6 +482,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/articles", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
+    const pageNumber = requestedPage(context.req.query("page"));
+    const total = (dependencies.db.sqlite.prepare(`
+      SELECT count(*) count FROM article_locale_heads
+    `).get() as { count: number }).count;
     const rows = dependencies.db.sqlite.prepare(`
       SELECT article.id, article.source_locale, head.locale, head.slug,
         head.state, head.row_version, revision.title, head.updated_at_ms
@@ -419,8 +493,8 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       JOIN article_locale_heads head ON head.article_id = article.id
       JOIN article_revisions revision ON revision.id = head.head_revision_id
       ORDER BY head.updated_at_ms DESC, article.id, head.locale
-      LIMIT 500
-    `).all() as Array<{
+      LIMIT ? OFFSET ?
+    `).all(ARTICLE_PAGE_SIZE, (pageNumber - 1) * ARTICLE_PAGE_SIZE) as Array<{
       id: string;
       source_locale: Locale;
       locale: Locale;
@@ -430,7 +504,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       title: string;
       updated_at_ms: number;
     }>;
-    return context.html(page("Articles", `<h1>Articles</h1><ul>${rows.map((row) =>
+    return context.html(page("Articles", `<h1>Articles</h1>${pagination("/admin/articles", pageNumber, ARTICLE_PAGE_SIZE, total)}<ul>${rows.map((row) =>
       `<li><a href="/admin/articles/${encodeURIComponent(row.id)}">${escapeHtml(row.title)}</a> / ${escapeHtml(row.locale)} / ${escapeHtml(row.state)} / v${row.row_version}</li>`
     ).join("")}</ul>`, "en", auth.csrfToken));
   });
@@ -652,13 +726,20 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const publishLabel = eligible.length === 0
       ? "Build, verify, and publish policy-only update"
       : "Build, verify, and publish approved content plus policies";
-    return context.html(page("Publication preview", `<h1>Publication preview</h1><p>The active privacy and marketing policy bundle is sealed into every release. A policy-only release remains available when no article heads are eligible.</p><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="publish-approved"><button type="submit">${publishLabel}</button></form>`, "en", auth.csrfToken));
+    return context.html(page("Publication preview", `<h1>Publication preview</h1><p>The active privacy and marketing policy bundle is sealed into every release. A policy-only release remains available when no article heads are eligible.</p><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish/confirm"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">${publishLabel} — review confirmation</button></form>`, "en", auth.csrfToken));
+  });
+
+  app.post("/admin/publish/confirm", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const token = issueConfirmation(auth.session, "publish", "approved-content");
+    return context.html(page("Confirm publication", `<h1>Confirm publication</h1><p>This will build, verify, and switch the public release.</p><form class="danger" method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.session.csrfToken)}"><input type="hidden" name="confirmationToken" value="${token}"><button type="submit">Confirm publication</button></form>`, "en", auth.session.csrfToken));
   });
 
   app.post("/admin/publish", async (context) => {
     const auth = await protectedPost(context, dependencies);
     if (auth instanceof Response) return auth;
-    if (auth.form.confirmation !== "publish-approved") {
+    if (!consumeConfirmation(auth.form.confirmationToken, auth.session, "publish", "approved-content")) {
       return context.html(page("Publish confirmation required", "<h1>Publish confirmation required</h1>"), 422);
     }
     if (!dependencies.articlePublication) {
@@ -684,11 +765,13 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/releases", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
+    const pageNumber = requestedPage(context.req.query("page"));
+    const total = (dependencies.db.sqlite.prepare(`SELECT count(*) count FROM releases`).get() as { count: number }).count;
     const rows = dependencies.db.sqlite.prepare(`
       SELECT id, version, state, manifest_sha256, verified_at_ms,
         activated_at_ms, rolled_back_at_ms, created_at_ms
-      FROM releases ORDER BY created_at_ms DESC, id DESC LIMIT 100
-    `).all() as Array<{
+      FROM releases ORDER BY created_at_ms DESC, id DESC LIMIT ? OFFSET ?
+    `).all(RELEASE_PAGE_SIZE, (pageNumber - 1) * RELEASE_PAGE_SIZE) as Array<{
       id: string;
       version: string;
       state: string;
@@ -698,13 +781,27 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       rolled_back_at_ms: number | null;
       created_at_ms: number;
     }>;
-    return context.html(page("Publication releases", `<h1>Publication releases</h1><p><a href="/admin/publish/preview">Preview approved content</a></p><ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} / ${escapeHtml(row.manifest_sha256.toString("hex"))}${row.state === "retired" ? `<form method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="rollback-retained-release"><button type="submit">Verify and roll back</button></form>` : ""}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+    return context.html(page("Publication releases", `<h1>Publication releases</h1><p><a href="/admin/publish/preview">Preview approved content</a></p>${pagination("/admin/releases", pageNumber, RELEASE_PAGE_SIZE, total)}<ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} / ${escapeHtml(row.manifest_sha256.toString("hex"))}${row.state === "retired" ? `<form class="danger" method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback/confirm"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">Review rollback</button></form>` : ""}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+  });
+
+  app.post("/admin/releases/:id/rollback/confirm", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const releaseId = context.req.param("id");
+    const release = dependencies.db.sqlite.prepare(`
+      SELECT version, state FROM releases WHERE id = ?
+    `).get(releaseId) as { version: string; state: string } | undefined;
+    if (!release || release.state !== "retired") {
+      return context.html(page("Rollback unavailable", "<h1>Rollback unavailable</h1>"), 404);
+    }
+    const token = issueConfirmation(auth.session, "rollback", releaseId);
+    return context.html(page("Confirm rollback", `<h1>Confirm rollback</h1><p>Target release: <strong>${escapeHtml(release.version)}</strong></p><form class="danger" method="post" action="/admin/releases/${encodeURIComponent(releaseId)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.session.csrfToken)}"><input type="hidden" name="confirmationToken" value="${token}"><button type="submit">Confirm rollback</button></form>`, "en", auth.session.csrfToken));
   });
 
   app.post("/admin/releases/:id/rollback", async (context) => {
     const auth = await protectedPost(context, dependencies);
     if (auth instanceof Response) return auth;
-    if (auth.form.confirmation !== "rollback-retained-release") {
+    if (!consumeConfirmation(auth.form.confirmationToken, auth.session, "rollback", context.req.param("id"))) {
       return context.html(page("Rollback confirmation required", "<h1>Rollback confirmation required</h1>"), 422);
     }
     if (!dependencies.articlePublication) {
@@ -731,13 +828,13 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/consultations", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
-    const requested = Number(context.req.query("page") ?? "1");
-    const pageNumber = Number.isSafeInteger(requested) && requested > 0 ? requested : 1;
+    const pageNumber = requestedPage(context.req.query("page"));
+    const total = (dependencies.db.sqlite.prepare(`SELECT count(*) count FROM consultations`).get() as { count: number }).count;
     const rows = dependencies.db.sqlite.prepare(`
       SELECT id, receipt_id, status, locale, category, received_at_ms
-      FROM consultations ORDER BY received_at_ms DESC, id LIMIT 20 OFFSET ?
-    `).all((pageNumber - 1) * 20) as Array<Record<string, string | number>>;
-    return context.html(page("Consultations", `<h1>Consultations</h1><table><thead><tr><th>Receipt</th><th>Status</th><th>Locale</th><th>Category</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="/admin/consultations/${encodeURIComponent(String(row.id))}">${escapeHtml(row.receipt_id)}</a></td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.locale)}</td><td>${escapeHtml(row.category)}</td></tr>`).join("")}</tbody></table>`, "en", auth.csrfToken));
+      FROM consultations ORDER BY received_at_ms DESC, id LIMIT ? OFFSET ?
+    `).all(CONSULTATION_PAGE_SIZE, (pageNumber - 1) * CONSULTATION_PAGE_SIZE) as Array<Record<string, string | number>>;
+    return context.html(page("Consultations", `<h1>Consultations</h1>${pagination("/admin/consultations", pageNumber, CONSULTATION_PAGE_SIZE, total)}<table><thead><tr><th>Receipt</th><th>Status</th><th>Locale</th><th>Category</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="/admin/consultations/${encodeURIComponent(String(row.id))}">${escapeHtml(row.receipt_id)}</a></td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.locale)}</td><td>${escapeHtml(row.category)}</td></tr>`).join("")}</tbody></table>`, "en", auth.csrfToken));
   });
 
   app.get("/admin/consultations/:id", (context) => {
@@ -786,6 +883,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       FROM notification_settings ORDER BY channel
     `).all() as Array<Record<string, unknown>>;
     const emailRow = rows.find((row) => row.channel === "email");
+    const hermesRow = rows.find((row) => row.channel === "hermes-telegram");
     const smtp = smtpConfigurationFromStored(
       typeof emailRow?.config_json === "string" ? emailRow.config_json : undefined,
       typeof emailRow?.secret_ref === "string" ? emailRow.secret_ref : undefined,
@@ -795,8 +893,11 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       smtpConfigured: typeof secret === "string" && secret.length > 0,
     }));
     const emailEnabled = emailRow?.enabled === 1 ? " checked" : "";
+    const hermesEnabled = hermesRow?.enabled === 1 ? " checked" : "";
     const emailPayloadMode = emailRow?.payload_mode === "full-inquiry" ? "full-inquiry" : "receipt-only";
-    return context.html(page("Notification settings", `<h1>Notification settings</h1><pre>${escapeHtml(JSON.stringify(publicRows, null, 2))}</pre><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><select name="channel"><option value="email">Email</option><option value="hermes-telegram">Hermes Telegram</option></select><label><input type="checkbox" name="enabled" value="1"${emailEnabled}> Enabled</label><select name="payloadMode"><option value="receipt-only"${emailPayloadMode === "receipt-only" ? " selected" : ""}>Receipt only</option><option value="full-inquiry"${emailPayloadMode === "full-inquiry" ? " selected" : ""}>Full inquiry</option></select><fieldset><legend>SMTP TLS configuration</legend><label>Host <input name="smtpHost" value="${escapeHtml(smtp?.host ?? "")}" maxlength="253"></label><label>Port <input name="smtpPort" inputmode="numeric" value="${escapeHtml(smtp?.port ?? 465)}" readonly></label><label>From <input name="smtpFrom" type="email" value="${escapeHtml(smtp?.from ?? "")}" maxlength="254"></label><label>Owner recipient <input name="smtpTo" type="email" value="${escapeHtml(smtp?.to ?? "")}" maxlength="254"></label><label>TLS mode <select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select></label><label>Keychain reference <input name="smtpSecretRef" value="${escapeHtml(smtp?.secretRef ?? "")}" placeholder="keychain:wisdom-smtp" maxlength="137"></label></fieldset><label><input type="checkbox" name="fullInquiryApproved" value="yes"> Approve full inquiry</label><button type="submit">Save</button></form><form method="post" action="/admin/notifications/test"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><select name="channel"><option value="email">Email</option><option value="hermes-telegram">Hermes Telegram</option></select><button type="submit">Queue test notification</button></form>`, "en", auth.csrfToken));
+    const emailForm = `<form id="notification-email-settings" method="post" action="/admin/notifications"><h2>Email</h2><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="email"><label><input type="checkbox" name="enabled" value="1"${emailEnabled}> Enabled</label><label>Payload mode <select name="payloadMode"><option value="receipt-only"${emailPayloadMode === "receipt-only" ? " selected" : ""}>Receipt only</option><option value="full-inquiry"${emailPayloadMode === "full-inquiry" ? " selected" : ""}>Full inquiry</option></select></label><fieldset><legend>SMTP TLS configuration</legend><label>Host <input name="smtpHost" value="${escapeHtml(smtp?.host ?? "")}" maxlength="253"></label><label>Port <input name="smtpPort" inputmode="numeric" value="${escapeHtml(smtp?.port ?? 465)}" readonly></label><label>From <input name="smtpFrom" type="email" value="${escapeHtml(smtp?.from ?? "")}" maxlength="254"></label><label>Owner recipient <input name="smtpTo" type="email" value="${escapeHtml(smtp?.to ?? "")}" maxlength="254"></label><label>TLS mode <select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select></label><label>Keychain reference <input name="smtpSecretRef" value="${escapeHtml(smtp?.secretRef ?? "")}" placeholder="keychain:wisdom-smtp" maxlength="137"></label></fieldset><label><input type="checkbox" name="fullInquiryApproved" value="yes"> Approve full inquiry</label><button type="submit">Save email settings</button></form>`;
+    const hermesForm = `<form id="notification-hermes-settings" method="post" action="/admin/notifications"><h2>Hermes Telegram</h2><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="hermes-telegram"><label><input type="checkbox" name="enabled" value="1"${hermesEnabled}> Enabled</label><button type="submit">Save Hermes settings</button></form>`;
+    return context.html(page("Notification settings", `<h1>Notification settings</h1><pre>${escapeHtml(JSON.stringify(publicRows, null, 2))}</pre>${emailForm}${hermesForm}<form method="post" action="/admin/notifications/test"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label>Channel <select name="channel"><option value="email">Email</option><option value="hermes-telegram">Hermes Telegram</option></select></label><button type="submit">Queue test notification</button></form>`, "en", auth.csrfToken));
   });
 
   app.post("/admin/notifications", async (context) => {
