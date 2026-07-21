@@ -1,7 +1,7 @@
 ---
 import { LOCALES, PREFERRED_CONTACT_METHODS, type Locale } from "@wisdom/shared";
 
-import { siteContent } from "../content/site-content.js";
+import { OFFICE, siteContent } from "../content/site-content.js";
 import { CONSULTATION_FORM } from "../lib/site-config.js";
 
 interface Props {
@@ -19,7 +19,7 @@ const languageNames: Record<Locale, string> = {
   "zh-Hans": "简体中文",
   "zh-Hant": "繁體中文",
 };
-const phoneHref = `tel:${content.office.phone.replace(/[^+\d]/g, "")}`;
+const phoneHref = OFFICE.telHref;
 const emailHref = `mailto:${content.office.email}`;
 ---
 
@@ -68,11 +68,11 @@ const emailHref = `mailto:${content.office.email}`;
 
     <div class="field">
       <label for="consultation-name">{form.labels.name}</label>
-      <input id="consultation-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="50" required data-error-required={form.errors.required} />
+      <input id="consultation-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="50" required data-error-required={form.errors.required} data-error-too-short={form.errors.nameLength} />
     </div>
     <div class="field">
       <label for="consultation-phone">{form.labels.phone}</label>
-      <input id="consultation-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern={phonePattern} minlength="8" maxlength="40" required aria-describedby="phone-help" data-error-required={form.errors.required} data-error-pattern={form.errors.invalidPhone} />
+      <input id="consultation-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern={phonePattern} minlength="8" maxlength="40" required aria-describedby="phone-help" data-error-required={form.errors.required} data-error-pattern={form.errors.invalidPhone} data-error-too-short={form.errors.phoneLength} />
       <small id="phone-help">{form.help.phone}</small>
     </div>
     <div class="field">

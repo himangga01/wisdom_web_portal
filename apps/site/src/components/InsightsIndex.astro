@@ -1,6 +1,8 @@
 ---
 import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
 
+import { formatDisplayDate } from "../lib/format-date.js";
+
 interface Props {
   locale: Locale;
   articles: readonly PublishedArticleDocument[];
@@ -24,7 +26,7 @@ const copy = labels[locale];
       <li>
         <article class="insight-card">
           <p class="insight-meta">
-            {copy.updated} <time datetime={article.modifiedAt}>{article.modifiedAt.slice(0, 10)}</time>
+            {copy.updated} <time datetime={article.modifiedAt}>{formatDisplayDate(article.modifiedAt, locale)}</time>
           </p>
           <h2><a href={article.route}>{article.title}</a></h2>
           <p>{article.summary}</p>

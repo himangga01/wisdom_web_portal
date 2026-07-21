@@ -82,9 +82,11 @@ const tokenStyle = [
     <SiteFooter locale={locale} />
     <script>
       import { initializeConsultationForms } from "../lib/form-validation";
+      import { initializeMobileMenu } from "../lib/mobile-menu";
       import { initializeRevealMotion } from "../motion/reveal-controller";
 
       initializeRevealMotion();
+      initializeMobileMenu();
       initializeConsultationForms();
     </script>
   </body>

@@ -33,7 +33,7 @@ function professionalService(document: SearchDocument): Record<string, unknown> 
     name: content.office.name,
     alternateName: OFFICE.englishName,
     url: absolutePublicUrl(origin, toLocalizedPath(document.locale, "/")),
-    telephone: OFFICE.phone,
+    telephone: "+82-10-8415-0023",
     email: OFFICE.email,
     address: content.office.address,
     inLanguage: document.locale,

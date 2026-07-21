@@ -5,6 +5,9 @@ export const OFFICE = {
   englishName: "JIHYE Administrative Attorney",
   representative: "강지혜 행정사",
   phone: "010-8415-0023",
+  phoneInternational: "+82 10-8415-0023",
+  // Canonical E.164 dial string, valid for domestic and international callers.
+  telHref: "tel:+821084150023",
   fax: "0504-051-0023",
   email: "kjihye0023@naver.com",
   address: "서울특별시 송파구 법원로 92, 212호 (문정동, 파트너스1)",
@@ -131,6 +134,7 @@ interface LocaleText {
     primaryNavigation: string;
     mobileNavigation: string;
     openMenu: string;
+    closeMenu: string;
     languageSelection: string;
     additionalContactOptions: string;
   };
@@ -189,6 +193,8 @@ interface LocaleText {
         required: string;
         invalidPhone: string;
         invalidEmail: string;
+        nameLength: string;
+        phoneLength: string;
         messageLength: string;
         privacyRequired: string;
         };
@@ -261,6 +267,7 @@ const localizedText = {
       primaryNavigation: "주요 메뉴",
       mobileNavigation: "모바일 메뉴",
       openMenu: "메뉴 열기",
+      closeMenu: "메뉴 닫기",
       languageSelection: "언어 선택",
       additionalContactOptions: "추가 연락 방법",
     },
@@ -342,6 +349,8 @@ const localizedText = {
           required: "필수 항목을 입력해 주세요.",
           invalidPhone: "올바른 전화번호를 입력해 주세요.",
           invalidEmail: "올바른 이메일 주소를 입력해 주세요.",
+          nameLength: "이름을 2자 이상 입력해 주세요.",
+          phoneLength: "연락처를 8자 이상 입력해 주세요.",
           messageLength: "상담 내용은 20자 이상 2,000자 이하로 입력해 주세요.",
           privacyRequired: "개인정보 수집·이용에 동의해야 상담을 접수할 수 있습니다.",
         },
@@ -473,6 +482,7 @@ const localizedText = {
       primaryNavigation: "Primary navigation",
       mobileNavigation: "Mobile navigation",
       openMenu: "Open menu",
+      closeMenu: "Close menu",
       languageSelection: "Language selection",
       additionalContactOptions: "Additional contact options",
     },
@@ -554,6 +564,8 @@ const localizedText = {
           required: "Complete this required field.",
           invalidPhone: "Enter a valid phone number.",
           invalidEmail: "Enter a valid email address.",
+          nameLength: "Enter at least 2 characters for your name.",
+          phoneLength: "Enter at least 8 digits for your phone number.",
           messageLength: "Enter between 20 and 2,000 characters.",
           privacyRequired: "Privacy consent is required to submit the request.",
         },
@@ -585,7 +597,7 @@ const localizedText = {
       name: "JIHYE Administrative Attorney",
       englishName: OFFICE.englishName,
       representative: "Administrative Attorney Jihye Kang",
-      phone: OFFICE.phone,
+      phone: OFFICE.phoneInternational,
       fax: OFFICE.fax,
       email: OFFICE.email,
       address: "Suite 212, 92 Beobwon-ro, Songpa-gu, Seoul (Partners 1, Munjeong-dong)",
@@ -696,6 +708,7 @@ const localizedText = {
       primaryNavigation: "主要导航",
       mobileNavigation: "移动端导航",
       openMenu: "打开菜单",
+      closeMenu: "关闭菜单",
       languageSelection: "选择语言",
       additionalContactOptions: "其他联系方式",
     },
@@ -777,6 +790,8 @@ const localizedText = {
           required: "请填写必填项目。",
           invalidPhone: "请输入有效的电话号码。",
           invalidEmail: "请输入有效的电子邮箱地址。",
+          nameLength: "请输入至少2个字符的姓名。",
+          phoneLength: "请输入至少8位的联系电话。",
           messageLength: "咨询内容应为20至2,000个字符。",
           privacyRequired: "必须同意个人信息处理后才能提交。",
         },
@@ -808,7 +823,7 @@ const localizedText = {
       name: "JIHYE行政士事务所",
       englishName: OFFICE.englishName,
       representative: "姜智慧 行政士",
-      phone: OFFICE.phone,
+      phone: OFFICE.phoneInternational,
       fax: OFFICE.fax,
       email: OFFICE.email,
       address: "首尔特别市松坡区法院路92号212室（文井洞，Partners 1）",
@@ -908,6 +923,7 @@ const localizedText = {
       primaryNavigation: "主要導覽",
       mobileNavigation: "行動版導覽",
       openMenu: "開啟選單",
+      closeMenu: "關閉選單",
       languageSelection: "選擇語言",
       additionalContactOptions: "其他聯絡方式",
     },
@@ -989,6 +1005,8 @@ const localizedText = {
           required: "請填寫必填項目。",
           invalidPhone: "請輸入有效的電話號碼。",
           invalidEmail: "請輸入有效的電子郵件地址。",
+          nameLength: "請輸入至少2個字元的姓名。",
+          phoneLength: "請輸入至少8位的聯絡電話。",
           messageLength: "諮詢內容應為20至2,000個字元。",
           privacyRequired: "必須同意個人資料處理後才能提交。",
         },
@@ -1020,7 +1038,7 @@ const localizedText = {
       name: "JIHYE行政士事務所",
       englishName: OFFICE.englishName,
       representative: "姜智慧 行政士",
-      phone: OFFICE.phone,
+      phone: OFFICE.phoneInternational,
       fax: OFFICE.fax,
       email: OFFICE.email,
       address: "首爾特別市松坡區法院路92號212室（文井洞，Partners 1）",

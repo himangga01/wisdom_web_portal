@@ -39,7 +39,7 @@ const revealAttributes = (key: RevealKey) => {
       <p class="hero-intro">{narrative.intro}</p>
       <div class="hero-actions">
         <a class="button button-primary" href={consultationHref}>{content.buttons.consultation}</a>
-        <a class="button button-secondary" href={`tel:${OFFICE.phone}`}>{content.buttons.phone}</a>
+        <a class="button button-secondary" href={OFFICE.telHref}>{content.buttons.phone}</a>
       </div>
       <div class="secondary-actions" aria-label={content.accessibility.additionalContactOptions}>
         {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
@@ -169,7 +169,7 @@ const revealAttributes = (key: RevealKey) => {
     <address class="office-card" {...revealAttributes("consultation-card")}>
       <strong>{content.office.name}</strong>
       <span>{content.office.representative}</span>
-      <a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a>
+      <a href={OFFICE.telHref}>{content.office.phone}</a>
       <a href={`mailto:${OFFICE.email}`}>{content.office.email}</a>
       <span>{content.office.address}</span>
     </address>

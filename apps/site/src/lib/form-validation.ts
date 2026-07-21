@@ -8,6 +8,7 @@ import {
   type ConsentConfiguration,
   type ConsentDocument,
 } from "./consultation-adapter.js";
+import { formatDisplayDate } from "./format-date.js";
 
 const FORM_SELECTOR = "[data-consultation-form]";
 
@@ -50,6 +51,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     let activeConsent: ConsentConfiguration | undefined;
     let consentLoadGeneration = 0;
     let submitting = false;
+    let completedSubmission = false;
     let cooldownUntilMs = 0;
 
     const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
@@ -77,7 +79,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     const syncSubmitAvailability = (): void => {
       if (!submit) return;
       const remainingCooldownMs = cooldownUntilMs - Date.now();
-      submit.disabled = submitting || activeConsent === undefined || remainingCooldownMs > 0;
+      submit.disabled = submitting || completedSubmission || activeConsent === undefined || remainingCooldownMs > 0;
       if (remainingCooldownMs > 0) {
         setTimeout(syncSubmitAvailability, remainingCooldownMs + 50);
       }
@@ -105,7 +107,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
       syncSubmitAvailability();
     };
 
-    const renderConsentDocument = (kind: "privacy" | "marketing", document: ConsentDocument): void => {
+    const renderConsentDocument = (kind: "privacy" | "marketing", document: ConsentDocument, locale: Locale): void => {
       const container = form.querySelector<HTMLElement>(`[data-consent-document="${kind}"]`);
       if (!container) throw new Error(`Missing ${kind} consent container`);
       const title = container.querySelector<HTMLElement>("[data-consent-title]");
@@ -119,7 +121,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
       title.textContent = document.title;
       version.textContent = document.version;
       effective.dateTime = document.effectiveAt;
-      effective.textContent = document.effectiveAt.slice(0, 10);
+      effective.textContent = formatDisplayDate(document.effectiveAt, locale);
       retention.textContent = String(document.retentionMonths);
       body.textContent = document.bodyMarkdown;
       container.hidden = false;
@@ -144,8 +146,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
         return undefined;
       }
       try {
-        renderConsentDocument("privacy", loaded.documents.privacy);
-        renderConsentDocument("marketing", loaded.documents.marketing);
+        renderConsentDocument("privacy", loaded.documents.privacy, locale);
+        renderConsentDocument("marketing", loaded.documents.marketing, locale);
       } catch {
         consentFieldset?.setAttribute("aria-busy", "false");
         setConsentRetryAvailable(true);
@@ -194,6 +196,12 @@ export function initializeConsultationForms(documentRef: Document = document): v
         || control instanceof HTMLTextAreaElement
       ) {
         control.setCustomValidity("");
+      }
+      // Editing the form after a successful submission re-enables it for a new,
+      // distinct request (which will carry a fresh idempotency key).
+      if (completedSubmission) {
+        completedSubmission = false;
+        syncSubmitAvailability();
       }
       updateEmailConstraint();
     });
@@ -270,6 +278,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
               "{receiptId}",
               result.receipt.receiptId,
             );
+            completedSubmission = true;
             terminalStatus = { state: "success", message };
           } catch {
             terminalStatus = { state: "error", message: form.dataset.statusFailure ?? "" };

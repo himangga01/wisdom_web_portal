@@ -71,6 +71,11 @@ const locale404Copy = Object.fromEntries(
           <p class="eyebrow">404</p>
           <h1 data-404-heading>{fallback.headings.notFound}</h1>
           <p data-404-body>{fallback.pages.notFoundBody}</p>
+          <div class="muted" data-404-multilingual>
+            <p lang="en">The page could not be found. <a href="/en">Go to the English site</a>.</p>
+            <p lang="zh-Hans">未找到页面。<a href="/zh-hans">前往简体中文网站</a>。</p>
+            <p lang="zh-Hant">找不到頁面。<a href="/zh-hant">前往繁體中文網站</a>。</p>
+          </div>
         </div>
       </section>
       <section class="page-content section">
@@ -90,6 +95,9 @@ const locale404Copy = Object.fromEntries(
             : path === "/zh-hant" || path.startsWith("/zh-hant/")
               ? "zh-Hant"
               : "ko";
+        // Once the page resolves to a single language, the static multilingual
+        // fallback hints are redundant.
+        document.querySelector("[data-404-multilingual]")?.setAttribute("hidden", "");
         if (locale === "ko") return;
 
         const copy = locale404Copy[locale];

@@ -1,5 +1,5 @@
 ---
-import type { Locale } from "@wisdom/shared";
+import { LOCALES, type Locale } from "@wisdom/shared";
 
 import { OFFICE, siteContent } from "../content/site-content.js";
 import type { ArticleLocaleLink } from "../lib/article-routes.js";
@@ -34,6 +34,15 @@ const isActive = (itemRoute: ContentRoute): boolean =>
   || (itemRoute === "/services" && route.startsWith("/services/"))
   || (itemRoute === "/insights" && /\/(?:insights)\//.test(route));
 const languageLinks = localeLinks ?? localeLinksForPath(toLocalizedPath(locale, route as PublicRoute));
+// Ensure every locale is reachable from the switcher. On an article that has no
+// translation for a locale, fall back to that locale's insights index so the
+// visitor is never stranded on a language they cannot read.
+const linkByLocale = new Map(languageLinks.map((link) => [link.locale, link.href]));
+const fullLanguageLinks = LOCALES.map((linkLocale) => ({
+  locale: linkLocale,
+  href: linkByLocale.get(linkLocale) ?? toLocalizedPath(linkLocale, "/insights"),
+  translated: linkByLocale.has(linkLocale),
+}));
 ---
 
 <a class="skip-link" href="#main">{content.accessibility.skipToContent}</a>
@@ -59,23 +68,27 @@ const languageLinks = localeLinks ?? localeLinksForPath(toLocalizedPath(locale, 
     </nav>
 
     <div class="header-actions">
-      <div class="language-links" aria-label={content.accessibility.languageSelection}>
-        {languageLinks.map(({ locale: linkLocale, href }) => (
+      <nav class="language-links" aria-label={content.accessibility.languageSelection}>
+        {fullLanguageLinks.map(({ locale: linkLocale, href, translated }) => (
           <a
             href={href}
             lang={linkLocale}
-            hreflang={linkLocale}
+            hreflang={translated ? linkLocale : undefined}
             aria-current={linkLocale === locale ? "page" : undefined}
           >
             {languageNames[linkLocale]}
           </a>
         ))}
-      </div>
+      </nav>
       <a class="button button-small header-consultation" href={toLocalizedPath(locale, "/consultation")}>
         {content.buttons.consultation}
       </a>
-      <details class="mobile-menu">
-        <summary aria-label={content.accessibility.openMenu}><span></span><span></span><span></span></summary>
+      <details class="mobile-menu" data-mobile-menu>
+        <summary
+          aria-label={content.accessibility.openMenu}
+          data-open-label={content.accessibility.openMenu}
+          data-close-label={content.accessibility.closeMenu}
+        ><span></span><span></span><span></span></summary>
         <nav aria-label={content.accessibility.mobileNavigation}>
           {navigation.map((item) => (
             <a href={toLocalizedPath(locale, item.route)} aria-current={isActive(item.route) ? "page" : undefined}>
@@ -83,11 +96,11 @@ const languageLinks = localeLinks ?? localeLinksForPath(toLocalizedPath(locale, 
             </a>
           ))}
           <a href={toLocalizedPath(locale, "/consultation")}>{content.navigation.consultation}</a>
-          <a href={`tel:${OFFICE.phone}`}>{content.buttons.phone}</a>
+          <a href={OFFICE.telHref}>{content.buttons.phone}</a>
           {kakaoUrl && <a href={kakaoUrl} rel="noreferrer">{content.buttons.kakao}</a>}
           <div class="mobile-languages">
-            {languageLinks.map(({ locale: linkLocale, href }) => (
-              <a href={href} lang={linkLocale} hreflang={linkLocale} aria-current={linkLocale === locale ? "page" : undefined}>
+            {fullLanguageLinks.map(({ locale: linkLocale, href, translated }) => (
+              <a href={href} lang={linkLocale} hreflang={translated ? linkLocale : undefined} aria-current={linkLocale === locale ? "page" : undefined}>
                 {languageNames[linkLocale]}
               </a>
             ))}

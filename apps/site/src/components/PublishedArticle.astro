@@ -3,6 +3,7 @@ import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
 
 import BaseLayout from "../layouts/BaseLayout.astro";
 import type { ArticleLocaleLink } from "../lib/article-routes.js";
+import { formatDisplayDate } from "../lib/format-date.js";
 import type { SearchDocument } from "../search/types.js";
 
 interface Props {
@@ -41,11 +42,11 @@ const copy = labels[article.locale];
       <dl class="article-dates">
         <div>
           <dt>{copy.firstPublished}</dt>
-          <dd><time datetime={article.firstPublishedAt}>{article.firstPublishedAt.slice(0, 10)}</time></dd>
+          <dd><time datetime={article.firstPublishedAt}>{formatDisplayDate(article.firstPublishedAt, article.locale)}</time></dd>
         </div>
         <div>
           <dt>{copy.modified}</dt>
-          <dd><time datetime={article.modifiedAt}>{article.modifiedAt.slice(0, 10)}</time></dd>
+          <dd><time datetime={article.modifiedAt}>{formatDisplayDate(article.modifiedAt, article.locale)}</time></dd>
         </div>
       </dl>
     </div>
@@ -64,7 +65,7 @@ const copy = labels[article.locale];
               {article.sources.map((source) => (
                 <li>
                   <a href={source.url} target="_blank" rel="noreferrer">{source.url}</a>
-                  <time datetime={source.sourceTimestamp}>{source.sourceTimestamp.slice(0, 10)}</time>
+                  <time datetime={source.sourceTimestamp}>{formatDisplayDate(source.sourceTimestamp, article.locale)}</time>
                 </li>
               ))}
             </ol>

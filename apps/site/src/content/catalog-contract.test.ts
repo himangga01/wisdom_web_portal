@@ -33,6 +33,8 @@ describe("approved office and service catalog", () => {
       englishName: "JIHYE Administrative Attorney",
       representative: "강지혜 행정사",
       phone: "010-8415-0023",
+      phoneInternational: "+82 10-8415-0023",
+      telHref: "tel:+821084150023",
       fax: "0504-051-0023",
       email: "kjihye0023@naver.com",
       address: "서울특별시 송파구 법원로 92, 212호 (문정동, 파트너스1)",

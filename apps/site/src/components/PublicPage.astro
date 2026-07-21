@@ -149,7 +149,7 @@ const policyDocument = route === "/privacy"
                 <p>{content.office.nearby}</p>
                 <dl>
                   <div><dt>{content.office.addressLabel}</dt><dd>{content.office.address}</dd></div>
-                  <div><dt>{content.office.phoneLabel}</dt><dd><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></dd></div>
+                  <div><dt>{content.office.phoneLabel}</dt><dd><a href={OFFICE.telHref}>{content.office.phone}</a></dd></div>
                   <div><dt>{content.office.faxLabel}</dt><dd>{content.office.fax}</dd></div>
                   <div><dt>{content.office.emailLabel}</dt><dd><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></dd></div>
                 </dl>
@@ -181,7 +181,7 @@ const policyDocument = route === "/privacy"
                 <div><dt>{content.forms.consultation.help.consentRetention}</dt><dd>{policyDocument!.retentionMonths} {content.forms.consultation.help.consentMonths}</dd></div>
               </dl>
               <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>
-              <p class="operational-note">{content.pages.privacy.support} <a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={`tel:${OFFICE.phone}`}>{OFFICE.phone}</a></p>
+              <p class="operational-note">{content.pages.privacy.support} <a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={OFFICE.telHref}>{content.office.phone}</a></p>
             </article>
           )}
 
@@ -203,7 +203,7 @@ const policyDocument = route === "/privacy"
               <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>
               <ol class="withdrawal-steps">{content.pages.marketingWithdraw.steps.map((step) => <li>{step}</li>)}</ol>
               <p>{content.pages.marketingWithdraw.support}</p>
-              <p><a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={`tel:${OFFICE.phone}`}>{OFFICE.phone}</a></p>
+              <p><a href={`mailto:${OFFICE.email}`}>{OFFICE.email}</a> · <a href={OFFICE.telHref}>{content.office.phone}</a></p>
             </article>
           )}
 

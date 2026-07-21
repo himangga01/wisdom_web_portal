@@ -22,7 +22,7 @@ const content = siteContent[locale];
     <div>
       <h2>{content.footer.contact}</h2>
       <ul class="footer-links">
-        <li><a href={`tel:${OFFICE.phone}`}>{content.office.phone}</a></li>
+        <li><a href={OFFICE.telHref}>{content.office.phone}</a></li>
         <li><a href={`mailto:${OFFICE.email}`}>{content.office.email}</a></li>
         <li><a href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a></li>
         <li><a href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a></li>
