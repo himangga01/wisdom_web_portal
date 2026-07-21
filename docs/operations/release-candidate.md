@@ -10,9 +10,20 @@
 - 최종 clean install 검증 수치와 검증 기준 code commit은 아래 실제 실행 증거를 사용한다. 과거 중간 수치나 예상값으로 대체하지 않는다.
 - 검색·AI 발견성 구현은 크롤러가 이해할 수 있는 기술 기반을 제공할 뿐, Google·Naver 순위나 ChatGPT·Gemini 인용을 보장하지 않는다.
 
-## 2026-07-16 최종 검증 증거
+## 현재 검증 상태
 
-- 검증 기준 code commit: `ebbeb22` (`fix: stabilize consultation retry readiness`). 이후 이 문서·README·작업 로그만 갱신하며 런타임 코드는 변경하지 않았다.
+- 2026-07-21 현재 작업 트리에서 `npm run verify`가 exit 0으로 통과했다.
+- typecheck: shared·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
+- 테스트: root orchestration 11/11, shared 70/70, control 435/435, site 102/102, Ops 232/232.
+- 정적 빌드: fixture publication snapshot으로 4개 언어 68페이지 생성.
+- 브라우저 E2E: Chromium·Firefox·WebKit 합계 117/117 통과.
+- 검증 기준 code commit: `273baa0` (`fix: address full code review findings`).
+
+## 2026-07-16 과거 검증 기록
+
+아래 결과는 `ebbeb22` (`fix: stabilize consultation retry readiness`) 기준의 과거 기록이며 현재 수정본의 릴리스 근거가 아니다.
+
+- 검증 기준 code commit: `ebbeb22`.
 - clean install: `npm.cmd ci` 성공, lockfile 기준 447개 패키지 설치.
 - 전체 관문: `npm.cmd run verify` exit 0, 총 322.9초.
 - typecheck: shared·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
