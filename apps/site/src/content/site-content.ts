@@ -158,6 +158,7 @@ interface LocaleText {
           website: string;
           locale: string;
         category: string;
+        categoryPlaceholder: string;
         name: string;
         phone: string;
         email: string;
@@ -310,6 +311,7 @@ const localizedText = {
           website: "웹사이트(비워 두세요)",
           locale: "상담 언어",
           category: "상담 분야",
+          categoryPlaceholder: "분야를 선택해 주세요",
           name: "이름",
           phone: "전화번호",
           email: "이메일",
@@ -345,7 +347,7 @@ const localizedText = {
         },
         status: {
           submitting: "상담 요청을 보내는 중입니다…",
-          success: "상담 요청이 접수되었습니다. 접수번호: {receiptId}",
+          success: "상담 요청이 접수되었습니다. 접수번호 {receiptId} 를 보관해 주세요. 영업일 기준 1~2일 내에 선택하신 방법으로 연락드립니다.",
           failure: "현재 상담 요청을 전송할 수 없습니다. 잠시 후 다시 시도해 주세요.",
           configurationFailure: "최신 동의 문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
           consentReady: "최신 동의 문서를 불러왔습니다. 내용을 확인하고 동의해 주세요.",
@@ -521,6 +523,7 @@ const localizedText = {
           website: "Website (leave blank)",
           locale: "Consultation language",
           category: "Service category",
+          categoryPlaceholder: "Please choose a category",
           name: "Name",
           phone: "Phone",
           email: "Email",
@@ -556,7 +559,7 @@ const localizedText = {
         },
         status: {
           submitting: "Sending your consultation request…",
-          success: "Your consultation request was received. Receipt: {receiptId}",
+          success: "Your consultation request was received. Please keep your receipt number {receiptId}. We will contact you through your preferred method within 1–2 business days.",
           failure: "We could not send your consultation request. Please try again shortly.",
           configurationFailure: "We could not load the current consent documents. Please try again shortly.",
           consentReady: "The current consent documents are ready. Review them before giving consent.",
@@ -743,6 +746,7 @@ const localizedText = {
           website: "网站（请留空）",
           locale: "咨询语言",
           category: "咨询领域",
+          categoryPlaceholder: "请选择领域",
           name: "姓名",
           phone: "电话号码",
           email: "电子邮箱",
@@ -778,7 +782,7 @@ const localizedText = {
         },
         status: {
           submitting: "正在提交咨询申请…",
-          success: "咨询申请已接收。受理编号：{receiptId}",
+          success: "咨询申请已接收。请保留您的受理编号 {receiptId}。我们将在1至2个工作日内通过您选择的方式与您联系。",
           failure: "暂时无法提交咨询申请，请稍后重试。",
           configurationFailure: "无法载入当前同意文件，请稍后重试。",
           consentReady: "当前同意文件已载入，请查看内容后再表示同意。",
@@ -954,6 +958,7 @@ const localizedText = {
           website: "網站（請留空）",
           locale: "諮詢語言",
           category: "諮詢領域",
+          categoryPlaceholder: "請選擇領域",
           name: "姓名",
           phone: "電話號碼",
           email: "電子郵件",
@@ -989,7 +994,7 @@ const localizedText = {
         },
         status: {
           submitting: "正在提交諮詢申請…",
-          success: "諮詢申請已接收。受理編號：{receiptId}",
+          success: "諮詢申請已接收。請保留您的受理編號 {receiptId}。我們將在1至2個工作日內透過您選擇的方式與您聯繫。",
           failure: "暫時無法提交諮詢申請，請稍後重試。",
           configurationFailure: "無法載入目前同意文件，請稍後重試。",
           consentReady: "目前同意文件已載入，請查看內容後再表示同意。",
@@ -1155,7 +1160,7 @@ const pageNarrative = {
       intro: "공개 전 검토가 완료된 실무 안내만 게시할 예정입니다.",
       note: "현재는 서비스 범위 안내 페이지이며, 사례 수·성공률·순위와 같은 검증되지 않은 표현을 사용하지 않습니다.",
     },
-    consultationIntro: "상담 검토에 필요한 기본 정보를 입력해 주세요. 이 화면은 실제 API로 전송하며 성공 결과를 미리 표시하지 않습니다.",
+    consultationIntro: "상담 검토에 필요한 기본 정보를 입력해 주세요. 입력하신 내용은 사무소로 안전하게 접수되며, 담당자가 확인 후 선택하신 방법으로 연락드립니다.",
     locationIntro: "문정역 인근 사무소의 주소와 연락처입니다. 방문 전 연락해 주세요.",
     privacy: {
       intro: "아래 문서는 관리자가 활성화했으며 현재 상담 접수에서 사용하는 개인정보 동의 문서입니다.",
@@ -1225,7 +1230,7 @@ const pageNarrative = {
       intro: "Only practical guidance that has completed review will be published here.",
       note: "This is currently a service-scope page. It does not make unverified claims about cases, success rates, rankings, or reviews.",
     },
-    consultationIntro: "Provide the basic information needed for review. The form posts to the real API and does not display a simulated receipt.",
+    consultationIntro: "Please share the basic information we need to review your case. Your details are sent securely to the office, and a staff member will contact you through your preferred method after reviewing them.",
     locationIntro: "Office address and contact details near Munjeong Station. Please contact the office before visiting.",
     privacy: {
       intro: "This administrator-activated privacy consent document is the version currently used for consultation intake.",
@@ -1288,7 +1293,7 @@ const pageNarrative = {
       ],
     },
     insights: { intro: "仅发布完成审查的实务指南。", note: "当前为服务范围说明页，不使用未经核实的案例数、成功率、排名或评价。" },
-    consultationIntro: "请填写审查所需基本信息。本表单提交至真实API，不模拟成功结果。",
+    consultationIntro: "请填写咨询审核所需的基本信息。您填写的内容将安全送达本事务所，专员确认后会通过您选择的方式与您联系。",
     locationIntro: "文井站附近事务所的地址与联系方式，来访前请先联系。",
     privacy: {
       intro: "下方显示管理员已启用且咨询表单正在使用的当前个人信息同意文件。",
@@ -1351,7 +1356,7 @@ const pageNarrative = {
       ],
     },
     insights: { intro: "僅發布完成審查的實務指南。", note: "目前為服務範圍說明頁，不使用未經核實的案例數、成功率、排名或評價。" },
-    consultationIntro: "請填寫審查所需基本資訊。本表單提交至真實API，不模擬成功結果。",
+    consultationIntro: "請填寫諮詢審核所需的基本資訊。您填寫的內容將安全送達本事務所，專員確認後會透過您選擇的方式與您聯繫。",
     locationIntro: "文井站附近事務所的地址與聯絡方式，來訪前請先聯絡。",
     privacy: {
       intro: "下方顯示管理員已啟用且諮詢表單目前使用的個人資訊同意文件。",

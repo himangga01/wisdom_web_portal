@@ -58,7 +58,7 @@ const emailHref = `mailto:${content.office.email}`;
     <div class="field full-field">
       <label for="consultation-category">{form.labels.category}</label>
       <select id="consultation-category" name="category" required aria-describedby="category-help" data-error-required={form.errors.required}>
-        <option value="">—</option>
+        <option value="" disabled selected>{form.labels.categoryPlaceholder}</option>
         {CONSULTATION_FORM.categories.map((category) => (
           <option value={category}>{category === "other" ? content.pages.formOptions.other : categoryNames.get(category)}</option>
         ))}

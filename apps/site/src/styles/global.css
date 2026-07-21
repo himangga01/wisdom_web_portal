@@ -806,7 +806,7 @@ p {
 }
 
 .service-card > span {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-brown);
   font-family: var(--wisdom-font-serif);
 }
 
@@ -894,7 +894,7 @@ p {
 }
 
 .service-list span {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-brown);
   font-family: var(--wisdom-font-serif);
 }
 
@@ -965,7 +965,7 @@ p {
 
 .insight-meta {
   margin: 0;
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-brown);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -1011,7 +1011,7 @@ p {
 }
 
 .article-dates dt {
-  color: var(--wisdom-bronze);
+  color: var(--wisdom-brown);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.05em;
@@ -1173,8 +1173,8 @@ p {
 .field small {
   display: block;
   margin-top: 0.35rem;
-  color: color-mix(in srgb, var(--wisdom-ink) 68%, transparent);
-  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--wisdom-ink) 78%, transparent);
+  font-size: 0.8125rem;
 }
 
 .contact-method,
@@ -1259,7 +1259,7 @@ p {
   padding: 0.6rem 0.8rem;
   background: color-mix(in srgb, var(--wisdom-sand) 28%, transparent);
   color: var(--wisdom-brown);
-  font-size: 0.76rem;
+  font-size: 0.875rem;
 }
 
 .form-submit {
