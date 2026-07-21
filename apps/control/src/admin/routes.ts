@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import {
   localeSchema,
@@ -45,6 +45,7 @@ import {
   openMarketingWithdrawalCapability,
   withdrawMarketingConsent,
 } from "../withdrawal/service.js";
+import { renderAdminPage, renderPlainPage } from "./ui/Layout.js";
 import { backLinkHtml, emptyStateHtml } from "./ui/primitives.js";
 
 interface AdminEnvironment {
@@ -79,60 +80,19 @@ export interface AdminArticlePublicationActions {
   ): Promise<AdminArticlePublicationResult>;
 }
 
-const ADMIN_STYLE = `:root{color-scheme:light}*{box-sizing:border-box}`
-  + `body{margin:0;font-family:-apple-system,"Apple SD Gothic Neo","Segoe UI",Roboto,sans-serif;`
-  + `font-size:16px;line-height:1.6;color:#1f2937;background:#f5f5f4}`
-  + `header{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center;padding:.75rem 1.25rem;`
-  + `background:#1f2937;color:#fff}`
-  + `header>a{color:#fff;font-weight:700;text-decoration:none}`
-  + `header nav{display:flex;flex-wrap:wrap;gap:.75rem}`
-  + `header nav a{color:#e5e7eb;text-decoration:none;font-size:.9rem}`
-  + `header nav a:hover{color:#fff;text-decoration:underline}`
-  + `header form{margin-left:auto}`
-  + `main{max-width:60rem;margin:0 auto;padding:1.5rem 1.25rem 4rem}`
-  + `h1{font-size:1.5rem;margin:.2rem 0 1rem}h2{font-size:1.15rem;margin:1.5rem 0 .5rem}`
-  + `a{color:#1d4ed8}`
-  + `table{border-collapse:collapse;width:100%;margin:.5rem 0;background:#fff}`
-  + `th,td{border:1px solid #d6d3d1;padding:.5rem .65rem;text-align:left;vertical-align:top}`
-  + `th{background:#f3f4f6}`
-  + `form{margin:1rem 0}fieldset{margin:1rem 0;border:1px solid #d6d3d1;border-radius:.4rem}`
-  + `label{display:block;margin:.6rem 0 .2rem;font-weight:600}`
-  + `input,select,textarea{font:inherit;padding:.45rem .55rem;border:1px solid #9ca3af;border-radius:.3rem;max-width:100%}`
-  + `button{font:inherit;padding:.5rem .9rem;border:0;border-radius:.3rem;background:#1d4ed8;color:#fff;cursor:pointer}`
-  + `button:hover{background:#1e40af}`
-  + `pre{background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.75rem;overflow-x:auto}`
-  + `.banner{padding:.75rem 1rem;border-radius:.4rem;margin:0 0 1rem}`
-  + `.banner-ok{background:#dcfce7;border:1px solid #86efac}`
-  + `.banner-error{background:#fee2e2;border:1px solid #fca5a5}`
-  + `.muted{color:#6b7280}`;
+export { ADMIN_STYLE_CSP_HASH } from "./ui/styles.js";
 
-// CSP source-expression for the single inline <style> block, so the app-layer
-// Content-Security-Policy permits its own styles without depending on the
-// upstream (Caddy) header replacing it. Hashes the exact bytes the browser
-// sees between the <style> tags.
-export const ADMIN_STYLE_CSP_HASH = `'sha256-${createHash("sha256").update(ADMIN_STYLE).digest("base64")}'`;
-
-const GENERIC_AUTH_FAILURE = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>로그인 실패</title><style>${ADMIN_STYLE}</style></head><body><main><h1>로그인하지 못했습니다</h1><p>입력하신 정보를 확인할 수 없습니다. 아이디·비밀번호를 다시 확인하시고, 여러 번 실패한 경우 잠시 후 다시 시도해 주세요.</p><a href="/admin/login">로그인 화면으로 돌아가기</a></main></body></html>`;
+const GENERIC_AUTH_FAILURE = renderPlainPage(
+  "로그인 실패",
+  `<h1>로그인하지 못했습니다</h1><p>입력하신 정보를 확인할 수 없습니다. 아이디·비밀번호를 다시 확인하시고, 여러 번 실패한 경우 잠시 후 다시 시도해 주세요.</p><a href="/admin/login">로그인 화면으로 돌아가기</a>`,
+);
 const MAX_FORM_BYTES = 16 * 1_024;
 const MAX_FORM_FIELDS = 32;
 const MAX_FORM_FIELD_NAME = 128;
 const MAX_FORM_FIELD_VALUE = 4_096;
 
-const ADMIN_NAV = `<nav>`
-  + `<a href="/admin/consultations">상담</a> `
-  + `<a href="/admin/articles">글</a> `
-  + `<a href="/admin/releases">릴리스</a> `
-  + `<a href="/admin/notifications">알림</a> `
-  + `<a href="/admin/consents">동의문</a> `
-  + `<a href="/admin/failures">발송 실패</a> `
-  + `<a href="/admin/health">상태</a>`
-  + `</nav>`;
-
 function page(title: string, body: string, lang = "ko", csrfToken?: string): string {
-  const logout = csrfToken === undefined
-    ? ""
-    : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">로그아웃</button></form>`;
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${ADMIN_STYLE}</style></head><body><header><a href="/admin">지혜 관리자</a>${ADMIN_NAV}${logout}</header><main>${body}</main></body></html>`;
+  return renderAdminPage(title, body, lang, csrfToken);
 }
 
 const SEOUL_TIME = new Intl.DateTimeFormat("ko-KR", {
@@ -1214,9 +1174,9 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       const locale = result.kind === "invalid" ? withdrawalLocaleForRoute(route) : result.locale;
       const copy = WITHDRAWAL_COPY[locale];
       if (result.kind === "invalid") {
-        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 410);
+        return context.html(renderPlainPage(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 410);
       }
-      return context.html(page(copy.title, `<h1>${copy.title}</h1><p>${copy.description}</p><form method="post" action="${escapeHtml(route)}"><input type="hidden" name="confirmation" value="${escapeHtml(result.confirmationValue)}"><button type="submit">${copy.button}</button></form>`, locale));
+      return context.html(renderPlainPage(copy.title, `<h1>${copy.title}</h1><p>${copy.description}</p><form method="post" action="${escapeHtml(route)}"><input type="hidden" name="confirmation" value="${escapeHtml(result.confirmationValue)}"><button type="submit">${copy.button}</button></form>`, locale));
     });
     app.post(localeRoute(route), async (context) => {
       const locale = withdrawalLocaleForRoute(route);
@@ -1237,10 +1197,10 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
         requestId: context.get("requestId"),
       });
       if (result.kind === "invalid") {
-        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 400);
+        return context.html(renderPlainPage(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 400);
       }
       context.header("Set-Cookie", "__Host-wisdom-marketing-withdraw=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
-      return context.html(page(copy.successTitle, `<h1>${copy.successTitle}</h1><p>${copy.success}</p>`, locale));
+      return context.html(renderPlainPage(copy.successTitle, `<h1>${copy.successTitle}</h1><p>${copy.success}</p>`, locale));
     });
   }
 
@@ -1250,7 +1210,7 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       publicOrigin: dependencies.publicOrigin,
       nowMs: dependencies.now(),
     });
-    if (result.kind === "invalid") return context.html(page("잘못된 링크", "<h1>철회 링크가 올바르지 않거나 만료되었습니다.</h1>"), 404);
+    if (result.kind === "invalid") return context.html(renderPlainPage("잘못된 링크", "<h1>철회 링크가 올바르지 않거나 만료되었습니다.</h1>"), 404);
     context.header("Set-Cookie", result.cookie);
     return context.redirect(result.location, 303);
   });
