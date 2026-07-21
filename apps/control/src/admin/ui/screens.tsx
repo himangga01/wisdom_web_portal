@@ -217,3 +217,129 @@ export function healthBodyHtml(
     </Screen>,
   );
 }
+
+export function loginBodyHtml(): string {
+  return renderToHtml(
+    <>
+      <h1>관리자 로그인</h1>
+      <form method="post" action="/admin/login">
+        <label for="login-username">아이디</label>
+        <input id="login-username" name="username" autocomplete="username" autofocus required />
+        <label for="login-password">비밀번호</label>
+        <input id="login-password" type="password" name="password" autocomplete="current-password" required />
+        <button type="submit">다음</button>
+      </form>
+    </>,
+  );
+}
+
+export function mfaBodyHtml(csrf: string): string {
+  return renderToHtml(
+    <>
+      <h1>2단계 인증</h1>
+      <p class="muted">인증 앱의 6자리 코드 또는 백업용 복구 코드를 입력하세요.</p>
+      <form method="post" action="/admin/mfa">
+        <label for="mfa-username">아이디</label>
+        <input id="mfa-username" name="username" autocomplete="username" required />
+        <label for="mfa-method">코드 종류</label>
+        <select id="mfa-method" name="method">
+          <option value="totp">인증 앱 코드</option>
+          <option value="recovery">복구 코드</option>
+        </select>
+        <label for="mfa-code">코드</label>
+        <input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required />
+        <input type="hidden" name="csrf" value={csrf} />
+        <button type="submit">로그인</button>
+      </form>
+    </>,
+  );
+}
+
+export function revisionDiffBodyHtml(previous: string, current: string): string {
+  return renderToHtml(
+    <>
+      <h1>리비전 비교</h1>
+      <h2>이전</h2>
+      <pre>{previous}</pre>
+      <h2>현재</h2>
+      <pre>{current}</pre>
+    </>,
+  );
+}
+
+export interface PreviewEligibleRow { locale: string; title: string; slug: string; headRevisionId: string }
+export interface PreviewBlockedRow { locale: string; title: string; state: string }
+
+export function publishPreviewBodyHtml(
+  eligible: readonly PreviewEligibleRow[],
+  blocked: readonly PreviewBlockedRow[],
+  publishLabel: string,
+  csrf: string,
+): string {
+  return renderToHtml(
+    <>
+      <h1>발행 미리보기</h1>
+      <p>모든 릴리스에는 현재 활성 개인정보·마케팅 동의문 묶음이 함께 봉인됩니다. 발행 대상 글이 없으면 정책만 발행할 수 있습니다.</p>
+      <h2>발행 대상</h2>
+      {eligible.length === 0 ? <EmptyState>발행 대상 승인 글이 없습니다. 정책만 발행됩니다.</EmptyState> : (
+        <ul>
+          {eligible.map((row) => (
+            <li>{row.locale}{" / "}{row.title}{" / "}{row.slug}{" / "}{row.headRevisionId}</li>
+          ))}
+        </ul>
+      )}
+      <h2>제외 대상</h2>
+      {blocked.length === 0 ? <EmptyState>제외된 글이 없습니다.</EmptyState> : (
+        <ul>
+          {blocked.map((row) => <li>{row.locale}{" / "}{row.title}{" / "}{row.state}</li>)}
+        </ul>
+      )}
+      <form method="post" action="/admin/publish">
+        <input type="hidden" name="csrf" value={csrf} />
+        <label>
+          <input type="checkbox" name="confirmation" value="publish-approved" required />{" "}
+          공개 사이트를 새 버전으로 교체하는 것을 확인합니다.
+        </label>
+        <button type="submit">{publishLabel}</button>
+      </form>
+    </>,
+  );
+}
+
+export interface ReleaseRow {
+  id: string;
+  version: string;
+  state: string;
+  createdAt: string;
+  manifestHex: string;
+  retired: boolean;
+}
+
+export function releasesBodyHtml(rows: readonly ReleaseRow[], csrf: string, banner: string): string {
+  return renderToHtml(
+    <Screen heading="발행 릴리스" banner={banner}>
+      <p><a href="/admin/publish/preview">승인 글 미리보기</a></p>
+      {rows.length === 0 ? <EmptyState>발행된 릴리스가 없습니다.</EmptyState> : (
+        <ul>
+          {rows.map((row) => (
+            <li>
+              {row.version}{" / "}{row.state}{" "}
+              <span class="muted">{row.createdAt}</span>{" "}
+              <code>{row.manifestHex}</code>
+              {row.retired ? (
+                <form method="post" action={`/admin/releases/${encodeURIComponent(row.id)}/rollback`}>
+                  <input type="hidden" name="csrf" value={csrf} />
+                  <label>
+                    <input type="checkbox" name="confirmation" value="rollback-retained-release" required />{" "}
+                    이 릴리스로 롤백하며, 검토 중(in_review)인 글이 이전 발행본으로 덮어써질 수 있음을 확인합니다.
+                  </label>
+                  <button type="submit">검증 후 롤백</button>
+                </form>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Screen>,
+  );
+}

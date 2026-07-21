@@ -61,6 +61,11 @@ import {
   dashboardBodyHtml,
   failuresBodyHtml,
   healthBodyHtml,
+  loginBodyHtml,
+  mfaBodyHtml,
+  publishPreviewBodyHtml,
+  releasesBodyHtml,
+  revisionDiffBodyHtml,
 } from "./ui/screens.js";
 
 interface AdminEnvironment {
@@ -422,7 +427,7 @@ function consultationDetail(
 }
 
 function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
-  app.get("/admin/login", (context) => context.html(page("관리자 로그인", `<h1>관리자 로그인</h1><form method="post" action="/admin/login"><label for="login-username">아이디</label><input id="login-username" name="username" autocomplete="username" autofocus required><label for="login-password">비밀번호</label><input id="login-password" type="password" name="password" autocomplete="current-password" required><button type="submit">다음</button></form>`)));
+  app.get("/admin/login", (context) => context.html(page("관리자 로그인", loginBodyHtml())));
 
   app.post("/admin/login", async (context) => {
     if (!strictOrigin(context, dependencies.adminOrigin)) {
@@ -449,7 +454,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/mfa", (context) => {
     const parsed = parsePairCookie(context.req.header("cookie") ?? "", "__Host-wisdom-preauth");
     if (!parsed) return context.redirect(`${dependencies.adminOrigin}/admin/login`, 303);
-    return context.html(page("2단계 인증", `<h1>2단계 인증</h1><p class="muted">인증 앱의 6자리 코드 또는 백업용 복구 코드를 입력하세요.</p><form method="post" action="/admin/mfa"><label for="mfa-username">아이디</label><input id="mfa-username" name="username" autocomplete="username" required><label for="mfa-method">코드 종류</label><select id="mfa-method" name="method"><option value="totp">인증 앱 코드</option><option value="recovery">복구 코드</option></select><label for="mfa-code">코드</label><input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required><input type="hidden" name="csrf" value="${escapeHtml(parsed.csrf)}"><button type="submit">로그인</button></form>`));
+    return context.html(page("2단계 인증", mfaBodyHtml(parsed.csrf)));
   });
 
   app.post("/admin/mfa", async (context) => {
@@ -621,7 +626,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (!current || !previous || current.locale !== previous.locale) {
       return context.html(page("리비전 비교를 찾을 수 없음", "<h1>리비전 비교를 찾을 수 없습니다</h1>"), 404);
     }
-    return context.html(page("리비전 비교", `<h1>리비전 비교</h1><h2>이전</h2><pre>${escapeHtml(`${previous.title}\n${previous.summary}\n\n${previous.body_markdown}`)}</pre><h2>현재</h2><pre>${escapeHtml(`${current.title}\n${current.summary}\n\n${current.body_markdown}`)}</pre>`, "ko", auth.csrfToken));
+    return context.html(page("리비전 비교", revisionDiffBodyHtml(
+      `${previous.title}\n${previous.summary}\n\n${previous.body_markdown}`,
+      `${current.title}\n${current.summary}\n\n${current.body_markdown}`,
+    ), "ko", auth.csrfToken));
   });
 
   const articleStateActions: Readonly<Record<string, ArticleReviewState>> = {
@@ -754,13 +762,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const publishLabel = eligible.length === 0
       ? "검증 후 정책만 발행"
       : "검증 후 승인 글과 정책 발행";
-    const eligibleList = eligible.length === 0
-      ? emptyState("발행 대상 승인 글이 없습니다. 정책만 발행됩니다.")
-      : `<ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul>`;
-    const blockedList = blocked.length === 0
-      ? emptyState("제외된 글이 없습니다.")
-      : `<ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul>`;
-    return context.html(page("발행 미리보기", `<h1>발행 미리보기</h1><p>모든 릴리스에는 현재 활성 개인정보·마케팅 동의문 묶음이 함께 봉인됩니다. 발행 대상 글이 없으면 정책만 발행할 수 있습니다.</p><h2>발행 대상</h2>${eligibleList}<h2>제외 대상</h2>${blockedList}<form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label><input type="checkbox" name="confirmation" value="publish-approved" required> 공개 사이트를 새 버전으로 교체하는 것을 확인합니다.</label><button type="submit">${publishLabel}</button></form>`, "ko", auth.csrfToken));
+    return context.html(page("발행 미리보기", publishPreviewBodyHtml(
+      eligible.map((row) => ({ locale: row.locale, title: row.title, slug: row.slug, headRevisionId: row.head_revision_id })),
+      blocked.map((row) => ({ locale: row.locale, title: row.title, state: row.state })),
+      publishLabel,
+      auth.csrfToken,
+    ), "ko", auth.csrfToken));
   });
 
   app.post("/admin/publish", async (context) => {
@@ -806,10 +813,17 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       rolled_back_at_ms: number | null;
       created_at_ms: number;
     }>;
-    const releaseList = rows.length === 0
-      ? emptyState("발행된 릴리스가 없습니다.")
-      : `<ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} <span class="muted">${escapeHtml(formatSeoulTime(row.created_at_ms))}</span> <code>${escapeHtml(row.manifest_sha256.toString("hex"))}</code>${row.state === "retired" ? `<form method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label><input type="checkbox" name="confirmation" value="rollback-retained-release" required> 이 릴리스로 롤백하며, 검토 중(in_review)인 글이 이전 발행본으로 덮어써질 수 있음을 확인합니다.</label><button type="submit">검증 후 롤백</button></form>` : ""}</li>`).join("")}</ul>`;
-    return context.html(page("발행 릴리스", `<h1>발행 릴리스</h1>${savedBanner(context)}<p><a href="/admin/publish/preview">승인 글 미리보기</a></p>${releaseList}`, "ko", auth.csrfToken));
+    const releaseRows = rows.map((row) => ({
+      id: row.id,
+      version: row.version,
+      state: row.state,
+      createdAt: formatSeoulTime(row.created_at_ms),
+      manifestHex: row.manifest_sha256.toString("hex"),
+      retired: row.state === "retired",
+    }));
+    return context.html(
+      page("발행 릴리스", releasesBodyHtml(releaseRows, auth.csrfToken, savedBanner(context)), "ko", auth.csrfToken),
+    );
   });
 
   app.post("/admin/releases/:id/rollback", async (context) => {
