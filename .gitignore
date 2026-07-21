@@ -16,3 +16,4 @@ prototypes/homepage-motion/node_modules/
 prototypes/homepage-motion/dist/
 prototypes/homepage-motion/playwright-report/
 prototypes/homepage-motion/test-results/
+.claude/settings.local.json
