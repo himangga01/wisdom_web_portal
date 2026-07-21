@@ -306,6 +306,185 @@ export function publishPreviewBodyHtml(
   );
 }
 
+export interface NotificationSettingsProps {
+  banner: string;
+  csrf: string;
+  statusRows: readonly { channelLabel: string; enabled: boolean; payloadMode: string; smtpConfigured: boolean }[];
+  email: {
+    enabled: boolean;
+    payloadMode: "receipt-only" | "full-inquiry";
+    host: string;
+    port: string | number;
+    from: string;
+    to: string;
+    secretRef: string;
+  };
+  hermesEnabled: boolean;
+}
+
+export function notificationSettingsBodyHtml(props: NotificationSettingsProps): string {
+  const { email } = props;
+  return renderToHtml(
+    <Screen heading="알림 설정" banner={props.banner}>
+      <h2>현재 설정</h2>
+      <table>
+        <thead>
+          <tr><th>채널</th><th>사용 여부</th><th>발송 방식</th><th>SMTP 구성</th></tr>
+        </thead>
+        <tbody>
+          {props.statusRows.map((row) => (
+            <tr>
+              <td>{row.channelLabel}</td>
+              <td>{row.enabled ? "사용" : "사용 안 함"}</td>
+              <td>{row.payloadMode}</td>
+              <td>{row.smtpConfigured ? "구성됨" : "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h2>이메일 알림</h2>
+      <form method="post" action="/admin/notifications">
+        <input type="hidden" name="csrf" value={props.csrf} />
+        <input type="hidden" name="channel" value="email" />
+        <label><input type="checkbox" name="enabled" value="1" checked={email.enabled} /> 이메일 알림 사용</label>
+        <label for="email-payload">발송 방식</label>
+        <select id="email-payload" name="payloadMode">
+          <option value="receipt-only" selected={email.payloadMode === "receipt-only"}>접수 확인만</option>
+          <option value="full-inquiry" selected={email.payloadMode === "full-inquiry"}>전체 문의 내용</option>
+        </select>
+        <fieldset>
+          <legend>SMTP TLS 설정</legend>
+          <label>보내는 서버(Host)</label>
+          <input name="smtpHost" value={email.host} maxlength={253} />
+          <label>포트</label>
+          <input name="smtpPort" inputmode="numeric" value={email.port} readonly />
+          <label>보내는 주소(From)</label>
+          <input name="smtpFrom" type="email" value={email.from} maxlength={254} />
+          <label>받는 주소(운영자)</label>
+          <input name="smtpTo" type="email" value={email.to} maxlength={254} />
+          <label>TLS 방식</label>
+          <select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select>
+          <label>키체인 참조</label>
+          <input name="smtpSecretRef" value={email.secretRef} placeholder="keychain:wisdom-smtp" maxlength={137} />
+          <small class="muted">비밀번호를 직접 입력하지 않습니다. macOS 키체인에 저장한 항목 이름(예: keychain:wisdom-smtp)만 참조합니다.</small>
+        </fieldset>
+        <label><input type="checkbox" name="fullInquiryApproved" value="yes" /> 전체 문의 내용 발송 승인</label>
+        <button type="submit">이메일 설정 저장</button>
+      </form>
+      <h2>Hermes(텔레그램) 알림</h2>
+      <form method="post" action="/admin/notifications">
+        <input type="hidden" name="csrf" value={props.csrf} />
+        <input type="hidden" name="channel" value="hermes-telegram" />
+        <label><input type="checkbox" name="enabled" value="1" checked={props.hermesEnabled} /> Hermes 알림 사용</label>
+        <button type="submit">Hermes 설정 저장</button>
+      </form>
+      <h2>테스트 발송</h2>
+      <form method="post" action="/admin/notifications/test">
+        <input type="hidden" name="csrf" value={props.csrf} />
+        <label for="test-channel">채널</label>
+        <select id="test-channel" name="channel">
+          <option value="email">이메일</option>
+          <option value="hermes-telegram">Hermes(텔레그램)</option>
+        </select>
+        <button type="submit">테스트 알림 보내기</button>
+      </form>
+    </Screen>,
+  );
+}
+
+export interface ArticleActionForm { action: string; label: string; confirm?: string }
+export interface ArticleHeadView {
+  locale: string;
+  state: string;
+  title: string;
+  summary: string;
+  bodyMarkdown: string;
+  sourcesJson: string;
+  rowVersion: number;
+  slug?: string;
+  actions: readonly ArticleActionForm[];
+}
+export interface ArticleRevisionItem {
+  locale: string;
+  revisionNo: number;
+  title: string;
+  createdByType: string;
+  createdAt: string;
+  diff?: { href: string; label: string };
+}
+export interface ArticleDetailProps {
+  articleId: string;
+  heading: string;
+  sourceLocale: string;
+  banner: string;
+  csrf: string;
+  translate?: { rowVersion: number; targetLocales: readonly string[] };
+  heads: readonly ArticleHeadView[];
+  revisions: readonly ArticleRevisionItem[];
+}
+
+const ArticleHeadSection: FC<{ articleId: string; csrf: string; head: ArticleHeadView }> = ({ articleId, csrf, head }) => (
+  <section>
+    <h3>{head.locale}{" / "}{head.state}</h3>
+    <p>{head.title}</p>
+    <p>{head.summary}</p>
+    <h4>본문 (Markdown)</h4>
+    <pre>{head.bodyMarkdown}</pre>
+    <h4>출처</h4>
+    <pre>{head.sourcesJson}</pre>
+    {head.slug === undefined ? null : (
+      <form method="post" action={`/admin/articles/${encodeURIComponent(articleId)}/locales/${encodeURIComponent(head.locale)}/slug`}>
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="rowVersion" value={head.rowVersion} />
+        <label>공개 주소(slug)</label>
+        <input name="slug" value={head.slug} maxlength={96} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="소문자·숫자·하이픈만 사용하세요 (예: visa-guide)" required />
+        <button type="submit">주소 저장</button>
+      </form>
+    )}
+    {head.actions.map((action) => (
+      <form method="post" action={`/admin/articles/${encodeURIComponent(articleId)}/locales/${encodeURIComponent(head.locale)}/${action.action}`}>
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="rowVersion" value={head.rowVersion} />
+        {action.confirm === undefined ? null : <label><input type="checkbox" required /> {action.confirm}</label>}
+        <button type="submit">{action.label}</button>
+      </form>
+    ))}
+  </section>
+);
+
+export function articleDetailBodyHtml(props: ArticleDetailProps): string {
+  return renderToHtml(
+    <>
+      <h1>{props.heading}</h1>
+      {props.banner ? raw(props.banner) : null}
+      <p>원문 언어: {props.sourceLocale}</p>
+      {props.translate === undefined ? null : (
+        <form method="post" action={`/admin/articles/${encodeURIComponent(props.articleId)}/translations`}>
+          <input type="hidden" name="csrf" value={props.csrf} />
+          <input type="hidden" name="rowVersion" value={props.translate.rowVersion} />
+          <label for="translate-target">번역 언어</label>
+          <select id="translate-target" name="targetLocale">
+            {props.translate.targetLocales.map((locale) => <option value={locale}>{locale}</option>)}
+          </select>
+          <button type="submit">번역 요청</button>
+        </form>
+      )}
+      <h2>언어본</h2>
+      {props.heads.map((head) => <ArticleHeadSection articleId={props.articleId} csrf={props.csrf} head={head} />)}
+      <h2>리비전 이력</h2>
+      <ul>
+        {props.revisions.map((rev) => (
+          <li>
+            {rev.locale}{" #"}{rev.revisionNo}{" "}{rev.title}{" ("}{rev.createdByType}{") "}
+            <span class="muted">{rev.createdAt}</span>
+            {rev.diff === undefined ? null : <>{" "}<a href={rev.diff.href}>{rev.diff.label}</a></>}
+          </li>
+        ))}
+      </ul>
+    </>,
+  );
+}
+
 export interface ReleaseRow {
   id: string;
   version: string;

@@ -54,6 +54,10 @@ import {
   savedBannerHtml,
 } from "./ui/primitives.js";
 import {
+  type ArticleActionForm,
+  type ArticleHeadView,
+  type ArticleRevisionItem,
+  articleDetailBodyHtml,
   articlesBodyHtml,
   consentsBodyHtml,
   consultationDetailBodyHtml,
@@ -63,6 +67,7 @@ import {
   healthBodyHtml,
   loginBodyHtml,
   mfaBodyHtml,
+  notificationSettingsBodyHtml,
   publishPreviewBodyHtml,
   releasesBodyHtml,
   revisionDiffBodyHtml,
@@ -569,44 +574,64 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       id: string; locale: Locale; revision_no: number; title: string;
       created_at_ms: number; created_by_type: string;
     }>;
-    const actionForms = (head: typeof heads[number]): string => {
-      const actions: Array<{ action: string; label: string; confirm?: string }> = [];
-      if (head.state === "draft") actions.push(
+    const actionsFor = (state: ArticleState): ArticleActionForm[] => {
+      if (state === "draft") return [
         { action: "review", label: "검토 요청" },
         { action: "reject", label: "반려", confirm: "반려하면 이 언어본을 다시 되돌릴 수 없음을 확인합니다." },
-      );
-      if (head.state === "in_review") actions.push(
+      ];
+      if (state === "in_review") return [
         { action: "return", label: "초안으로 되돌리기" },
         { action: "approve", label: "언어본 승인" },
         { action: "reject", label: "반려", confirm: "반려하면 이 언어본을 다시 되돌릴 수 없음을 확인합니다." },
-      );
-      if (head.state === "approved") actions.push({ action: "review", label: "검토 재개" });
-      const slugForm = head.state === "draft" || head.state === "in_review"
-        ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/slug"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><label>공개 주소(slug)</label><input name="slug" value="${escapeHtml(head.slug)}" maxlength="96" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="소문자·숫자·하이픈만 사용하세요 (예: visa-guide)" required><button type="submit">주소 저장</button></form>`
-        : "";
-      return slugForm + actions.map(({ action, label, confirm }) => {
-        const confirmField = confirm === undefined
-          ? ""
-          : `<label><input type="checkbox" required> ${escapeHtml(confirm)}</label>`;
-        return `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/${action}"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}">${confirmField}<button type="submit">${escapeHtml(label)}</button></form>`;
-      }).join("");
+      ];
+      if (state === "approved") return [{ action: "review", label: "검토 재개" }];
+      return [];
     };
+    const headViews: ArticleHeadView[] = heads.map((head) => ({
+      locale: head.locale,
+      state: head.state,
+      title: head.title,
+      summary: head.summary,
+      bodyMarkdown: head.body_markdown,
+      sourcesJson: head.sources_json,
+      rowVersion: head.row_version,
+      ...(head.state === "draft" || head.state === "in_review" ? { slug: head.slug } : {}),
+      actions: actionsFor(head.state),
+    }));
     const targetLocales = (["ko", "en", "zh-Hans", "zh-Hant"] as const)
-      .filter((locale) => locale !== article.source_locale)
-      .map((locale) => `<option value="${escapeHtml(locale)}">${escapeHtml(locale)}</option>`)
-      .join("");
+      .filter((locale) => locale !== article.source_locale);
     const sourceHead = heads.find(({ locale }) => locale === article.source_locale);
     const translate = sourceHead && ["approved", "published"].includes(sourceHead.state)
-      ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/translations"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${sourceHead.row_version}"><label for="translate-target">번역 언어</label><select id="translate-target" name="targetLocale">${targetLocales}</select><button type="submit">번역 요청</button></form>`
-      : "";
-    const revisionItems = revisions.map((revision, index) => {
+      ? { rowVersion: sourceHead.row_version, targetLocales }
+      : undefined;
+    const revisionViews: ArticleRevisionItem[] = revisions.map((revision, index) => {
       const previous = revisions.slice(index + 1).find(({ locale }) => locale === revision.locale);
-      const diff = previous
-        ? ` <a href="/admin/articles/${encodeURIComponent(article.id)}/revisions/${encodeURIComponent(revision.id)}/diff?against=${encodeURIComponent(previous.id)}">#${previous.revision_no}과 비교</a>`
-        : "";
-      return `<li>${escapeHtml(revision.locale)} #${revision.revision_no} ${escapeHtml(revision.title)} (${escapeHtml(revision.created_by_type)}) <span class="muted">${escapeHtml(formatSeoulTime(revision.created_at_ms))}</span>${diff}</li>`;
-    }).join("");
-    return context.html(page("글 상세", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1>${savedBanner(context)}<p>원문 언어: ${escapeHtml(article.source_locale)}</p>${translate}<h2>언어본</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>본문 (Markdown)</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>출처</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>리비전 이력</h2><ul>${revisionItems}</ul>`, "ko", auth.csrfToken));
+      return {
+        locale: revision.locale,
+        revisionNo: revision.revision_no,
+        title: revision.title,
+        createdByType: revision.created_by_type,
+        createdAt: formatSeoulTime(revision.created_at_ms),
+        ...(previous
+          ? {
+            diff: {
+              href: `/admin/articles/${encodeURIComponent(article.id)}/revisions/${encodeURIComponent(revision.id)}/diff?against=${encodeURIComponent(previous.id)}`,
+              label: `#${previous.revision_no}과 비교`,
+            },
+          }
+          : {}),
+      };
+    });
+    return context.html(page("글 상세", articleDetailBodyHtml({
+      articleId: article.id,
+      heading: sourceHead?.title ?? article.id,
+      sourceLocale: article.source_locale,
+      banner: savedBanner(context),
+      csrf: auth.csrfToken,
+      ...(translate ? { translate } : {}),
+      heads: headViews,
+      revisions: revisionViews,
+    }), "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles/:id/revisions/:revisionId/diff", (context) => {
@@ -929,17 +954,31 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       typeof emailRow?.config_json === "string" ? emailRow.config_json : undefined,
       typeof emailRow?.secret_ref === "string" ? emailRow.secret_ref : undefined,
     );
-    const emailEnabled = emailRow?.enabled === 1 ? " checked" : "";
     const hermesRow = rows.find((row) => row.channel === "hermes-telegram");
-    const hermesEnabled = hermesRow?.enabled === 1 ? " checked" : "";
     const emailPayloadMode = emailRow?.payload_mode === "full-inquiry" ? "full-inquiry" : "receipt-only";
     const channelLabel = (value: unknown): string =>
       value === "email" ? "이메일" : value === "hermes-telegram" ? "Hermes(텔레그램)" : String(value);
-    const statusTable = `<table><thead><tr><th>채널</th><th>사용 여부</th><th>발송 방식</th><th>SMTP 구성</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(channelLabel(row.channel))}</td><td>${row.enabled === 1 ? "사용" : "사용 안 함"}</td><td>${escapeHtml(String(row.payload_mode ?? "-"))}</td><td>${typeof row.secret_ref === "string" && row.secret_ref.length > 0 ? "구성됨" : "-"}</td></tr>`).join("")}</tbody></table>`;
-    const emailForm = `<h2>이메일 알림</h2><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="email"><label><input type="checkbox" name="enabled" value="1"${emailEnabled}> 이메일 알림 사용</label><label for="email-payload">발송 방식</label><select id="email-payload" name="payloadMode"><option value="receipt-only"${emailPayloadMode === "receipt-only" ? " selected" : ""}>접수 확인만</option><option value="full-inquiry"${emailPayloadMode === "full-inquiry" ? " selected" : ""}>전체 문의 내용</option></select><fieldset><legend>SMTP TLS 설정</legend><label>보내는 서버(Host)</label><input name="smtpHost" value="${escapeHtml(smtp?.host ?? "")}" maxlength="253"><label>포트</label><input name="smtpPort" inputmode="numeric" value="${escapeHtml(smtp?.port ?? 465)}" readonly><label>보내는 주소(From)</label><input name="smtpFrom" type="email" value="${escapeHtml(smtp?.from ?? "")}" maxlength="254"><label>받는 주소(운영자)</label><input name="smtpTo" type="email" value="${escapeHtml(smtp?.to ?? "")}" maxlength="254"><label>TLS 방식</label><select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select><label>키체인 참조</label><input name="smtpSecretRef" value="${escapeHtml(smtp?.secretRef ?? "")}" placeholder="keychain:wisdom-smtp" maxlength="137"><small class="muted">비밀번호를 직접 입력하지 않습니다. macOS 키체인에 저장한 항목 이름(예: keychain:wisdom-smtp)만 참조합니다.</small></fieldset><label><input type="checkbox" name="fullInquiryApproved" value="yes"> 전체 문의 내용 발송 승인</label><button type="submit">이메일 설정 저장</button></form>`;
-    const hermesForm = `<h2>Hermes(텔레그램) 알림</h2><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="hermes-telegram"><label><input type="checkbox" name="enabled" value="1"${hermesEnabled}> Hermes 알림 사용</label><button type="submit">Hermes 설정 저장</button></form>`;
-    const testForm = `<h2>테스트 발송</h2><form method="post" action="/admin/notifications/test"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label for="test-channel">채널</label><select id="test-channel" name="channel"><option value="email">이메일</option><option value="hermes-telegram">Hermes(텔레그램)</option></select><button type="submit">테스트 알림 보내기</button></form>`;
-    return context.html(page("알림 설정", `<h1>알림 설정</h1>${savedBanner(context)}<h2>현재 설정</h2>${statusTable}${emailForm}${hermesForm}${testForm}`, "ko", auth.csrfToken));
+    const statusRows = rows.map((row) => ({
+      channelLabel: channelLabel(row.channel),
+      enabled: row.enabled === 1,
+      payloadMode: String(row.payload_mode ?? "-"),
+      smtpConfigured: typeof row.secret_ref === "string" && row.secret_ref.length > 0,
+    }));
+    return context.html(page("알림 설정", notificationSettingsBodyHtml({
+      banner: savedBanner(context),
+      csrf: auth.csrfToken,
+      statusRows,
+      email: {
+        enabled: emailRow?.enabled === 1,
+        payloadMode: emailPayloadMode,
+        host: smtp?.host ?? "",
+        port: smtp?.port ?? 465,
+        from: smtp?.from ?? "",
+        to: smtp?.to ?? "",
+        secretRef: smtp?.secretRef ?? "",
+      },
+      hermesEnabled: hermesRow?.enabled === 1,
+    }), "ko", auth.csrfToken));
   });
 
   app.post("/admin/notifications", async (context) => {
