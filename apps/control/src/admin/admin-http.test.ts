@@ -578,9 +578,9 @@ describe("separate host and administrator browser boundary", () => {
     expect(html).toContain("&lt;script&gt;stored-name&lt;/script&gt;");
     expect(html).toContain("&lt;img src=x onerror=stored-company&gt;");
     expect(html).not.toContain("<script>stored-name</script>");
-    expect(html).toMatch(/<title>Consultation detail<\/title>/);
-    expect(html).toContain('<label for="consultation-status">Next status</label>');
-    expect(html).toContain('<option value="" selected disabled>Choose a valid next status</option>');
+    expect(html).toMatch(/<title>상담 상세<\/title>/);
+    expect(html).toContain('<label for="consultation-status">다음 상태</label>');
+    expect(html).toContain('<option value="" selected disabled>변경할 상태를 선택하세요</option>');
     expect(html).not.toContain('<option value="received">');
     expect(html).toContain('<option value="acknowledged">acknowledged</option>');
     const detailCsrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
@@ -648,7 +648,7 @@ describe("separate host and administrator browser boundary", () => {
       { headers: { cookie: session.cookie } },
     );
     const closedHtml = await closedDetail.text();
-    expect(closedHtml).toContain("This consultation is in a terminal state.");
+    expect(closedHtml).toContain("이 상담은 더 이상 상태를 변경할 수 없는 최종 단계입니다.");
     expect(closedHtml).not.toContain('/consultations/consultation-1/status');
 
     expect((await current.app.request(`${ADMIN_ORIGIN}/admin/logout`, {

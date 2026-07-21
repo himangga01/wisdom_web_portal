@@ -78,17 +78,107 @@ export interface AdminArticlePublicationActions {
   ): Promise<AdminArticlePublicationResult>;
 }
 
-const GENERIC_AUTH_FAILURE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed</title></head><body><main><h1>Sign-in failed</h1><p>The credentials could not be verified.</p><a href="/admin/login">Try again</a></main></body></html>`;
+const ADMIN_STYLE = `:root{color-scheme:light}*{box-sizing:border-box}`
+  + `body{margin:0;font-family:-apple-system,"Apple SD Gothic Neo","Segoe UI",Roboto,sans-serif;`
+  + `font-size:16px;line-height:1.6;color:#1f2937;background:#f5f5f4}`
+  + `header{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center;padding:.75rem 1.25rem;`
+  + `background:#1f2937;color:#fff}`
+  + `header>a{color:#fff;font-weight:700;text-decoration:none}`
+  + `header nav{display:flex;flex-wrap:wrap;gap:.75rem}`
+  + `header nav a{color:#e5e7eb;text-decoration:none;font-size:.9rem}`
+  + `header nav a:hover{color:#fff;text-decoration:underline}`
+  + `header form{margin-left:auto}`
+  + `main{max-width:60rem;margin:0 auto;padding:1.5rem 1.25rem 4rem}`
+  + `h1{font-size:1.5rem;margin:.2rem 0 1rem}h2{font-size:1.15rem;margin:1.5rem 0 .5rem}`
+  + `a{color:#1d4ed8}`
+  + `table{border-collapse:collapse;width:100%;margin:.5rem 0;background:#fff}`
+  + `th,td{border:1px solid #d6d3d1;padding:.5rem .65rem;text-align:left;vertical-align:top}`
+  + `th{background:#f3f4f6}`
+  + `form{margin:1rem 0}fieldset{margin:1rem 0;border:1px solid #d6d3d1;border-radius:.4rem}`
+  + `label{display:block;margin:.6rem 0 .2rem;font-weight:600}`
+  + `input,select,textarea{font:inherit;padding:.45rem .55rem;border:1px solid #9ca3af;border-radius:.3rem;max-width:100%}`
+  + `button{font:inherit;padding:.5rem .9rem;border:0;border-radius:.3rem;background:#1d4ed8;color:#fff;cursor:pointer}`
+  + `button:hover{background:#1e40af}`
+  + `pre{background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.75rem;overflow-x:auto}`
+  + `.banner{padding:.75rem 1rem;border-radius:.4rem;margin:0 0 1rem}`
+  + `.banner-ok{background:#dcfce7;border:1px solid #86efac}`
+  + `.banner-error{background:#fee2e2;border:1px solid #fca5a5}`
+  + `.muted{color:#6b7280}`;
+
+const GENERIC_AUTH_FAILURE = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>로그인 실패</title><style>${ADMIN_STYLE}</style></head><body><main><h1>로그인하지 못했습니다</h1><p>입력하신 정보를 확인할 수 없습니다. 아이디·비밀번호를 다시 확인하시고, 여러 번 실패한 경우 잠시 후 다시 시도해 주세요.</p><a href="/admin/login">로그인 화면으로 돌아가기</a></main></body></html>`;
 const MAX_FORM_BYTES = 16 * 1_024;
 const MAX_FORM_FIELDS = 32;
 const MAX_FORM_FIELD_NAME = 128;
 const MAX_FORM_FIELD_VALUE = 4_096;
 
-function page(title: string, body: string, lang = "en", csrfToken?: string): string {
+const ADMIN_NAV = `<nav>`
+  + `<a href="/admin/consultations">상담</a> `
+  + `<a href="/admin/articles">글</a> `
+  + `<a href="/admin/releases">릴리스</a> `
+  + `<a href="/admin/notifications">알림</a> `
+  + `<a href="/admin/consents">동의문</a> `
+  + `<a href="/admin/failures">발송 실패</a> `
+  + `<a href="/admin/health">상태</a>`
+  + `</nav>`;
+
+function page(title: string, body: string, lang = "ko", csrfToken?: string): string {
   const logout = csrfToken === undefined
     ? ""
-    : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">Sign out</button></form>`;
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><header><a href="/admin">JIHYE Admin</a><nav><a href="/admin/consultations">Consultations</a> <a href="/admin/articles">Articles</a> <a href="/admin/releases">Releases</a> <a href="/admin/notifications">Notifications</a> <a href="/admin/consents">Consents</a> <a href="/admin/failures">Failures</a> <a href="/admin/health">Health</a></nav>${logout}</header><main>${body}</main></body></html>`;
+    : `<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><button type="submit">로그아웃</button></form>`;
+  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${ADMIN_STYLE}</style></head><body><header><a href="/admin">지혜 관리자</a>${ADMIN_NAV}${logout}</header><main>${body}</main></body></html>`;
+}
+
+const SEOUL_TIME = new Intl.DateTimeFormat("ko-KR", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+// Human-readable KST timestamp for admin screens (the office operates in Seoul).
+function formatSeoulTime(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return "";
+  return `${SEOUL_TIME.format(new Date(epochMs))} (KST)`;
+}
+
+// Maps internal action result kinds to a Korean explanation for the operator.
+const RESULT_MESSAGES: Record<string, string> = {
+  conflict: "다른 화면에서 이미 변경되어 저장하지 못했습니다. 목록에서 최신 상태를 확인한 뒤 다시 시도해 주세요.",
+  "invalid-transition": "지금 상태에서는 요청한 변경을 할 수 없습니다. 최신 상태를 확인해 주세요.",
+  "state-blocked": "다른 작업이 진행 중이라 지금은 변경할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+  "slug-conflict": "같은 주소(slug)를 쓰는 글이 이미 있습니다. 다른 값을 사용해 주세요.",
+  "pii-rejected": "개인정보로 보이는 내용이 포함되어 처리를 중단했습니다. 내용을 확인해 주세요.",
+  "source-not-approved": "원문이 아직 승인되지 않아 번역을 요청할 수 없습니다. 먼저 원문을 승인해 주세요.",
+  "target-exists": "이미 존재하는 대상이라 다시 만들 수 없습니다.",
+};
+
+function resultMessage(kind: string): string {
+  return RESULT_MESSAGES[kind] ?? "요청을 처리하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해 주세요.";
+}
+
+function backLink(href: string, label: string): string {
+  return `<p><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></p>`;
+}
+
+// Shown when Origin/CSRF checks fail or a session has expired mid-edit, so the
+// operator understands why a save did not go through and how to recover.
+function forbiddenPage(): string {
+  return page(
+    "요청을 처리할 수 없습니다",
+    `<h1>요청을 처리할 수 없습니다</h1><p>페이지가 오래되었거나 로그인 세션이 만료되어 저장하지 못했습니다. `
+      + `작성 중이던 내용이 있다면 복사해 두시고, 새로고침하거나 다시 로그인한 뒤 시도해 주세요.</p>`
+      + backLink("/admin", "관리자 홈으로 돌아가기"),
+  );
+}
+
+function actionErrorPage(title: string, kind: string, backHref: string, backLabel: string): string {
+  return page(
+    title,
+    `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(resultMessage(kind))}</p>${backLink(backHref, backLabel)}`,
+  );
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -272,7 +362,7 @@ async function protectedPost(
   dependencies: Task4RouteDependencies,
 ): Promise<{ session: ResolvedAdminSession; form: Record<string, string> } | Response> {
   if (!strictOrigin(context, dependencies.adminOrigin)) {
-    return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+    return context.html(forbiddenPage(), 403);
   }
   const resolved = protectedSession(context, dependencies, false);
   if (resolved instanceof Response) return resolved;
@@ -284,7 +374,7 @@ async function protectedPost(
     resolved.csrfHash,
     form.csrf ?? "",
   )) {
-    return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+    return context.html(forbiddenPage(), 403);
   }
   resolveAdminSession(
     dependencies.db,
@@ -320,21 +410,21 @@ function consultationDetail(
     ? undefined
     : decryptPii(dependencies.keyProvider, row.id, row.pii_envelope);
   const piiMarkup = pii
-    ? `<dl><dt>Name</dt><dd>${escapeHtml(pii.name)}</dd><dt>Phone</dt><dd>${escapeHtml(pii.phone)}</dd><dt>Email</dt><dd>${escapeHtml(pii.email ?? "")}</dd><dt>Company</dt><dd>${escapeHtml(pii.company ?? "")}</dd><dt>Message</dt><dd>${escapeHtml(pii.message)}</dd></dl>`
-    : "<p>Personal data has been purged.</p>";
+    ? `<dl><dt>이름</dt><dd>${escapeHtml(pii.name)}</dd><dt>전화</dt><dd>${escapeHtml(pii.phone)}</dd><dt>이메일</dt><dd>${escapeHtml(pii.email ?? "")}</dd><dt>회사</dt><dd>${escapeHtml(pii.company ?? "")}</dd><dt>문의 내용</dt><dd>${escapeHtml(pii.message)}</dd></dl>`
+    : "<p class=\"muted\">개인정보는 보유기간이 지나 파기되었습니다.</p>";
   const nextStatuses = allowedNextConsultationStatuses(row.status);
   const statusForm = nextStatuses.length === 0
-    ? "<p>This consultation is in a terminal state.</p>"
-    : `<form method="post" action="/admin/consultations/${encodeURIComponent(row.id)}/status"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><input type="hidden" name="rowVersion" value="${row.row_version}"><label for="consultation-status">Next status</label><select id="consultation-status" name="status" required><option value="" selected disabled>Choose a valid next status</option>${nextStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join("")}</select><label><input type="checkbox" name="email" value="1"> Email notification</label><label><input type="checkbox" name="hermes" value="1"> Hermes notification</label><button type="submit">Update status</button></form>`;
-  return `<h1>Consultation detail</h1><dl><dt>Receipt</dt><dd>${escapeHtml(row.receipt_id)}</dd><dt>Status</dt><dd>${escapeHtml(row.status)}</dd><dt>Locale</dt><dd>${escapeHtml(row.locale)}</dd><dt>Category</dt><dd>${escapeHtml(row.category)}</dd><dt>Received</dt><dd>${escapeHtml(new Date(row.received_at_ms).toISOString())}</dd></dl>${piiMarkup}${statusForm}`;
+    ? "<p class=\"muted\">이 상담은 더 이상 상태를 변경할 수 없는 최종 단계입니다.</p>"
+    : `<form method="post" action="/admin/consultations/${encodeURIComponent(row.id)}/status"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><input type="hidden" name="rowVersion" value="${row.row_version}"><label for="consultation-status">다음 상태</label><select id="consultation-status" name="status" required><option value="" selected disabled>변경할 상태를 선택하세요</option>${nextStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join("")}</select><label><input type="checkbox" name="email" value="1"> 고객에게 이메일 통지</label><label><input type="checkbox" name="hermes" value="1"> 담당자 Hermes 알림</label><button type="submit">상태 변경</button></form>`;
+  return `<h1>상담 상세</h1><dl><dt>접수번호</dt><dd>${escapeHtml(row.receipt_id)}</dd><dt>상태</dt><dd>${escapeHtml(row.status)}</dd><dt>언어</dt><dd>${escapeHtml(row.locale)}</dd><dt>분야</dt><dd>${escapeHtml(row.category)}</dd><dt>접수 시각</dt><dd>${escapeHtml(formatSeoulTime(row.received_at_ms))}</dd></dl>${piiMarkup}${statusForm}`;
 }
 
 function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
-  app.get("/admin/login", (context) => context.html(page("Administrator sign in", `<h1>Administrator sign in</h1><form method="post" action="/admin/login"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Continue</button></form>`)));
+  app.get("/admin/login", (context) => context.html(page("관리자 로그인", `<h1>관리자 로그인</h1><form method="post" action="/admin/login"><label for="login-username">아이디</label><input id="login-username" name="username" autocomplete="username" autofocus required><label for="login-password">비밀번호</label><input id="login-password" type="password" name="password" autocomplete="current-password" required><button type="submit">다음</button></form>`)));
 
   app.post("/admin/login", async (context) => {
     if (!strictOrigin(context, dependencies.adminOrigin)) {
-      return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+      return context.html(forbiddenPage(), 403);
     }
     const form = await formValues(context);
     if (form instanceof Response) return form;
@@ -357,12 +447,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/mfa", (context) => {
     const parsed = parsePairCookie(context.req.header("cookie") ?? "", "__Host-wisdom-preauth");
     if (!parsed) return context.redirect(`${dependencies.adminOrigin}/admin/login`, 303);
-    return context.html(page("Multi-factor authentication", `<h1>Multi-factor authentication</h1><form method="post" action="/admin/mfa"><label>Username <input name="username" autocomplete="username" required></label><label>Method <select name="method"><option value="totp">Authenticator code</option><option value="recovery">Recovery code</option></select></label><label>Code <input name="code" autocomplete="one-time-code" required></label><input type="hidden" name="csrf" value="${escapeHtml(parsed.csrf)}"><button type="submit">Sign in</button></form>`));
+    return context.html(page("2단계 인증", `<h1>2단계 인증</h1><p class="muted">인증 앱의 6자리 코드 또는 백업용 복구 코드를 입력하세요.</p><form method="post" action="/admin/mfa"><label for="mfa-username">아이디</label><input id="mfa-username" name="username" autocomplete="username" required><label for="mfa-method">코드 종류</label><select id="mfa-method" name="method"><option value="totp">인증 앱 코드</option><option value="recovery">복구 코드</option></select><label for="mfa-code">코드</label><input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required><input type="hidden" name="csrf" value="${escapeHtml(parsed.csrf)}"><button type="submit">로그인</button></form>`));
   });
 
   app.post("/admin/mfa", async (context) => {
     if (!strictOrigin(context, dependencies.adminOrigin)) {
-      return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+      return context.html(forbiddenPage(), 403);
     }
     const parsed = parsePairCookie(context.req.header("cookie") ?? "", "__Host-wisdom-preauth");
     const form = await formValues(context);
@@ -557,7 +647,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (result.kind === "updated" || result.kind === "unchanged") {
       return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
     }
-    return context.html(page("Slug not changed", `<h1>${escapeHtml(result.kind)}</h1>`), result.httpStatus);
+    return context.html(actionErrorPage(
+      "글 주소를 변경하지 못했습니다",
+      result.kind,
+      `/admin/articles/${encodeURIComponent(context.req.param("id"))}`,
+      "글 상세로 돌아가기",
+    ), result.httpStatus);
   });
   app.post("/admin/articles/:id/locales/:locale/:action", async (context) => {
     const auth = await protectedPost(context, dependencies);
@@ -580,10 +675,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (result.kind === "updated" || result.kind === "unchanged") {
       return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
     }
-    return context.html(
-      page(result.kind === "conflict" ? "Conflict" : "Article state not changed", `<h1>${escapeHtml(result.kind)}</h1>`),
-      result.httpStatus,
-    );
+    return context.html(actionErrorPage(
+      "글 상태를 변경하지 못했습니다",
+      result.kind,
+      `/admin/articles/${encodeURIComponent(context.req.param("id"))}`,
+      "글 상세로 돌아가기",
+    ), result.httpStatus);
   });
 
   app.post("/admin/articles/:id/translations", async (context) => {
@@ -605,10 +702,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (["queued", "requeued", "existing"].includes(result.kind)) {
       return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
     }
-    return context.html(
-      page("Translation not queued", `<h1>${escapeHtml(result.kind)}</h1>`),
-      result.httpStatus,
-    );
+    return context.html(actionErrorPage(
+      "번역을 요청하지 못했습니다",
+      result.kind,
+      `/admin/articles/${encodeURIComponent(context.req.param("id"))}`,
+      "글 상세로 돌아가기",
+    ), result.httpStatus);
   });
 
   app.get("/admin/publish/preview", (context) => {
@@ -745,8 +844,8 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (auth instanceof Response) return auth;
     const body = consultationDetail(dependencies, context.req.param("id"), auth.csrfToken);
     return body === undefined
-      ? context.html(page("Not found", "<h1>Not found</h1>"), 404)
-      : context.html(page("Consultation detail", body, "en", auth.csrfToken));
+      ? context.html(page("찾을 수 없음", "<h1>상담을 찾을 수 없습니다</h1>"), 404)
+      : context.html(page("상담 상세", body, "ko", auth.csrfToken));
   });
 
   app.post("/admin/consultations/:id/status", async (context) => {
@@ -772,10 +871,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (result.kind === "updated" || result.kind === "unchanged") {
       return context.redirect(`${dependencies.adminOrigin}/admin/consultations/${encodeURIComponent(context.req.param("id"))}`, 303);
     }
-    return context.html(
-      page(result.kind === "conflict" ? "Conflict" : "Status not changed", `<h1>${result.kind === "conflict" ? "Conflict" : "Status not changed"}</h1>`),
-      result.httpStatus,
-    );
+    return context.html(actionErrorPage(
+      "상담 상태를 변경하지 못했습니다",
+      result.kind,
+      `/admin/consultations/${encodeURIComponent(context.req.param("id"))}`,
+      "상담 상세로 돌아가기",
+    ), result.httpStatus);
   });
 
   app.get("/admin/notifications", (context) => {
@@ -1062,7 +1163,7 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       const locale = withdrawalLocaleForRoute(route);
       const copy = WITHDRAWAL_COPY[locale];
       if (!strictOrigin(context, dependencies.publicOrigin)) {
-        return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+        return context.html(forbiddenPage(), 403);
       }
       const landingToken = cookieValue(
         context.req.header("cookie") ?? "",
