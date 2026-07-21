@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computePublishedArticleContentSha256 } from "@wisdom/shared";
 
@@ -1056,5 +1058,21 @@ describe("marketing withdrawal HTTP ceremony", () => {
     const successHtml = await success.text();
     expect(successHtml).toContain(`lang="${locale}"`);
     expect(successHtml).toContain(successCopy);
+  });
+});
+
+describe("administrator content security policy self-consistency", () => {
+  it("permits the served inline style block via a matching style-src hash", async () => {
+    const current = await fixture();
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/login`);
+    const html = await response.text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1];
+    expect(style).toBeTruthy();
+    const hash = `'sha256-${createHash("sha256").update(style!).digest("base64")}'`;
+    const csp = response.headers.get("content-security-policy") ?? "";
+    // The app-layer CSP must itself allow its inline styles, without relying on
+    // an upstream (Caddy) header replacing it.
+    expect(csp).toContain(`style-src 'self' ${hash}`);
+    expect(csp).not.toContain("'unsafe-inline'");
   });
 });

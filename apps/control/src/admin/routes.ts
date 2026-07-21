@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   localeSchema,
@@ -104,6 +104,12 @@ const ADMIN_STYLE = `:root{color-scheme:light}*{box-sizing:border-box}`
   + `.banner-ok{background:#dcfce7;border:1px solid #86efac}`
   + `.banner-error{background:#fee2e2;border:1px solid #fca5a5}`
   + `.muted{color:#6b7280}`;
+
+// CSP source-expression for the single inline <style> block, so the app-layer
+// Content-Security-Policy permits its own styles without depending on the
+// upstream (Caddy) header replacing it. Hashes the exact bytes the browser
+// sees between the <style> tags.
+export const ADMIN_STYLE_CSP_HASH = `'sha256-${createHash("sha256").update(ADMIN_STYLE).digest("base64")}'`;
 
 const GENERIC_AUTH_FAILURE = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>로그인 실패</title><style>${ADMIN_STYLE}</style></head><body><main><h1>로그인하지 못했습니다</h1><p>입력하신 정보를 확인할 수 없습니다. 아이디·비밀번호를 다시 확인하시고, 여러 번 실패한 경우 잠시 후 다시 시도해 주세요.</p><a href="/admin/login">로그인 화면으로 돌아가기</a></main></body></html>`;
 const MAX_FORM_BYTES = 16 * 1_024;

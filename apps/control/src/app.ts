@@ -25,6 +25,7 @@ import {
 import { keyedDigest, type KeyProvider } from "./crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "./db/client.js";
 import {
+  ADMIN_STYLE_CSP_HASH,
   registerTask4Routes,
   type AdminArticlePublicationActions,
 } from "./admin/routes.js";
@@ -235,7 +236,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     context.res.headers.set("X-Frame-Options", "DENY");
     context.res.headers.set(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      `default-src 'none'; style-src 'self' ${ADMIN_STYLE_CSP_HASH}; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
     );
   });
 
