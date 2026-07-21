@@ -584,7 +584,7 @@ describe("separate host and administrator browser boundary", () => {
     expect(html).toContain('<label for="consultation-status">다음 상태</label>');
     expect(html).toContain('<option value="" selected="" disabled="">변경할 상태를 선택하세요</option>');
     expect(html).not.toContain('<option value="received">');
-    expect(html).toContain('<option value="acknowledged">acknowledged</option>');
+    expect(html).toContain('<option value="acknowledged">확인</option>');
     const detailCsrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
     expect(detailCsrf).toBe(session.csrf);
 
@@ -626,7 +626,7 @@ describe("separate host and administrator browser boundary", () => {
     const acknowledgedHtml = await acknowledgedDetail.text();
     expect(acknowledgedHtml).not.toContain('<option value="received">');
     expect(acknowledgedHtml).not.toContain('<option value="acknowledged">');
-    expect(acknowledgedHtml).toContain('<option value="in_progress">in_progress</option>');
+    expect(acknowledgedHtml).toContain('<option value="in_progress">진행 중</option>');
     const stale = await current.app.request(
       `${ADMIN_ORIGIN}/admin/consultations/consultation-1/status`,
       {
@@ -636,10 +636,27 @@ describe("separate host and administrator browser boundary", () => {
           cookie: session.cookie,
           "content-type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({ status: "closed", rowVersion: "1", csrf: detailCsrf! }),
+        body: new URLSearchParams({ status: "closed", rowVersion: "1", confirmTerminal: "yes", csrf: detailCsrf! }),
       },
     );
     expect(stale.status).toBe(409);
+
+    const unconfirmedTerminal = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1/status`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ status: "spam", rowVersion: "2", csrf: detailCsrf! }),
+      },
+    );
+    expect(unconfirmedTerminal.status).toBe(422);
+    expect(current.database.db.sqlite.prepare(
+      "SELECT status FROM consultations WHERE id = 'consultation-1'",
+    ).get()).toEqual({ status: "acknowledged" });
 
     current.database.db.sqlite.prepare(`
       UPDATE consultations SET status = 'closed', row_version = row_version + 1
@@ -701,7 +718,7 @@ describe("separate host and administrator browser boundary", () => {
     const dashboard = await current.app.request(`${ADMIN_ORIGIN}/admin`, {
       headers: { cookie: session.cookie },
     });
-    expect(await dashboard.text()).toContain("received: 22");
+    expect(await dashboard.text()).toContain("접수: 22");
     const firstPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?page=1`, {
       headers: { cookie: session.cookie },
     });

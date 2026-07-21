@@ -23,7 +23,7 @@ describe("admin UI components", () => {
 
   it("renders the dashboard count link with a status-and-count label", () => {
     expect(dashboardBodyHtml([{ status: "received", count: 3 }], "")).toContain(
-      '<a href="/admin/consultations">received: 3</a>',
+      '<a href="/admin/consultations?status=received">접수: 3</a>',
     );
   });
 
@@ -35,9 +35,18 @@ describe("admin UI components", () => {
       locale: "ko",
       category: "procurement",
       receivedAt: "2026-07-16 09:00 (KST)",
+      preferredContact: "전화",
+      marketingState: "미동의",
+      retentionExpiresAt: "2027-07-16 09:00 (KST)",
+      emailChannelEnabled: false,
+      hermesChannelEnabled: true,
+      notifications: [],
+      statusHistory: [],
       pii: { name: "<script>x</script>", phone: "010", email: "", company: "", message: "m" },
     });
     expect(html).toContain("&lt;script&gt;x&lt;/script&gt;");
     expect(html).not.toContain("<script>x</script>");
+    expect(html).toContain("<dd>접수</dd>");
+    expect(html).toContain("공공조달");
   });
 });

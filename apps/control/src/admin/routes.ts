@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  CONSULTATION_STATUSES,
   localeSchema,
   consultationStatusSchema,
   type ArticleState,
@@ -29,6 +30,7 @@ import {
   allowedNextConsultationStatuses,
   changeConsultationStatus,
 } from "../consultations/workflow.js";
+import { findConsultationIdsByContact } from "../consultations/service.js";
 import {
   changeArticleLocaleState,
   changeArticleLocaleSlug,
@@ -44,6 +46,7 @@ import {
   openMarketingWithdrawalCapability,
   withdrawMarketingConsent,
 } from "../withdrawal/service.js";
+import { preferredContactLabel } from "./ui/labels.js";
 import { renderAdminPage, renderPlainPage } from "./ui/Layout.js";
 import {
   SAVED_BANNER_FLAGS,
@@ -55,6 +58,7 @@ import {
   type ArticleActionForm,
   type ArticleHeadView,
   type ArticleRevisionItem,
+  type ConsultationListRow,
   articleDetailBodyHtml,
   articlesBodyHtml,
   consentsBodyHtml,
@@ -392,6 +396,7 @@ function consultationDetail(
 ): string | undefined {
   const row = dependencies.db.sqlite.prepare(`
     SELECT id, receipt_id, status, locale, category, preferred_contact,
+           marketing_accepted, marketing_withdrawn_at_ms, retention_expires_at_ms,
            pii_envelope, received_at_ms, row_version
     FROM consultations WHERE id = ?
   `).get(id) as {
@@ -401,6 +406,9 @@ function consultationDetail(
     locale: string;
     category: string;
     preferred_contact: string;
+    marketing_accepted: number;
+    marketing_withdrawn_at_ms: number | null;
+    retention_expires_at_ms: number;
     pii_envelope: string | null;
     received_at_ms: number;
     row_version: number;
@@ -410,19 +418,56 @@ function consultationDetail(
     ? undefined
     : decryptPii(dependencies.keyProvider, row.id, row.pii_envelope);
   const nextStatuses = allowedNextConsultationStatuses(row.status);
+  const terminalStatuses = nextStatuses.filter((status) => status === "closed" || status === "spam");
+  const marketingState = row.marketing_accepted !== 1
+    ? "미동의"
+    : row.marketing_withdrawn_at_ms !== null
+      ? `철회됨 (${formatSeoulTime(row.marketing_withdrawn_at_ms)})`
+      : "동의";
+  const channelEnabled = (channel: string): boolean => (dependencies.db.sqlite.prepare(
+    "SELECT enabled FROM notification_settings WHERE channel = ?",
+  ).get(channel) as { enabled: number } | undefined)?.enabled === 1;
+  const notifications = (dependencies.db.sqlite.prepare(`
+    SELECT channel, state, sent_at_ms, last_error_code, attempt_count
+    FROM notification_outbox WHERE consultation_id = ? ORDER BY created_at_ms
+  `).all(row.id) as Array<{
+    channel: string; state: string; sent_at_ms: number | null; last_error_code: string | null; attempt_count: number;
+  }>).map((entry) => ({
+    channel: entry.channel,
+    state: entry.state,
+    attemptCount: entry.attempt_count,
+    ...(entry.sent_at_ms === null ? {} : { sentAt: formatSeoulTime(entry.sent_at_ms) }),
+    ...(entry.last_error_code === null ? {} : { lastErrorCode: entry.last_error_code }),
+  }));
+  const statusHistory = (dependencies.db.sqlite.prepare(`
+    SELECT metadata_json, created_at_ms FROM audit_events
+    WHERE target_type = 'consultation' AND target_id = ? AND action = 'consultation.status.changed'
+    ORDER BY created_at_ms
+  `).all(row.id) as Array<{ metadata_json: string; created_at_ms: number }>).flatMap((entry) => {
+    const meta = JSON.parse(entry.metadata_json) as { fromStatus?: string; toStatus?: string };
+    if (typeof meta.fromStatus !== "string" || typeof meta.toStatus !== "string") return [];
+    return [{ fromStatus: meta.fromStatus, toStatus: meta.toStatus, at: formatSeoulTime(entry.created_at_ms) }];
+  });
   return consultationDetailBodyHtml({
     id: row.id,
     receiptId: row.receipt_id,
     status: row.status,
     locale: row.locale,
     category: row.category,
+    preferredContact: preferredContactLabel(row.preferred_contact),
+    marketingState,
+    retentionExpiresAt: formatSeoulTime(row.retention_expires_at_ms),
+    emailChannelEnabled: channelEnabled("email"),
+    hermesChannelEnabled: channelEnabled("hermes-telegram"),
     receivedAt: formatSeoulTime(row.received_at_ms),
+    notifications,
+    statusHistory,
     ...(pii
       ? { pii: { name: pii.name, phone: pii.phone, email: pii.email ?? "", company: pii.company ?? "", message: pii.message } }
       : {}),
     ...(nextStatuses.length === 0
       ? {}
-      : { statusForm: { csrfToken, rowVersion: row.row_version, nextStatuses } }),
+      : { statusForm: { csrfToken, rowVersion: row.row_version, nextStatuses, terminalStatuses } }),
   });
 }
 
@@ -878,23 +923,58 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (auth instanceof Response) return auth;
     const requested = Number(context.req.query("page") ?? "1");
     const pageNumber = Number.isSafeInteger(requested) && requested > 0 ? requested : 1;
-    // Fetch one extra row to detect whether a next page exists without a count query.
-    const fetched = dependencies.db.sqlite.prepare(`
-      SELECT id, receipt_id, status, locale, category, received_at_ms
-      FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
-    `).all((pageNumber - 1) * 20) as Array<Record<string, string | number>>;
-    const hasNext = fetched.length > 20;
-    const rows = fetched.slice(0, 20).map((row) => ({
+    const statusFilter = consultationStatusSchema.safeParse(context.req.query("status")).success
+      ? (context.req.query("status") as string)
+      : "";
+    const searchKindRaw = context.req.query("searchKind");
+    const searchKind = searchKindRaw === "phone" || searchKindRaw === "email" ? searchKindRaw : "";
+    const searchValue = (context.req.query("q") ?? "").slice(0, 254);
+
+    const mapRow = (row: Record<string, string | number>): ConsultationListRow => ({
       id: String(row.id),
       receiptId: String(row.receipt_id),
       status: String(row.status),
       locale: String(row.locale),
       category: String(row.category),
       receivedAt: formatSeoulTime(Number(row.received_at_ms)),
-    }));
-    return context.html(
-      page("상담 목록", consultationsBodyHtml(rows, pageNumber, hasNext, savedBanner(context)), "ko", auth.csrfToken),
-    );
+    });
+
+    let rows: ConsultationListRow[];
+    let hasNext = false;
+    if (searchKind !== "" && searchValue !== "") {
+      // Exact-match contact lookup via the blind index; no pagination.
+      const ids = findConsultationIdsByContact(dependencies.db, dependencies.keyProvider, searchKind, searchValue).slice(0, 50);
+      rows = ids.flatMap((id) => {
+        const row = dependencies.db.sqlite.prepare(`
+          SELECT id, receipt_id, status, locale, category, received_at_ms FROM consultations WHERE id = ?
+        `).get(id) as Record<string, string | number> | undefined;
+        return row ? [mapRow(row)] : [];
+      });
+    } else {
+      // Fetch one extra row to detect whether a next page exists without a count query.
+      const fetched = (statusFilter
+        ? dependencies.db.sqlite.prepare(`
+            SELECT id, receipt_id, status, locale, category, received_at_ms
+            FROM consultations WHERE status = ? ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
+          `).all(statusFilter, (pageNumber - 1) * 20)
+        : dependencies.db.sqlite.prepare(`
+            SELECT id, receipt_id, status, locale, category, received_at_ms
+            FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
+          `).all((pageNumber - 1) * 20)) as Array<Record<string, string | number>>;
+      hasNext = fetched.length > 20;
+      rows = fetched.slice(0, 20).map(mapRow);
+    }
+
+    return context.html(page("상담 목록", consultationsBodyHtml({
+      rows,
+      pageNumber,
+      hasNext,
+      statusFilter,
+      searchKind,
+      searchValue,
+      statuses: CONSULTATION_STATUSES,
+      banner: savedBanner(context),
+    }), "ko", auth.csrfToken));
   });
 
   app.get("/admin/consultations/:id", (context) => {
@@ -913,6 +993,14 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const rowVersion = Number(auth.form.rowVersion);
     if (!status.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
       return context.html(page("잘못된 요청", "<h1>상태 변경 요청이 올바르지 않습니다</h1>"), 422);
+    }
+    // Terminal transitions cannot be undone; require an explicit confirmation.
+    if ((status.data === "closed" || status.data === "spam") && auth.form.confirmTerminal !== "yes") {
+      return context.html(page(
+        "확인이 필요합니다",
+        "<h1>확인이 필요합니다</h1><p>종결·스팸으로 바꾸면 되돌릴 수 없습니다. 확인 체크박스를 선택해 주세요.</p>"
+          + backLink(`/admin/consultations/${encodeURIComponent(context.req.param("id"))}`, "상담 상세로 돌아가기"),
+      ), 422);
     }
     const channels: NotificationChannel[] = [];
     if (auth.form.email === "1") channels.push("email");
@@ -1124,14 +1212,24 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/failures", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
+    // Failed deliveries plus deliveries cancelled by an operator-fixable setup
+    // problem (a disabled channel, a missing adapter). Lifecycle cancellations
+    // (purge, withdrawal, retention) are expected and stay hidden.
     const rows = dependencies.db.sqlite.prepare(`
-      SELECT id, channel, event_type, attempt_count, last_error_code
-      FROM notification_outbox WHERE state = 'failed' ORDER BY updated_at_ms DESC
+      SELECT id, channel, state, updated_at_ms, last_error_code
+      FROM notification_outbox
+      WHERE state = 'failed'
+        OR (state = 'cancelled' AND last_error_code IN
+          ('CHANNEL_DISABLED', 'ADAPTER_UNAVAILABLE', 'WITHDRAWAL_CONFIGURATION_MISSING'))
+      ORDER BY updated_at_ms DESC LIMIT 200
     `).all() as Array<Record<string, unknown>>;
     const failures = rows.map((row) => ({
       id: String(row.id),
       channel: String(row.channel),
+      state: String(row.state),
+      at: formatSeoulTime(Number(row.updated_at_ms)),
       lastErrorCode: String(row.last_error_code),
+      requeueable: row.state === "failed",
     }));
     return context.html(
       page("발송 실패", failuresBodyHtml(failures, auth.csrfToken, savedBanner(context)), "ko", auth.csrfToken),

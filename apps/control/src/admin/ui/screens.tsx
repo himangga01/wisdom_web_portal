@@ -1,6 +1,13 @@
 import { raw } from "hono/html";
 import type { FC, PropsWithChildren } from "hono/jsx";
 
+import {
+  articleStateLabel,
+  categoryLabel,
+  channelLabel,
+  consultationStatusLabel,
+  notificationStateLabel,
+} from "./labels.js";
 import { EmptyState } from "./primitives.js";
 import { renderToHtml } from "./render.js";
 
@@ -23,7 +30,7 @@ export function dashboardBodyHtml(
       {counts.length === 0 ? <EmptyState>접수된 상담이 없습니다.</EmptyState> : (
         <ul>
           {counts.map((row) => (
-            <li><a href="/admin/consultations">{row.status}: {row.count}</a></li>
+            <li><a href={`/admin/consultations?status=${encodeURIComponent(row.status)}`}>{consultationStatusLabel(row.status)}: {row.count}</a></li>
           ))}
         </ul>
       )}
@@ -52,7 +59,7 @@ export function articlesBodyHtml(
           {rows.map((row) => (
             <li>
               <a href={`/admin/articles/${encodeURIComponent(row.id)}`}>{row.title}</a>
-              {` / ${row.locale} / ${row.state} / v${row.row_version} `}
+              {" / "}{row.locale}{" / "}{articleStateLabel(row.state)}{" / v"}{row.row_version}{" "}
               <span class="muted">{formatTime(row.updated_at_ms)}</span>
             </li>
           ))}
@@ -84,24 +91,39 @@ export function consentsBodyHtml(
 export interface FailureRow {
   id: string;
   channel: string;
+  state: string;
+  at: string;
   lastErrorCode: string;
+  requeueable: boolean;
 }
 
 export function failuresBodyHtml(rows: readonly FailureRow[], csrfToken: string, banner: string): string {
   return renderToHtml(
     <Screen heading="발송 실패" banner={banner}>
-      {rows.length === 0 ? <EmptyState>실패한 발송이 없습니다.</EmptyState> : (
-        <ul>
-          {rows.map((row) => (
-            <li>
-              {row.id} / {row.channel} / {row.lastErrorCode}
-              <form method="post" action={`/admin/failures/${encodeURIComponent(row.id)}/requeue`}>
-                <input type="hidden" name="csrf" value={csrfToken} />
-                <button type="submit">재발송</button>
-              </form>
-            </li>
-          ))}
-        </ul>
+      {rows.length === 0 ? <EmptyState>실패하거나 설정 문제로 취소된 발송이 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>채널</th><th>상태</th><th>시각</th><th>오류</th><th></th></tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr>
+                <td>{channelLabel(row.channel)}</td>
+                <td>{notificationStateLabel(row.state)}</td>
+                <td>{row.at}</td>
+                <td>{row.lastErrorCode}</td>
+                <td>
+                  {row.requeueable ? (
+                    <form method="post" action={`/admin/failures/${encodeURIComponent(row.id)}/requeue`}>
+                      <input type="hidden" name="csrf" value={csrfToken} />
+                      <button type="submit">재발송</button>
+                    </form>
+                  ) : <span class="muted">채널 설정 확인 필요</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </Screen>,
   );
@@ -116,41 +138,91 @@ export interface ConsultationListRow {
   receivedAt: string;
 }
 
-export function consultationsBodyHtml(
-  rows: readonly ConsultationListRow[],
-  pageNumber: number,
-  hasNext: boolean,
-  banner: string,
-): string {
+export interface ConsultationListView {
+  rows: readonly ConsultationListRow[];
+  pageNumber: number;
+  hasNext: boolean;
+  statusFilter: string;
+  searchKind: "phone" | "email" | "";
+  searchValue: string;
+  statuses: readonly string[];
+  banner: string;
+}
+
+function pageHref(view: ConsultationListView, page: number): string {
+  const params = new URLSearchParams();
+  if (view.statusFilter) params.set("status", view.statusFilter);
+  if (view.searchKind && view.searchValue) {
+    params.set("searchKind", view.searchKind);
+    params.set("q", view.searchValue);
+  }
+  params.set("page", String(page));
+  return `/admin/consultations?${params.toString()}`;
+}
+
+export function consultationsBodyHtml(view: ConsultationListView): string {
+  const searching = view.searchKind !== "" && view.searchValue !== "";
   return renderToHtml(
-    <Screen heading="상담 목록" banner={banner}>
-      {rows.length === 0 ? <EmptyState>표시할 상담이 없습니다.</EmptyState> : (
+    <Screen heading="상담 목록" banner={view.banner}>
+      <form method="get" action="/admin/consultations">
+        <label for="filter-status">상태</label>
+        <select id="filter-status" name="status">
+          <option value="" selected={view.statusFilter === ""}>전체</option>
+          {view.statuses.map((status) => (
+            <option value={status} selected={status === view.statusFilter}>{consultationStatusLabel(status)}</option>
+          ))}
+        </select>
+        <label for="search-kind">연락처 검색</label>
+        <select id="search-kind" name="searchKind">
+          <option value="phone" selected={view.searchKind === "phone"}>전화</option>
+          <option value="email" selected={view.searchKind === "email"}>이메일</option>
+        </select>
+        <input name="q" value={view.searchValue} placeholder="정확히 일치하는 값" maxlength={254} />
+        <button type="submit">검색</button>
+      </form>
+      {view.rows.length === 0 ? (
+        <EmptyState>{searching ? "일치하는 상담이 없습니다." : "표시할 상담이 없습니다."}</EmptyState>
+      ) : (
         <table>
           <thead>
             <tr><th>접수번호</th><th>상태</th><th>언어</th><th>분야</th><th>접수 시각</th></tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {view.rows.map((row) => (
               <tr>
                 <td><a href={`/admin/consultations/${encodeURIComponent(row.id)}`}>{row.receiptId}</a></td>
-                <td>{row.status}</td>
+                <td>{consultationStatusLabel(row.status)}</td>
                 <td>{row.locale}</td>
-                <td>{row.category}</td>
+                <td>{categoryLabel(row.category)}</td>
                 <td>{row.receivedAt}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      <p>
-        {pageNumber > 1 ? <a href={`/admin/consultations?page=${pageNumber - 1}`}>« 이전</a> : null}
-        {pageNumber > 1 && hasNext ? " · " : ""}
-        {hasNext ? <a href={`/admin/consultations?page=${pageNumber + 1}`}>다음 »</a> : null}
-      </p>
+      {searching ? null : (
+        <p>
+          {view.pageNumber > 1 ? <a href={pageHref(view, view.pageNumber - 1)}>« 이전</a> : null}
+          {view.pageNumber > 1 && view.hasNext ? " · " : ""}
+          {view.hasNext ? <a href={pageHref(view, view.pageNumber + 1)}>다음 »</a> : null}
+        </p>
+      )}
     </Screen>,
   );
 }
 
+export interface ConsultationNotification {
+  channel: string;
+  state: string;
+  sentAt?: string;
+  lastErrorCode?: string;
+  attemptCount: number;
+}
+export interface ConsultationStatusHistoryItem {
+  fromStatus: string;
+  toStatus: string;
+  at: string;
+}
 export interface ConsultationDetailProps {
   id: string;
   receiptId: string;
@@ -158,9 +230,20 @@ export interface ConsultationDetailProps {
   locale: string;
   category: string;
   receivedAt: string;
+  preferredContact: string;
+  marketingState: string;
+  retentionExpiresAt: string;
+  emailChannelEnabled: boolean;
+  hermesChannelEnabled: boolean;
   pii?: { name: string; phone: string; email: string; company: string; message: string };
-  statusForm?: { csrfToken: string; rowVersion: number; nextStatuses: readonly string[] };
+  statusForm?: { csrfToken: string; rowVersion: number; nextStatuses: readonly string[]; terminalStatuses: readonly string[] };
+  notifications: readonly ConsultationNotification[];
+  statusHistory: readonly ConsultationStatusHistoryItem[];
 }
+
+const ChannelNote: FC<{ enabled: boolean }> = ({ enabled }) => (
+  enabled ? <></> : <span class="muted"> (현재 채널이 꺼져 있어 발송되지 않습니다)</span>
+);
 
 export function consultationDetailBodyHtml(props: ConsultationDetailProps): string {
   return renderToHtml(
@@ -168,10 +251,13 @@ export function consultationDetailBodyHtml(props: ConsultationDetailProps): stri
       <h1>상담 상세</h1>
       <dl>
         <dt>접수번호</dt><dd>{props.receiptId}</dd>
-        <dt>상태</dt><dd>{props.status}</dd>
+        <dt>상태</dt><dd>{consultationStatusLabel(props.status)}</dd>
         <dt>언어</dt><dd>{props.locale}</dd>
-        <dt>분야</dt><dd>{props.category}</dd>
+        <dt>분야</dt><dd>{categoryLabel(props.category)}</dd>
+        <dt>희망 연락 방법</dt><dd>{props.preferredContact}</dd>
+        <dt>마케팅 동의</dt><dd>{props.marketingState}</dd>
         <dt>접수 시각</dt><dd>{props.receivedAt}</dd>
+        <dt>파기 예정일</dt><dd>{props.retentionExpiresAt}</dd>
       </dl>
       {props.pii === undefined ? (
         <p class="muted">개인정보는 보유기간이 지나 파기되었습니다.</p>
@@ -193,12 +279,61 @@ export function consultationDetailBodyHtml(props: ConsultationDetailProps): stri
           <label for="consultation-status">다음 상태</label>
           <select id="consultation-status" name="status" required>
             <option value="" selected disabled>변경할 상태를 선택하세요</option>
-            {props.statusForm.nextStatuses.map((status) => <option value={status}>{status}</option>)}
+            {props.statusForm.nextStatuses.map((status) => (
+              <option value={status}>{consultationStatusLabel(status)}</option>
+            ))}
           </select>
-          <label><input type="checkbox" name="email" value="1" /> 고객에게 이메일 통지</label>
-          <label><input type="checkbox" name="hermes" value="1" /> 담당자 Hermes 알림</label>
+          {props.statusForm.terminalStatuses.length === 0 ? <></> : (
+            <label>
+              <input type="checkbox" name="confirmTerminal" value="yes" />{" "}
+              종결·스팸으로 바꾸면 되돌릴 수 없음을 확인합니다.
+            </label>
+          )}
+          <label>
+            <input type="checkbox" name="email" value="1" /> 접수 알림 메일 받기(운영자)
+            <ChannelNote enabled={props.emailChannelEnabled} />
+          </label>
+          <label>
+            <input type="checkbox" name="hermes" value="1" /> 담당자 Hermes 알림
+            <ChannelNote enabled={props.hermesChannelEnabled} />
+          </label>
           <button type="submit">상태 변경</button>
         </form>
+      )}
+      <h2>알림 이력</h2>
+      {props.notifications.length === 0 ? <EmptyState>이 상담에 대해 발송한 알림이 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>채널</th><th>상태</th><th>발송 시각</th><th>시도</th><th>오류</th></tr>
+          </thead>
+          <tbody>
+            {props.notifications.map((row) => (
+              <tr>
+                <td>{channelLabel(row.channel)}</td>
+                <td>{notificationStateLabel(row.state)}</td>
+                <td>{row.sentAt ?? "-"}</td>
+                <td>{row.attemptCount}</td>
+                <td>{row.lastErrorCode ?? "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h2>상태 변경 이력</h2>
+      {props.statusHistory.length === 0 ? <EmptyState>기록된 상태 변경이 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>변경</th><th>시각</th></tr>
+          </thead>
+          <tbody>
+            {props.statusHistory.map((row) => (
+              <tr>
+                <td>{consultationStatusLabel(row.fromStatus)} → {consultationStatusLabel(row.toStatus)}</td>
+                <td>{row.at}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </>,
   );
@@ -444,7 +579,7 @@ export interface ArticleDetailProps {
 
 const ArticleHeadSection: FC<{ articleId: string; csrf: string; head: ArticleHeadView }> = ({ articleId, csrf, head }) => (
   <section>
-    <h3>{head.locale}{" / "}{head.state}</h3>
+    <h3>{head.locale}{" / "}{articleStateLabel(head.state)}</h3>
     <p>{head.title}</p>
     <p>{head.summary}</p>
     <h4>본문 (Markdown)</h4>
