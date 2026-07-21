@@ -181,6 +181,26 @@ function actionErrorPage(title: string, kind: string, backHref: string, backLabe
   );
 }
 
+// Post/Redirect/Get success confirmation: a GET renders a banner when its
+// redirect target carried a recognised query flag (e.g. ?saved=1).
+const SAVED_BANNERS: Record<string, string> = {
+  saved: "저장되었습니다.",
+  published: "새 버전을 발행했습니다.",
+  rolledback: "이전 발행본으로 롤백했습니다.",
+  sent: `테스트 알림을 대기열에 넣었습니다. 발송 결과는 <a href="/admin/failures">발송 실패</a> 화면에서 확인하세요.`,
+};
+
+function savedBanner(context: Context<AdminEnvironment>): string {
+  for (const [flag, message] of Object.entries(SAVED_BANNERS)) {
+    if (context.req.query(flag) === "1") return `<p class="banner banner-ok">${message}</p>`;
+  }
+  return "";
+}
+
+function emptyState(message: string): string {
+  return `<p class="muted">${escapeHtml(message)}</p>`;
+}
+
 function cookieValue(header: string, name: string): string | undefined {
   for (const segment of header.split(";")) {
     const trimmed = segment.trim();
@@ -207,14 +227,14 @@ async function formValues(
     .trim()
     .toLowerCase();
   if (mediaType !== "application/x-www-form-urlencoded") {
-    return context.html(page("Unsupported request", "<h1>Unsupported request</h1>"), 415);
+    return context.html(page("지원하지 않는 요청", "<h1>지원하지 않는 형식의 요청입니다</h1>"), 415);
   }
   const contentLength = context.req.header("content-length");
   if (
     contentLength !== undefined &&
     (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_FORM_BYTES)
   ) {
-    return context.html(page("Request too large", "<h1>Request too large</h1>"), 413);
+    return context.html(page("요청이 너무 큼", "<h1>요청 크기가 너무 큽니다</h1>"), 413);
   }
   const reader = context.req.raw.body?.getReader();
   const chunks: Uint8Array[] = [];
@@ -226,7 +246,7 @@ async function formValues(
       total += next.value.byteLength;
       if (total > MAX_FORM_BYTES) {
         await reader.cancel();
-        return context.html(page("Request too large", "<h1>Request too large</h1>"), 413);
+        return context.html(page("요청이 너무 큼", "<h1>요청 크기가 너무 큽니다</h1>"), 413);
       }
       chunks.push(next.value);
     }
@@ -237,7 +257,7 @@ async function formValues(
       Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total),
     );
   } catch {
-    return context.html(page("Invalid request", "<h1>Invalid request</h1>"), 400);
+    return context.html(page("잘못된 요청", "<h1>요청 형식이 올바르지 않습니다</h1>"), 400);
   }
   const values: Record<string, string> = {};
   let fields = 0;
@@ -249,7 +269,7 @@ async function formValues(
       value.length > MAX_FORM_FIELD_VALUE ||
       Object.hasOwn(values, key)
     ) {
-      return context.html(page("Invalid request", "<h1>Invalid request</h1>"), 400);
+      return context.html(page("잘못된 요청", "<h1>요청 형식이 올바르지 않습니다</h1>"), 400);
     }
     values[key] = value;
   }
@@ -496,7 +516,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const counts = dependencies.db.sqlite.prepare(`
       SELECT status, count(*) count FROM consultations GROUP BY status ORDER BY status
     `).all() as Array<{ status: string; count: number }>;
-    return context.html(page("Dashboard", `<h1>Dashboard</h1><ul>${counts.map((row) => `<li>${escapeHtml(row.status)}: ${row.count}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+    const body = counts.length === 0
+      ? emptyState("접수된 상담이 없습니다.")
+      : `<ul>${counts.map((row) => `<li><a href="/admin/consultations">${escapeHtml(row.status)}: ${row.count}</a></li>`).join("")}</ul>`;
+    return context.html(page("대시보드", `<h1>대시보드</h1>${savedBanner(context)}${body}`, "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles", (context) => {
@@ -520,9 +543,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       title: string;
       updated_at_ms: number;
     }>;
-    return context.html(page("Articles", `<h1>Articles</h1><ul>${rows.map((row) =>
-      `<li><a href="/admin/articles/${encodeURIComponent(row.id)}">${escapeHtml(row.title)}</a> / ${escapeHtml(row.locale)} / ${escapeHtml(row.state)} / v${row.row_version}</li>`
-    ).join("")}</ul>`, "en", auth.csrfToken));
+    const body = rows.length === 0
+      ? emptyState("등록된 글이 없습니다.")
+      : `<ul>${rows.map((row) =>
+        `<li><a href="/admin/articles/${encodeURIComponent(row.id)}">${escapeHtml(row.title)}</a> / ${escapeHtml(row.locale)} / ${escapeHtml(row.state)} / v${row.row_version} <span class="muted">${escapeHtml(formatSeoulTime(row.updated_at_ms))}</span></li>`
+      ).join("")}</ul>`;
+    return context.html(page("글 관리", `<h1>글 관리</h1>${savedBanner(context)}${body}`, "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles/:id", (context) => {
@@ -534,7 +560,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     `).get(context.req.param("id")) as {
       id: string; source_locale: Locale; created_at_ms: number; updated_at_ms: number;
     } | undefined;
-    if (!article) return context.html(page("Article not found", "<h1>Article not found</h1>"), 404);
+    if (!article) return context.html(page("글을 찾을 수 없음", "<h1>글을 찾을 수 없습니다</h1>"), 404);
     const heads = dependencies.db.sqlite.prepare(`
       SELECT head.locale, head.slug, head.state, head.row_version,
         head.head_revision_id, revision.title, revision.summary,
@@ -565,23 +591,26 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       created_at_ms: number; created_by_type: string;
     }>;
     const actionForms = (head: typeof heads[number]): string => {
-      const actions: Array<{ action: string; label: string }> = [];
+      const actions: Array<{ action: string; label: string; confirm?: string }> = [];
       if (head.state === "draft") actions.push(
-        { action: "review", label: "Request review" },
-        { action: "reject", label: "Reject" },
+        { action: "review", label: "검토 요청" },
+        { action: "reject", label: "반려", confirm: "반려하면 이 언어본을 다시 되돌릴 수 없음을 확인합니다." },
       );
       if (head.state === "in_review") actions.push(
-        { action: "return", label: "Return to draft" },
-        { action: "approve", label: "Approve locale" },
-        { action: "reject", label: "Reject" },
+        { action: "return", label: "초안으로 되돌리기" },
+        { action: "approve", label: "언어본 승인" },
+        { action: "reject", label: "반려", confirm: "반려하면 이 언어본을 다시 되돌릴 수 없음을 확인합니다." },
       );
-      if (head.state === "approved") actions.push({ action: "review", label: "Re-open review" });
+      if (head.state === "approved") actions.push({ action: "review", label: "검토 재개" });
       const slugForm = head.state === "draft" || head.state === "in_review"
-        ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/slug"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><label>Public slug <input name="slug" value="${escapeHtml(head.slug)}" maxlength="96" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label><button type="submit">Save slug</button></form>`
+        ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/slug"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><label>공개 주소(slug)</label><input name="slug" value="${escapeHtml(head.slug)}" maxlength="96" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="소문자·숫자·하이픈만 사용하세요 (예: visa-guide)" required><button type="submit">주소 저장</button></form>`
         : "";
-      return slugForm + actions.map(({ action, label }) =>
-        `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/${action}"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}"><button type="submit">${escapeHtml(label)}</button></form>`
-      ).join("");
+      return slugForm + actions.map(({ action, label, confirm }) => {
+        const confirmField = confirm === undefined
+          ? ""
+          : `<label><input type="checkbox" required> ${escapeHtml(confirm)}</label>`;
+        return `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/locales/${encodeURIComponent(head.locale)}/${action}"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${head.row_version}">${confirmField}<button type="submit">${escapeHtml(label)}</button></form>`;
+      }).join("");
     };
     const targetLocales = (["ko", "en", "zh-Hans", "zh-Hant"] as const)
       .filter((locale) => locale !== article.source_locale)
@@ -589,16 +618,16 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       .join("");
     const sourceHead = heads.find(({ locale }) => locale === article.source_locale);
     const translate = sourceHead && ["approved", "published"].includes(sourceHead.state)
-      ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/translations"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${sourceHead.row_version}"><label>Target locale <select name="targetLocale">${targetLocales}</select></label><button type="submit">Request translation</button></form>`
+      ? `<form method="post" action="/admin/articles/${encodeURIComponent(article.id)}/translations"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="rowVersion" value="${sourceHead.row_version}"><label for="translate-target">번역 언어</label><select id="translate-target" name="targetLocale">${targetLocales}</select><button type="submit">번역 요청</button></form>`
       : "";
     const revisionItems = revisions.map((revision, index) => {
       const previous = revisions.slice(index + 1).find(({ locale }) => locale === revision.locale);
       const diff = previous
-        ? ` <a href="/admin/articles/${encodeURIComponent(article.id)}/revisions/${encodeURIComponent(revision.id)}/diff?against=${encodeURIComponent(previous.id)}">Compare with #${previous.revision_no}</a>`
+        ? ` <a href="/admin/articles/${encodeURIComponent(article.id)}/revisions/${encodeURIComponent(revision.id)}/diff?against=${encodeURIComponent(previous.id)}">#${previous.revision_no}과 비교</a>`
         : "";
-      return `<li>${escapeHtml(revision.locale)} #${revision.revision_no} ${escapeHtml(revision.title)} (${escapeHtml(revision.created_by_type)})${diff}</li>`;
+      return `<li>${escapeHtml(revision.locale)} #${revision.revision_no} ${escapeHtml(revision.title)} (${escapeHtml(revision.created_by_type)}) <span class="muted">${escapeHtml(formatSeoulTime(revision.created_at_ms))}</span>${diff}</li>`;
     }).join("");
-    return context.html(page("Article detail", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1><p>Source locale: ${escapeHtml(article.source_locale)}</p>${translate}<h2>Locales</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>Markdown</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>Sources</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>Immutable revisions</h2><ul>${revisionItems}</ul>`, "en", auth.csrfToken));
+    return context.html(page("글 상세", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1>${savedBanner(context)}<p>원문 언어: ${escapeHtml(article.source_locale)}</p>${translate}<h2>언어본</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>본문 (Markdown)</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>출처</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>리비전 이력</h2><ul>${revisionItems}</ul>`, "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles/:id/revisions/:revisionId/diff", (context) => {
@@ -616,9 +645,9 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const current = rows.find(({ id }) => id === context.req.param("revisionId"));
     const previous = rows.find(({ id }) => id === against);
     if (!current || !previous || current.locale !== previous.locale) {
-      return context.html(page("Revision diff not found", "<h1>Revision diff not found</h1>"), 404);
+      return context.html(page("리비전 비교를 찾을 수 없음", "<h1>리비전 비교를 찾을 수 없습니다</h1>"), 404);
     }
-    return context.html(page("Revision diff", `<h1>Revision diff</h1><h2>Previous</h2><pre>${escapeHtml(`${previous.title}\n${previous.summary}\n\n${previous.body_markdown}`)}</pre><h2>Current</h2><pre>${escapeHtml(`${current.title}\n${current.summary}\n\n${current.body_markdown}`)}</pre>`, "en", auth.csrfToken));
+    return context.html(page("리비전 비교", `<h1>리비전 비교</h1><h2>이전</h2><pre>${escapeHtml(`${previous.title}\n${previous.summary}\n\n${previous.body_markdown}`)}</pre><h2>현재</h2><pre>${escapeHtml(`${current.title}\n${current.summary}\n\n${current.body_markdown}`)}</pre>`, "ko", auth.csrfToken));
   });
 
   const articleStateActions: Readonly<Record<string, ArticleReviewState>> = {
@@ -633,7 +662,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const locale = localeSchema.safeParse(context.req.param("locale"));
     const rowVersion = Number(auth.form.rowVersion);
     if (!locale.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
-      return context.html(page("Invalid slug update", "<h1>Invalid slug update</h1>"), 422);
+      return context.html(page("주소를 변경할 수 없음", "<h1>주소 입력이 올바르지 않습니다</h1><p class=\"muted\">소문자·숫자·하이픈만 사용할 수 있습니다.</p>"), 422);
     }
     const result = changeArticleLocaleSlug(dependencies.db, {
       articleId: context.req.param("id"),
@@ -645,7 +674,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       nowMs: dependencies.now(),
     });
     if (result.kind === "updated" || result.kind === "unchanged") {
-      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}?saved=1`, 303);
     }
     return context.html(actionErrorPage(
       "글 주소를 변경하지 못했습니다",
@@ -661,7 +690,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const targetState = articleStateActions[context.req.param("action")];
     const rowVersion = Number(auth.form.rowVersion);
     if (!locale.success || !targetState || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
-      return context.html(page("Invalid article action", "<h1>Invalid article action</h1>"), 422);
+      return context.html(page("잘못된 요청", "<h1>글 작업 요청이 올바르지 않습니다</h1>"), 422);
     }
     const result = changeArticleLocaleState(dependencies.db, {
       articleId: context.req.param("id"),
@@ -673,7 +702,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       nowMs: dependencies.now(),
     });
     if (result.kind === "updated" || result.kind === "unchanged") {
-      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}?saved=1`, 303);
     }
     return context.html(actionErrorPage(
       "글 상태를 변경하지 못했습니다",
@@ -689,7 +718,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const targetLocale = localeSchema.safeParse(auth.form.targetLocale);
     const rowVersion = Number(auth.form.rowVersion);
     if (!targetLocale.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
-      return context.html(page("Invalid translation request", "<h1>Invalid translation request</h1>"), 422);
+      return context.html(page("잘못된 요청", "<h1>번역 요청이 올바르지 않습니다</h1>"), 422);
     }
     const result = enqueueArticleTranslation(dependencies.db, dependencies.keyProvider, {
       articleId: context.req.param("id"),
@@ -700,7 +729,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       nowMs: dependencies.now(),
     });
     if (["queued", "requeued", "existing"].includes(result.kind)) {
-      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}`, 303);
+      return context.redirect(`${dependencies.adminOrigin}/admin/articles/${encodeURIComponent(context.req.param("id"))}?saved=1`, 303);
     }
     return context.html(actionErrorPage(
       "번역을 요청하지 못했습니다",
@@ -749,19 +778,25 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       (state !== "approved" && state !== "published") || sourceBindingValid !== 1
     ));
     const publishLabel = eligible.length === 0
-      ? "Build, verify, and publish policy-only update"
-      : "Build, verify, and publish approved content plus policies";
-    return context.html(page("Publication preview", `<h1>Publication preview</h1><p>The active privacy and marketing policy bundle is sealed into every release. A policy-only release remains available when no article heads are eligible.</p><h2>Approved locale heads</h2><ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul><h2>Excluded locale heads</h2><ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul><form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="publish-approved"><button type="submit">${publishLabel}</button></form>`, "en", auth.csrfToken));
+      ? "검증 후 정책만 발행"
+      : "검증 후 승인 글과 정책 발행";
+    const eligibleList = eligible.length === 0
+      ? emptyState("발행 대상 승인 글이 없습니다. 정책만 발행됩니다.")
+      : `<ul>${eligible.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.slug)} / ${escapeHtml(row.head_revision_id)}</li>`).join("")}</ul>`;
+    const blockedList = blocked.length === 0
+      ? emptyState("제외된 글이 없습니다.")
+      : `<ul>${blocked.map((row) => `<li>${escapeHtml(row.locale)} / ${escapeHtml(row.title)} / ${escapeHtml(row.state)}</li>`).join("")}</ul>`;
+    return context.html(page("발행 미리보기", `<h1>발행 미리보기</h1><p>모든 릴리스에는 현재 활성 개인정보·마케팅 동의문 묶음이 함께 봉인됩니다. 발행 대상 글이 없으면 정책만 발행할 수 있습니다.</p><h2>발행 대상</h2>${eligibleList}<h2>제외 대상</h2>${blockedList}<form method="post" action="/admin/publish"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label><input type="checkbox" name="confirmation" value="publish-approved" required> 공개 사이트를 새 버전으로 교체하는 것을 확인합니다.</label><button type="submit">${publishLabel}</button></form>`, "ko", auth.csrfToken));
   });
 
   app.post("/admin/publish", async (context) => {
     const auth = await protectedPost(context, dependencies);
     if (auth instanceof Response) return auth;
     if (auth.form.confirmation !== "publish-approved") {
-      return context.html(page("Publish confirmation required", "<h1>Publish confirmation required</h1>"), 422);
+      return context.html(page("확인이 필요합니다", "<h1>확인이 필요합니다</h1><p>발행하려면 확인 체크박스를 선택해 주세요.</p>" + backLink("/admin/publish/preview", "발행 미리보기로 돌아가기")), 422);
     }
     if (!dependencies.articlePublication) {
-      return context.html(page("Publishing unavailable", "<h1>Publishing is not configured</h1>"), 503);
+      return context.html(page("발행을 사용할 수 없음", "<h1>발행이 구성되지 않았습니다</h1>"), 503);
     }
     try {
       await dependencies.articlePublication.publish({
@@ -771,13 +806,13 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       });
     } catch {
       return context.html(page(
-        "Publication failed",
-        '<h1>Publication was not changed</h1><p><code>PUBLICATION_FAILED</code></p><p>The verified public release pointer remains unchanged. Review the release health and retry from the publication preview.</p><p><a href="/admin/publish/preview">Return to publication preview</a> · <a href="/admin/releases">View releases</a></p>',
-        "en",
+        "발행 실패",
+        '<h1>공개본은 변경되지 않았습니다</h1><p><code>PUBLICATION_FAILED</code></p><p>검증된 공개 릴리스 포인터는 그대로 유지됩니다. 릴리스 상태를 점검한 뒤 발행 미리보기에서 다시 시도해 주세요.</p><p><a href="/admin/publish/preview">발행 미리보기로 돌아가기</a> · <a href="/admin/releases">릴리스 보기</a></p>',
+        "ko",
         auth.session.csrfToken,
       ), 503);
     }
-    return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
+    return context.redirect(`${dependencies.adminOrigin}/admin/releases?published=1`, 303);
   });
 
   app.get("/admin/releases", (context) => {
@@ -797,17 +832,20 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       rolled_back_at_ms: number | null;
       created_at_ms: number;
     }>;
-    return context.html(page("Publication releases", `<h1>Publication releases</h1><p><a href="/admin/publish/preview">Preview approved content</a></p><ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} / ${escapeHtml(row.manifest_sha256.toString("hex"))}${row.state === "retired" ? `<form method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="confirmation" value="rollback-retained-release"><button type="submit">Verify and roll back</button></form>` : ""}</li>`).join("")}</ul>`, "en", auth.csrfToken));
+    const releaseList = rows.length === 0
+      ? emptyState("발행된 릴리스가 없습니다.")
+      : `<ul>${rows.map((row) => `<li>${escapeHtml(row.version)} / ${escapeHtml(row.state)} <span class="muted">${escapeHtml(formatSeoulTime(row.created_at_ms))}</span> <code>${escapeHtml(row.manifest_sha256.toString("hex"))}</code>${row.state === "retired" ? `<form method="post" action="/admin/releases/${encodeURIComponent(row.id)}/rollback"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label><input type="checkbox" name="confirmation" value="rollback-retained-release" required> 이 릴리스로 롤백하며, 검토 중(in_review)인 글이 이전 발행본으로 덮어써질 수 있음을 확인합니다.</label><button type="submit">검증 후 롤백</button></form>` : ""}</li>`).join("")}</ul>`;
+    return context.html(page("발행 릴리스", `<h1>발행 릴리스</h1>${savedBanner(context)}<p><a href="/admin/publish/preview">승인 글 미리보기</a></p>${releaseList}`, "ko", auth.csrfToken));
   });
 
   app.post("/admin/releases/:id/rollback", async (context) => {
     const auth = await protectedPost(context, dependencies);
     if (auth instanceof Response) return auth;
     if (auth.form.confirmation !== "rollback-retained-release") {
-      return context.html(page("Rollback confirmation required", "<h1>Rollback confirmation required</h1>"), 422);
+      return context.html(page("확인이 필요합니다", "<h1>확인이 필요합니다</h1><p>롤백하려면 확인 체크박스를 선택해 주세요.</p>" + backLink("/admin/releases", "릴리스로 돌아가기")), 422);
     }
     if (!dependencies.articlePublication) {
-      return context.html(page("Rollback unavailable", "<h1>Rollback is not configured</h1>"), 503);
+      return context.html(page("롤백을 사용할 수 없음", "<h1>롤백이 구성되지 않았습니다</h1>"), 503);
     }
     try {
       await dependencies.articlePublication.rollback({
@@ -818,13 +856,13 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       });
     } catch {
       return context.html(page(
-        "Rollback failed",
-        '<h1>Publication was not changed</h1><p><code>ROLLBACK_FAILED</code></p><p>The current verified public release pointer remains unchanged. Recheck the retained release before retrying.</p><p><a href="/admin/releases">Return to releases</a></p>',
-        "en",
+        "롤백 실패",
+        '<h1>공개본은 변경되지 않았습니다</h1><p><code>ROLLBACK_FAILED</code></p><p>현재 검증된 공개 릴리스 포인터는 그대로 유지됩니다. 보존된 릴리스를 다시 확인한 뒤 시도해 주세요.</p><p><a href="/admin/releases">릴리스로 돌아가기</a></p>',
+        "ko",
         auth.session.csrfToken,
       ), 503);
     }
-    return context.redirect(`${dependencies.adminOrigin}/admin/releases`, 303);
+    return context.redirect(`${dependencies.adminOrigin}/admin/releases?rolledback=1`, 303);
   });
 
   app.get("/admin/consultations", (context) => {
@@ -832,11 +870,18 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (auth instanceof Response) return auth;
     const requested = Number(context.req.query("page") ?? "1");
     const pageNumber = Number.isSafeInteger(requested) && requested > 0 ? requested : 1;
-    const rows = dependencies.db.sqlite.prepare(`
+    // Fetch one extra row to detect whether a next page exists without a count query.
+    const fetched = dependencies.db.sqlite.prepare(`
       SELECT id, receipt_id, status, locale, category, received_at_ms
-      FROM consultations ORDER BY received_at_ms DESC, id LIMIT 20 OFFSET ?
+      FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
     `).all((pageNumber - 1) * 20) as Array<Record<string, string | number>>;
-    return context.html(page("Consultations", `<h1>Consultations</h1><table><thead><tr><th>Receipt</th><th>Status</th><th>Locale</th><th>Category</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="/admin/consultations/${encodeURIComponent(String(row.id))}">${escapeHtml(row.receipt_id)}</a></td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.locale)}</td><td>${escapeHtml(row.category)}</td></tr>`).join("")}</tbody></table>`, "en", auth.csrfToken));
+    const hasNext = fetched.length > 20;
+    const rows = fetched.slice(0, 20);
+    const table = rows.length === 0
+      ? emptyState("표시할 상담이 없습니다.")
+      : `<table><thead><tr><th>접수번호</th><th>상태</th><th>언어</th><th>분야</th><th>접수 시각</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="/admin/consultations/${encodeURIComponent(String(row.id))}">${escapeHtml(String(row.receipt_id))}</a></td><td>${escapeHtml(String(row.status))}</td><td>${escapeHtml(String(row.locale))}</td><td>${escapeHtml(String(row.category))}</td><td>${escapeHtml(formatSeoulTime(Number(row.received_at_ms)))}</td></tr>`).join("")}</tbody></table>`;
+    const pager = `<p>${pageNumber > 1 ? `<a href="/admin/consultations?page=${pageNumber - 1}">« 이전</a>` : ""}${pageNumber > 1 && hasNext ? " · " : ""}${hasNext ? `<a href="/admin/consultations?page=${pageNumber + 1}">다음 »</a>` : ""}</p>`;
+    return context.html(page("상담 목록", `<h1>상담 목록</h1>${savedBanner(context)}${table}${pager}`, "ko", auth.csrfToken));
   });
 
   app.get("/admin/consultations/:id", (context) => {
@@ -854,7 +899,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const status = consultationStatusSchema.safeParse(auth.form.status);
     const rowVersion = Number(auth.form.rowVersion);
     if (!status.success || !Number.isSafeInteger(rowVersion) || rowVersion < 1) {
-      return context.html(page("Invalid status update", "<h1>Invalid status update</h1>"), 422);
+      return context.html(page("잘못된 요청", "<h1>상태 변경 요청이 올바르지 않습니다</h1>"), 422);
     }
     const channels: NotificationChannel[] = [];
     if (auth.form.email === "1") channels.push("email");
@@ -869,7 +914,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       notificationChannels: channels,
     });
     if (result.kind === "updated" || result.kind === "unchanged") {
-      return context.redirect(`${dependencies.adminOrigin}/admin/consultations/${encodeURIComponent(context.req.param("id"))}`, 303);
+      return context.redirect(`${dependencies.adminOrigin}/admin/consultations/${encodeURIComponent(context.req.param("id"))}?saved=1`, 303);
     }
     return context.html(actionErrorPage(
       "상담 상태를 변경하지 못했습니다",
@@ -891,20 +936,24 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       typeof emailRow?.config_json === "string" ? emailRow.config_json : undefined,
       typeof emailRow?.secret_ref === "string" ? emailRow.secret_ref : undefined,
     );
-    const publicRows = rows.map(({ config_json: _config, secret_ref: secret, ...row }) => ({
-      ...row,
-      smtpConfigured: typeof secret === "string" && secret.length > 0,
-    }));
     const emailEnabled = emailRow?.enabled === 1 ? " checked" : "";
+    const hermesRow = rows.find((row) => row.channel === "hermes-telegram");
+    const hermesEnabled = hermesRow?.enabled === 1 ? " checked" : "";
     const emailPayloadMode = emailRow?.payload_mode === "full-inquiry" ? "full-inquiry" : "receipt-only";
-    return context.html(page("Notification settings", `<h1>Notification settings</h1><pre>${escapeHtml(JSON.stringify(publicRows, null, 2))}</pre><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><select name="channel"><option value="email">Email</option><option value="hermes-telegram">Hermes Telegram</option></select><label><input type="checkbox" name="enabled" value="1"${emailEnabled}> Enabled</label><select name="payloadMode"><option value="receipt-only"${emailPayloadMode === "receipt-only" ? " selected" : ""}>Receipt only</option><option value="full-inquiry"${emailPayloadMode === "full-inquiry" ? " selected" : ""}>Full inquiry</option></select><fieldset><legend>SMTP TLS configuration</legend><label>Host <input name="smtpHost" value="${escapeHtml(smtp?.host ?? "")}" maxlength="253"></label><label>Port <input name="smtpPort" inputmode="numeric" value="${escapeHtml(smtp?.port ?? 465)}" readonly></label><label>From <input name="smtpFrom" type="email" value="${escapeHtml(smtp?.from ?? "")}" maxlength="254"></label><label>Owner recipient <input name="smtpTo" type="email" value="${escapeHtml(smtp?.to ?? "")}" maxlength="254"></label><label>TLS mode <select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select></label><label>Keychain reference <input name="smtpSecretRef" value="${escapeHtml(smtp?.secretRef ?? "")}" placeholder="keychain:wisdom-smtp" maxlength="137"></label></fieldset><label><input type="checkbox" name="fullInquiryApproved" value="yes"> Approve full inquiry</label><button type="submit">Save</button></form><form method="post" action="/admin/notifications/test"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><select name="channel"><option value="email">Email</option><option value="hermes-telegram">Hermes Telegram</option></select><button type="submit">Queue test notification</button></form>`, "en", auth.csrfToken));
+    const channelLabel = (value: unknown): string =>
+      value === "email" ? "이메일" : value === "hermes-telegram" ? "Hermes(텔레그램)" : String(value);
+    const statusTable = `<table><thead><tr><th>채널</th><th>사용 여부</th><th>발송 방식</th><th>SMTP 구성</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(channelLabel(row.channel))}</td><td>${row.enabled === 1 ? "사용" : "사용 안 함"}</td><td>${escapeHtml(String(row.payload_mode ?? "-"))}</td><td>${typeof row.secret_ref === "string" && row.secret_ref.length > 0 ? "구성됨" : "-"}</td></tr>`).join("")}</tbody></table>`;
+    const emailForm = `<h2>이메일 알림</h2><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="email"><label><input type="checkbox" name="enabled" value="1"${emailEnabled}> 이메일 알림 사용</label><label for="email-payload">발송 방식</label><select id="email-payload" name="payloadMode"><option value="receipt-only"${emailPayloadMode === "receipt-only" ? " selected" : ""}>접수 확인만</option><option value="full-inquiry"${emailPayloadMode === "full-inquiry" ? " selected" : ""}>전체 문의 내용</option></select><fieldset><legend>SMTP TLS 설정</legend><label>보내는 서버(Host)</label><input name="smtpHost" value="${escapeHtml(smtp?.host ?? "")}" maxlength="253"><label>포트</label><input name="smtpPort" inputmode="numeric" value="${escapeHtml(smtp?.port ?? 465)}" readonly><label>보내는 주소(From)</label><input name="smtpFrom" type="email" value="${escapeHtml(smtp?.from ?? "")}" maxlength="254"><label>받는 주소(운영자)</label><input name="smtpTo" type="email" value="${escapeHtml(smtp?.to ?? "")}" maxlength="254"><label>TLS 방식</label><select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select><label>키체인 참조</label><input name="smtpSecretRef" value="${escapeHtml(smtp?.secretRef ?? "")}" placeholder="keychain:wisdom-smtp" maxlength="137"><small class="muted">비밀번호를 직접 입력하지 않습니다. macOS 키체인에 저장한 항목 이름(예: keychain:wisdom-smtp)만 참조합니다.</small></fieldset><label><input type="checkbox" name="fullInquiryApproved" value="yes"> 전체 문의 내용 발송 승인</label><button type="submit">이메일 설정 저장</button></form>`;
+    const hermesForm = `<h2>Hermes(텔레그램) 알림</h2><form method="post" action="/admin/notifications"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><input type="hidden" name="channel" value="hermes-telegram"><label><input type="checkbox" name="enabled" value="1"${hermesEnabled}> Hermes 알림 사용</label><button type="submit">Hermes 설정 저장</button></form>`;
+    const testForm = `<h2>테스트 발송</h2><form method="post" action="/admin/notifications/test"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><label for="test-channel">채널</label><select id="test-channel" name="channel"><option value="email">이메일</option><option value="hermes-telegram">Hermes(텔레그램)</option></select><button type="submit">테스트 알림 보내기</button></form>`;
+    return context.html(page("알림 설정", `<h1>알림 설정</h1>${savedBanner(context)}<h2>현재 설정</h2>${statusTable}${emailForm}${hermesForm}${testForm}`, "ko", auth.csrfToken));
   });
 
   app.post("/admin/notifications", async (context) => {
     const auth = await protectedPost(context, dependencies);
     if (auth instanceof Response) return auth;
     if (!['email', 'hermes-telegram'].includes(auth.form.channel ?? "")) {
-      return context.html(page("Invalid settings", "<h1>Invalid settings</h1>"), 422);
+      return context.html(page("잘못된 설정", "<h1>알림 설정 값이 올바르지 않습니다</h1>"), 422);
     }
     const channel = auth.form.channel as "email" | "hermes-telegram";
     if (
@@ -912,7 +961,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       auth.form.payloadMode !== undefined &&
       !["receipt-only", "full-inquiry"].includes(auth.form.payloadMode)
     ) {
-      return context.html(page("Invalid settings", "<h1>Invalid email payload mode</h1>"), 422);
+      return context.html(page("잘못된 설정", "<h1>이메일 발송 방식이 올바르지 않습니다</h1>"), 422);
     }
     const payloadMode = channel === "email" ? auth.form.payloadMode ?? "receipt-only" : null;
     const existing = dependencies.db.sqlite.prepare(`
@@ -922,7 +971,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       ? smtpConfigurationFromForm(auth.form)
       : { kind: "absent" as const };
     if (submittedSmtp.kind === "invalid") {
-      return context.html(page("Invalid settings", "<h1>Invalid SMTP TLS configuration</h1>"), 422);
+      return context.html(page("잘못된 설정", "<h1>SMTP TLS 설정이 올바르지 않습니다</h1>"), 422);
     }
     const smtp = channel === "email"
       ? submittedSmtp.kind === "valid"
@@ -931,11 +980,11 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       : undefined;
     const enabled = auth.form.enabled === "1";
     if (channel === "email" && enabled && smtp === undefined) {
-      return context.html(page("Invalid settings", "<h1>Complete SMTP TLS configuration is required.</h1>"), 422);
+      return context.html(page("잘못된 설정", "<h1>SMTP TLS 설정을 모두 입력해야 합니다</h1>"), 422);
     }
     if (payloadMode === "full-inquiry") {
       if (auth.form.fullInquiryApproved !== "yes" || smtp === undefined) {
-        return context.html(page("Explicit approval required", "<h1>Explicit approval and complete TLS SMTP configuration are required.</h1>"), 422);
+        return context.html(page("승인 필요", "<h1>전체 문의 내용을 발송하려면 명시적 승인과 완전한 SMTP TLS 설정이 필요합니다</h1>"), 422);
       }
     }
     const configJson = channel === "email" && smtp !== undefined
@@ -995,7 +1044,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       if (dependencies.db.sqlite.inTransaction) dependencies.db.sqlite.exec("ROLLBACK");
       throw error;
     }
-    return context.redirect(`${dependencies.adminOrigin}/admin/notifications`, 303);
+    return context.redirect(`${dependencies.adminOrigin}/admin/notifications?saved=1`, 303);
   });
 
   app.post("/admin/notifications/test", async (context) => {
@@ -1004,7 +1053,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const consultation = dependencies.db.sqlite.prepare(`
       SELECT id FROM consultations ORDER BY received_at_ms DESC LIMIT 1
     `).get() as { id: string } | undefined;
-    if (!consultation) return context.html(page("No consultation", "<h1>No consultation available</h1>"), 409);
+    if (!consultation) return context.html(page("테스트 발송 불가", "<h1>최근 상담이 없어 테스트 발송을 만들 수 없습니다</h1>"), 409);
     const channel = auth.form.channel === "hermes-telegram" ? "hermes-telegram" : "email";
     dependencies.db.sqlite.exec("BEGIN IMMEDIATE");
     try {
@@ -1035,14 +1084,14 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       if (dependencies.db.sqlite.inTransaction) dependencies.db.sqlite.exec("ROLLBACK");
       throw error;
     }
-    return context.redirect(`${dependencies.adminOrigin}/admin/notifications`, 303);
+    return context.redirect(`${dependencies.adminOrigin}/admin/notifications?sent=1`, 303);
   });
 
   app.get("/admin/consents", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
     const bundle = getActiveConsentBundle(dependencies.db);
-    return context.html(page("Consent versions", `<h1>Consent versions</h1>${bundle ? `<p>Active bundle: ${escapeHtml(bundle.bundleId)}</p><ul>${bundle.documents.map((document) => `<li>${escapeHtml(document.kind)} / ${escapeHtml(document.locale)} / ${escapeHtml(document.version)}</li>`).join("")}</ul>` : "<p>No complete active bundle.</p>"}`, "en", auth.csrfToken));
+    return context.html(page("동의문 버전", `<h1>동의문 버전</h1>${bundle ? `<p>활성 묶음: ${escapeHtml(bundle.bundleId)}</p><ul>${bundle.documents.map((document) => `<li>${escapeHtml(document.kind)} / ${escapeHtml(document.locale)} / ${escapeHtml(document.version)}</li>`).join("")}</ul>` : emptyState("완전한 활성 동의문 묶음이 없습니다.")}`, "ko", auth.csrfToken));
   });
 
   app.get("/admin/failures", (context) => {
@@ -1052,7 +1101,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT id, channel, event_type, attempt_count, last_error_code
       FROM notification_outbox WHERE state = 'failed' ORDER BY updated_at_ms DESC
     `).all() as Array<Record<string, unknown>>;
-    return context.html(page("Notification failures", `<h1>Notification failures</h1><ul>${rows.map((row) => `<li>${escapeHtml(row.id)} / ${escapeHtml(row.channel)} / ${escapeHtml(row.last_error_code)}<form method="post" action="/admin/failures/${encodeURIComponent(String(row.id))}/requeue"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">Requeue</button></form></li>`).join("")}</ul>`, "en", auth.csrfToken));
+    const failureList = rows.length === 0
+      ? emptyState("실패한 발송이 없습니다.")
+      : `<ul>${rows.map((row) => `<li>${escapeHtml(row.id)} / ${escapeHtml(row.channel)} / ${escapeHtml(row.last_error_code)}<form method="post" action="/admin/failures/${encodeURIComponent(String(row.id))}/requeue"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">재발송</button></form></li>`).join("")}</ul>`;
+    return context.html(page("발송 실패", `<h1>발송 실패</h1>${savedBanner(context)}${failureList}`, "ko", auth.csrfToken));
   });
 
   app.post("/admin/failures/:id/requeue", async (context) => {
@@ -1068,8 +1120,8 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       },
     );
     return requeued
-      ? context.redirect(`${dependencies.adminOrigin}/admin/failures`, 303)
-      : context.html(page("Not requeued", "<h1>Notification was not failed.</h1>"), 409);
+      ? context.redirect(`${dependencies.adminOrigin}/admin/failures?saved=1`, 303)
+      : context.html(page("재발송 불가", "<h1>실패 상태가 아닌 알림입니다</h1>"), 409);
   });
 
   app.get("/admin/health", (context) => {
@@ -1079,7 +1131,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const queue = dependencies.db.sqlite.prepare(`
       SELECT state, count(*) count FROM notification_outbox GROUP BY state ORDER BY state
     `).all() as Array<Record<string, unknown>>;
-    return context.html(page("Health", `<h1>Health</h1><p>Database: ${ready ? "ready" : "not ready"}</p><pre>${escapeHtml(JSON.stringify(queue, null, 2))}</pre>`, "en", auth.csrfToken), ready ? 200 : 503);
+    return context.html(page("시스템 상태", `<h1>시스템 상태</h1><p>${ready ? "데이터베이스와 동의문이 정상입니다." : "점검이 필요합니다."}</p><p>Database: ${ready ? "ready" : "not ready"}</p><h2>발송 대기열</h2><pre>${escapeHtml(JSON.stringify(queue, null, 2))}</pre>`, "ko", auth.csrfToken), ready ? 200 : 503);
   });
 }
 
@@ -1191,7 +1243,7 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       publicOrigin: dependencies.publicOrigin,
       nowMs: dependencies.now(),
     });
-    if (result.kind === "invalid") return context.html(page("Invalid link", "<h1>This withdrawal link is invalid or expired.</h1>"), 404);
+    if (result.kind === "invalid") return context.html(page("잘못된 링크", "<h1>철회 링크가 올바르지 않거나 만료되었습니다.</h1>"), 404);
     context.header("Set-Cookie", result.cookie);
     return context.redirect(result.location, 303);
   });

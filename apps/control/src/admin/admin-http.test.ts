@@ -195,7 +195,7 @@ describe("administrator article review and explicit translation routes", () => {
     });
     expect(detail.status).toBe(200);
     const html = await detail.text();
-    expect(html).toContain("Request translation");
+    expect(html).toContain("번역 요청");
     expect(html).not.toContain("pii_envelope");
     const preview = await current.app.request(`${ADMIN_ORIGIN}/admin/publish/preview`, {
       headers: { cookie: session.cookie },
@@ -234,17 +234,17 @@ describe("administrator article review and explicit translation routes", () => {
       headers: { cookie: session.cookie },
     });
     const stalePreviewHtml = await stalePreview.text();
-    expect(stalePreviewHtml.split("<h2>Excluded locale heads</h2>")[0]).not.toContain(
+    expect(stalePreviewHtml.split("<h2>제외 대상</h2>")[0]).not.toContain(
       "Stale English translation",
     );
     expect(stalePreviewHtml).toContain("Stale English translation / approved");
-    expect(stalePreviewHtml).toContain("publish policy-only update");
+    expect(stalePreviewHtml).toContain("정책만 발행");
     expect(stalePreviewHtml).not.toContain('<button type="submit" disabled');
     const releases = await current.app.request(`${ADMIN_ORIGIN}/admin/releases`, {
       headers: { cookie: session.cookie },
     });
     expect(releases.status).toBe(200);
-    expect(await releases.text()).toContain("Preview approved content");
+    expect(await releases.text()).toContain("승인 글 미리보기");
     const unavailablePublish = await current.app.request(`${ADMIN_ORIGIN}/admin/publish`, {
       method: "POST",
       headers: {
@@ -282,7 +282,7 @@ describe("administrator publication failure recovery", () => {
     expect(publish.status).toBe(503);
     expect(publish.headers.get("content-type")).toContain("text/html");
     const publishHtml = await publish.text();
-    expect(publishHtml).toContain("Publication was not changed");
+    expect(publishHtml).toContain("공개본은 변경되지 않았습니다");
     expect(publishHtml).toContain('href="/admin/publish/preview"');
     expect(publishHtml).not.toContain("private-release");
 
@@ -297,7 +297,7 @@ describe("administrator publication failure recovery", () => {
     expect(rollback.status).toBe(503);
     expect(rollback.headers.get("content-type")).toContain("text/html");
     const rollbackHtml = await rollback.text();
-    expect(rollbackHtml).toContain("Publication was not changed");
+    expect(rollbackHtml).toContain("공개본은 변경되지 않았습니다");
     expect(rollbackHtml).toContain('href="/admin/releases"');
     expect(rollbackHtml).not.toContain("storage path");
   });
@@ -703,11 +703,21 @@ describe("separate host and administrator browser boundary", () => {
     const firstPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?page=1`, {
       headers: { cookie: session.cookie },
     });
-    expect(await firstPage.text()).toContain("receipt-22");
+    const firstPageHtml = await firstPage.text();
+    expect(firstPageHtml).toContain("receipt-22");
+    expect(firstPageHtml).toContain('href="/admin/consultations?page=2"');
+    expect(firstPageHtml).not.toContain("« 이전");
     const secondPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?page=2`, {
       headers: { cookie: session.cookie },
     });
-    expect(await secondPage.text()).toContain("receipt-1");
+    const secondPageHtml = await secondPage.text();
+    expect(secondPageHtml).toContain("receipt-1");
+    expect(secondPageHtml).toContain('href="/admin/consultations?page=1"');
+    expect(secondPageHtml).not.toContain("다음 »");
+    const savedBannerPage = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations?saved=1`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(await savedBannerPage.text()).toContain("저장되었습니다.");
     const consents = await current.app.request(`${ADMIN_ORIGIN}/admin/consents`, {
       headers: { cookie: session.cookie },
     });
