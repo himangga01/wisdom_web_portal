@@ -50,12 +50,8 @@ export function savedBannerHtml(flag: SavedBannerFlag): string {
   return renderToHtml(banner);
 }
 
-// String-returning wrappers so existing string-template call sites in routes.ts
-// can adopt components incrementally before the whole file becomes JSX.
-export function emptyStateHtml(message: string): string {
-  return renderToHtml(<EmptyState>{message}</EmptyState>);
-}
-
+// String-returning wrappers so remaining string-template call sites in routes.ts
+// can compose these components.
 export function backLinkHtml(href: string, label: string): string {
   return renderToHtml(<BackLink href={href} label={label} />);
 }

@@ -39,7 +39,6 @@ import { decryptPii, type KeyProvider } from "../crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "../db/client.js";
 import { requeueFailedNotification } from "../notifications/outbox.js";
 import { isAllowedSmtpHostname } from "../notifications/smtp-security.js";
-import { escapeHtml } from "../security/html.js";
 import {
   getMarketingWithdrawalConfirmation,
   openMarketingWithdrawalCapability,
@@ -49,7 +48,6 @@ import { renderAdminPage, renderPlainPage } from "./ui/Layout.js";
 import {
   SAVED_BANNER_FLAGS,
   backLinkHtml,
-  emptyStateHtml,
   errorBodyHtml,
   savedBannerHtml,
 } from "./ui/primitives.js";
@@ -71,6 +69,7 @@ import {
   publishPreviewBodyHtml,
   releasesBodyHtml,
   revisionDiffBodyHtml,
+  withdrawalConfirmBodyHtml,
 } from "./ui/screens.js";
 
 interface AdminEnvironment {
@@ -180,10 +179,6 @@ function savedBanner(context: Context<AdminEnvironment>): string {
     if (context.req.query(flag) === "1") return savedBannerHtml(flag);
   }
   return "";
-}
-
-function emptyState(message: string): string {
-  return emptyStateHtml(message);
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -1245,7 +1240,11 @@ function registerWithdrawalRoutes(app: Hono<AdminEnvironment>, dependencies: Tas
       if (result.kind === "invalid") {
         return context.html(renderPlainPage(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 410);
       }
-      return context.html(renderPlainPage(copy.title, `<h1>${copy.title}</h1><p>${copy.description}</p><form method="post" action="${escapeHtml(route)}"><input type="hidden" name="confirmation" value="${escapeHtml(result.confirmationValue)}"><button type="submit">${copy.button}</button></form>`, locale));
+      return context.html(renderPlainPage(
+        copy.title,
+        withdrawalConfirmBodyHtml(copy.title, copy.description, copy.button, route, result.confirmationValue),
+        locale,
+      ));
     });
     app.post(localeRoute(route), async (context) => {
       const locale = withdrawalLocaleForRoute(route);

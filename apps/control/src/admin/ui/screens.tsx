@@ -218,6 +218,25 @@ export function healthBodyHtml(
   );
 }
 
+export function withdrawalConfirmBodyHtml(
+  title: string,
+  description: string,
+  buttonLabel: string,
+  route: string,
+  confirmationValue: string,
+): string {
+  return renderToHtml(
+    <>
+      <h1>{title}</h1>
+      <p>{description}</p>
+      <form method="post" action={route}>
+        <input type="hidden" name="confirmation" value={confirmationValue} />
+        <button type="submit">{buttonLabel}</button>
+      </form>
+    </>,
+  );
+}
+
 export function loginBodyHtml(): string {
   return renderToHtml(
     <>
