@@ -53,6 +53,13 @@ import {
   errorBodyHtml,
   savedBannerHtml,
 } from "./ui/primitives.js";
+import {
+  articlesBodyHtml,
+  consentsBodyHtml,
+  dashboardBodyHtml,
+  failuresBodyHtml,
+  healthBodyHtml,
+} from "./ui/screens.js";
 
 interface AdminEnvironment {
   Variables: { requestId: string };
@@ -482,10 +489,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const counts = dependencies.db.sqlite.prepare(`
       SELECT status, count(*) count FROM consultations GROUP BY status ORDER BY status
     `).all() as Array<{ status: string; count: number }>;
-    const body = counts.length === 0
-      ? emptyState("접수된 상담이 없습니다.")
-      : `<ul>${counts.map((row) => `<li><a href="/admin/consultations">${escapeHtml(row.status)}: ${row.count}</a></li>`).join("")}</ul>`;
-    return context.html(page("대시보드", `<h1>대시보드</h1>${savedBanner(context)}${body}`, "ko", auth.csrfToken));
+    return context.html(page("대시보드", dashboardBodyHtml(counts, savedBanner(context)), "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles", (context) => {
@@ -509,12 +513,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       title: string;
       updated_at_ms: number;
     }>;
-    const body = rows.length === 0
-      ? emptyState("등록된 글이 없습니다.")
-      : `<ul>${rows.map((row) =>
-        `<li><a href="/admin/articles/${encodeURIComponent(row.id)}">${escapeHtml(row.title)}</a> / ${escapeHtml(row.locale)} / ${escapeHtml(row.state)} / v${row.row_version} <span class="muted">${escapeHtml(formatSeoulTime(row.updated_at_ms))}</span></li>`
-      ).join("")}</ul>`;
-    return context.html(page("글 관리", `<h1>글 관리</h1>${savedBanner(context)}${body}`, "ko", auth.csrfToken));
+    return context.html(page("글 관리", articlesBodyHtml(rows, formatSeoulTime, savedBanner(context)), "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles/:id", (context) => {
@@ -1057,7 +1056,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
     const bundle = getActiveConsentBundle(dependencies.db);
-    return context.html(page("동의문 버전", `<h1>동의문 버전</h1>${bundle ? `<p>활성 묶음: ${escapeHtml(bundle.bundleId)}</p><ul>${bundle.documents.map((document) => `<li>${escapeHtml(document.kind)} / ${escapeHtml(document.locale)} / ${escapeHtml(document.version)}</li>`).join("")}</ul>` : emptyState("완전한 활성 동의문 묶음이 없습니다.")}`, "ko", auth.csrfToken));
+    return context.html(page("동의문 버전", consentsBodyHtml(bundle), "ko", auth.csrfToken));
   });
 
   app.get("/admin/failures", (context) => {
@@ -1067,10 +1066,14 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT id, channel, event_type, attempt_count, last_error_code
       FROM notification_outbox WHERE state = 'failed' ORDER BY updated_at_ms DESC
     `).all() as Array<Record<string, unknown>>;
-    const failureList = rows.length === 0
-      ? emptyState("실패한 발송이 없습니다.")
-      : `<ul>${rows.map((row) => `<li>${escapeHtml(row.id)} / ${escapeHtml(row.channel)} / ${escapeHtml(row.last_error_code)}<form method="post" action="/admin/failures/${encodeURIComponent(String(row.id))}/requeue"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">재발송</button></form></li>`).join("")}</ul>`;
-    return context.html(page("발송 실패", `<h1>발송 실패</h1>${savedBanner(context)}${failureList}`, "ko", auth.csrfToken));
+    const failures = rows.map((row) => ({
+      id: String(row.id),
+      channel: String(row.channel),
+      lastErrorCode: String(row.last_error_code),
+    }));
+    return context.html(
+      page("발송 실패", failuresBodyHtml(failures, auth.csrfToken, savedBanner(context)), "ko", auth.csrfToken),
+    );
   });
 
   app.post("/admin/failures/:id/requeue", async (context) => {
@@ -1097,7 +1100,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const queue = dependencies.db.sqlite.prepare(`
       SELECT state, count(*) count FROM notification_outbox GROUP BY state ORDER BY state
     `).all() as Array<Record<string, unknown>>;
-    return context.html(page("시스템 상태", `<h1>시스템 상태</h1><p>${ready ? "데이터베이스와 동의문이 정상입니다." : "점검이 필요합니다."}</p><p>Database: ${ready ? "ready" : "not ready"}</p><h2>발송 대기열</h2><pre>${escapeHtml(JSON.stringify(queue, null, 2))}</pre>`, "ko", auth.csrfToken), ready ? 200 : 503);
+    return context.html(page("시스템 상태", healthBodyHtml(ready, queue), "ko", auth.csrfToken), ready ? 200 : 503);
   });
 }
 
