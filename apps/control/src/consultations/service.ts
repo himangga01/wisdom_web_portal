@@ -2,7 +2,7 @@ import { randomUUID as nodeRandomUUID, timingSafeEqual } from "node:crypto";
 
 import type { ConsultationReceipt, ConsultationRequest } from "@wisdom/shared";
 
-import { verifyFormToken } from "../abuse/form-token.js";
+import { FormTokenExpiredError, verifyFormToken } from "../abuse/form-token.js";
 import { applyRateLimitsInTransaction } from "../abuse/rate-limit.js";
 import {
   blindIndex,
@@ -47,6 +47,7 @@ export type IntakeResult =
   | { kind: "replay"; status: number; responseJson: string }
   | { kind: "conflict" }
   | { kind: "invalid-submission" }
+  | { kind: "stale-form-token" }
   | { kind: "stale-consent" }
   | { kind: "consent-unavailable" }
   | { kind: "rate-limited"; retryAfterSeconds: number };
@@ -246,8 +247,9 @@ export function acceptConsultation(
         privacyVersion: input.consultation.privacyConsent.version,
         marketingVersion: input.consultation.marketingConsent.version,
       }, input.nowMs);
-    } catch {
+    } catch (error) {
       db.sqlite.exec("ROLLBACK");
+      if (error instanceof FormTokenExpiredError) return { kind: "stale-form-token" };
       return { kind: "invalid-submission" };
     }
 

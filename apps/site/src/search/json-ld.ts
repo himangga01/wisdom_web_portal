@@ -117,7 +117,13 @@ function articleNode(document: SearchDocument, article: PublishedArticleDocument
     datePublished: article.firstPublishedAt,
     dateModified: article.modifiedAt,
     reviewedBy: {
-      "@id": `${origin}/#representative`,
+      "@type": "Person",
+      // Only bind to the representative entity when the reviewer actually is the
+      // representative; otherwise a distinct reviewer would be falsely asserted
+      // as the same person as the representative node.
+      ...(article.reviewer.name === representativeName(document.locale)
+        ? { "@id": `${origin}/#representative` }
+        : {}),
       name: article.reviewer.name,
       jobTitle: article.reviewer.role,
     },

@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -193,7 +194,7 @@ ${escaped.map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "wisdom-publication-build-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wisdom-publication-build-")));
   mkdirSync(join(root, "snapshot"));
   mkdirSync(join(root, "site"));
   mkdirSync(join(root, "home"));

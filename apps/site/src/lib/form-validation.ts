@@ -50,6 +50,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     let activeConsent: ConsentConfiguration | undefined;
     let consentLoadGeneration = 0;
     let submitting = false;
+    let cooldownUntilMs = 0;
 
     const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
       if (!status) return;
@@ -74,7 +75,18 @@ export function initializeConsultationForms(documentRef: Document = document): v
     };
 
     const syncSubmitAvailability = (): void => {
-      if (submit) submit.disabled = submitting || activeConsent === undefined;
+      if (!submit) return;
+      const remainingCooldownMs = cooldownUntilMs - Date.now();
+      submit.disabled = submitting || activeConsent === undefined || remainingCooldownMs > 0;
+      if (remainingCooldownMs > 0) {
+        setTimeout(syncSubmitAvailability, remainingCooldownMs + 50);
+      }
+    };
+
+    // The server rejects tokens younger than two seconds; a refreshed token
+    // must not be resubmittable before it becomes valid.
+    const beginResubmitCooldown = (): void => {
+      cooldownUntilMs = Date.now() + 2_100;
     };
 
     const resetConsentDisplay = (): void => {
@@ -122,6 +134,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
       hideStatus();
       resetConsentDisplay();
       if (!locale) return undefined;
+      showStatus("submitting", form.dataset.statusConsentLoading ?? "");
       const loaded = await loadConsentConfiguration(locale).catch(() => undefined);
       if (generation !== consentLoadGeneration || selectedLocale() !== locale) return loaded;
       if (!loaded) {
@@ -148,6 +161,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
       if (restoreFocus && privacy instanceof HTMLInputElement) {
         showStatus("success", form.dataset.statusConsentReady ?? "");
         privacy.focus();
+      } else {
+        hideStatus();
       }
       return loaded;
     };
@@ -191,6 +206,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (submitting) return;
       if (!form.checkValidity()) {
         form.reportValidity();
         return;
@@ -230,13 +246,20 @@ export function initializeConsultationForms(documentRef: Document = document): v
               idempotencyKey: idempotencyKeyFor(submission),
             });
             if (!result.ok) {
-              if (result.status === 409 && result.error?.code === "CONSENT_VERSION_STALE") {
+              const staleCode = result.status === 409
+                && (result.error?.code === "CONSENT_VERSION_STALE" || result.error?.code === "FORM_TOKEN_STALE")
+                ? result.error.code
+                : undefined;
+              if (staleCode) {
                 if (selectedLocale() === submissionLocale) {
                   await refreshConsent(submissionLocale);
                 }
+                beginResubmitCooldown();
                 terminalStatus = {
                   state: "error",
-                  message: form.dataset.statusConsentUpdated ?? "",
+                  message: (staleCode === "FORM_TOKEN_STALE"
+                    ? form.dataset.statusSessionRefreshed
+                    : form.dataset.statusConsentUpdated) ?? "",
                 };
                 return;
               }

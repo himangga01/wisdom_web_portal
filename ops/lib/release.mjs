@@ -36,7 +36,9 @@ function rollbackFailure(operation, cause, recoveryCause) {
 function samePath(left, right) {
   const a = path.resolve(left);
   const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return process.platform === "win32" || process.platform === "darwin"
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b;
 }
 
 function isInside(parent, child) {

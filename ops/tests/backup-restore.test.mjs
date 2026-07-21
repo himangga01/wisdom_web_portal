@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,7 +16,9 @@ import { planRestore, restoreBackup } from "../lib/restore.mjs";
 import { createSqliteAdapter } from "../lib/system-adapters.mjs";
 
 async function fixtureDirectory(name) {
-  return mkdtemp(path.join(os.tmpdir(), `wisdom-${name}-`));
+  // Canonicalize so tests run under macOS's symlinked TMPDIR (/var -> /private/var),
+  // which the backup path guards reject unless resolved first.
+  return realpath(await mkdtemp(path.join(os.tmpdir(), `wisdom-${name}-`)));
 }
 
 function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptError, integrity = "ok", schema = 3 } = {}) {

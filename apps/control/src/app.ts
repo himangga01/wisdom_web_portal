@@ -7,8 +7,10 @@ import {
   type ApiError,
 } from "@wisdom/shared";
 import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 
+import { bucketAddress } from "./abuse/client-ip.js";
 import { issueFormToken } from "./abuse/form-token.js";
 import { resolveClientIp } from "./abuse/rate-limit.js";
 import { registerHermesArticleRoutes } from "./articles/hermes-http.js";
@@ -325,7 +327,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     const subject = keyedDigest(
       dependencies.keyProvider,
       "abuse",
-      `wisdom:consent-read:v1\0${clientIp}`,
+      `wisdom:consent-read:v1\0${bucketAddress(clientIp)}`,
     ).toString("hex");
     const cleanupCandidates: Array<[string, { count: number; expiresAtMs: number }]> = [];
     for (const entry of consentReadBuckets) {
@@ -466,11 +468,15 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         return context.body(result.responseJson, 201, { "Content-Type": "application/json" });
       case "replay":
         context.header("Idempotent-Replayed", "true");
-        return context.body(result.responseJson, 201, { "Content-Type": "application/json" });
+        return context.body(result.responseJson, result.status as ContentfulStatusCode, {
+          "Content-Type": "application/json",
+        });
       case "conflict":
         return apiError(context, 409, "IDEMPOTENCY_KEY_CONFLICT", "The idempotency key was used for another request.");
       case "invalid-submission":
         return apiError(context, 400, "INVALID_SUBMISSION", "The consultation submission is invalid.");
+      case "stale-form-token":
+        return apiError(context, 409, "FORM_TOKEN_STALE", "The form session has expired. Reload the form and try again.");
       case "stale-consent":
         return apiError(context, 409, "CONSENT_VERSION_STALE", "Consent documents have changed. Reload the form and try again.");
       case "consent-unavailable":

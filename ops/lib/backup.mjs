@@ -34,7 +34,7 @@ function fail(code, message) {
 
 function normalized(candidate) {
   const resolved = path.resolve(candidate);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
 }
 
 function isInside(root, candidate) {
@@ -277,36 +277,53 @@ async function createOnlineBackupLocked(config, adapters) {
     const dailyArtifact = path.join(config.backupRoot, `${dailyBase}.age`);
     const dailyStatus = path.join(config.backupRoot, `${dailyBase}.json`);
     let publishedDaily;
-    if (!(await exists(dailyArtifact)) && !(await exists(dailyStatus))) {
-      const dailyPending = `${dailyArtifact}.pending-${randomUUID()}`;
-      await copyFile(hourlyArtifact, dailyPending, 0);
-      await chmod(dailyPending, 0o600);
-      await syncFile(dailyPending);
-      let dailyPublished = false;
-      try {
-        await rename(dailyPending, dailyArtifact);
-        dailyPublished = true;
-        await syncDirectory(config.backupRoot);
-        await writeStatus(dailyStatus, { ...hourlyMetadata, kind: "daily" });
-        await syncDirectory(config.backupRoot);
+    let dailyFailure;
+    try {
+      if (!(await exists(dailyArtifact)) && !(await exists(dailyStatus))) {
+        const dailyPending = `${dailyArtifact}.pending-${randomUUID()}`;
+        await copyFile(hourlyArtifact, dailyPending, 0);
+        await chmod(dailyPending, 0o600);
+        await syncFile(dailyPending);
+        let dailyPublished = false;
+        try {
+          await rename(dailyPending, dailyArtifact);
+          dailyPublished = true;
+          await syncDirectory(config.backupRoot);
+          await writeStatus(dailyStatus, { ...hourlyMetadata, kind: "daily" });
+          await syncDirectory(config.backupRoot);
+          publishedDaily = dailyArtifact;
+        } catch (error) {
+          await rm(dailyPending, { force: true });
+          if (dailyPublished) await rm(dailyArtifact, { force: true });
+          await rm(dailyStatus, { force: true });
+          await syncDirectory(config.backupRoot);
+          throw error;
+        }
+      } else if ((await exists(dailyArtifact)) && (await exists(dailyStatus))) {
+        if (!(await verifiedPair(dailyArtifact, dailyStatus, "daily"))) {
+          fail("BACKUP_DAILY_INCONSISTENT", "Existing daily backup failed its recorded hash or size");
+        }
         publishedDaily = dailyArtifact;
-      } catch (error) {
-        await rm(dailyPending, { force: true });
-        if (dailyPublished) await rm(dailyArtifact, { force: true });
-        await rm(dailyStatus, { force: true });
-        await syncDirectory(config.backupRoot);
-        throw error;
+      } else {
+        fail("BACKUP_DAILY_INCONSISTENT", "Daily backup artifact and status are inconsistent");
       }
-    } else if ((await exists(dailyArtifact)) && (await exists(dailyStatus))) {
-      if (!(await verifiedPair(dailyArtifact, dailyStatus, "daily"))) {
-        fail("BACKUP_DAILY_INCONSISTENT", "Existing daily backup failed its recorded hash or size");
-      }
-      publishedDaily = dailyArtifact;
-    } else {
-      fail("BACKUP_DAILY_INCONSISTENT", "Daily backup artifact and status are inconsistent");
+    } catch (error) {
+      // A wedged daily pair must not halt hourly retention: retention only
+      // deletes verified complete pairs, so the failed daily stays untouched
+      // as evidence while hourly artifacts stop accumulating.
+      dailyFailure = error;
     }
 
-    await applyBackupRetention(config.backupRoot, { hourly: 24, daily: 14 });
+    try {
+      await applyBackupRetention(config.backupRoot, { hourly: 24, daily: 14 });
+    } catch (retentionError) {
+      if (dailyFailure) {
+        if (dailyFailure.cause === undefined) dailyFailure.cause = retentionError;
+        throw dailyFailure;
+      }
+      throw retentionError;
+    }
+    if (dailyFailure) throw dailyFailure;
     return {
       verified: true,
       hourlyArtifact,

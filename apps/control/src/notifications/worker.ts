@@ -286,6 +286,10 @@ export async function processNextNotification(
     options.db.sqlite.exec("COMMIT");
   } catch {
     if (options.db.sqlite.inTransaction) options.db.sqlite.exec("ROLLBACK");
+    // If the provider handoff already started but COMMIT failed, the delivery
+    // promise is abandoned here; observe it so a later rejection cannot surface
+    // as an unhandledRejection and crash the worker process.
+    if (deliveryPromise) void deliveryPromise.catch(() => undefined);
     return fail("PROVIDER_HANDOFF_ERROR");
   }
   if (cancellationCode !== undefined) return cancel(cancellationCode);

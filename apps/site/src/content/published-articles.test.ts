@@ -389,13 +389,13 @@ describe("published article filesystem boundary", () => {
 
     const linkedDirectory = writeSnapshot([article]);
     const linkedPath = join(linkedDirectory, "articles", `${article.revisionId}.json`);
-    const targetPath = join(linkedDirectory, "linked-article.json");
-    writeFileSync(targetPath, `${JSON.stringify(article, null, 2)}\n`);
+    const targetDirectory = writeSnapshot([article]);
+    const targetPath = join(targetDirectory, "articles", `${article.revisionId}.json`);
     rmSync(linkedPath);
     try {
       symlinkSync(targetPath, linkedPath, "file");
       expect(() => loadPublishedContent(linkedDirectory)).toThrow(
-        new RegExp(`^PUBLISHED_CONTENT_ARTICLE_INVALID: articles/${article.revisionId}\\.json$`),
+        new RegExp(`^PUBLISHED_CONTENT_UNEXPECTED_FILE: articles/${article.revisionId}\\.json$`),
       );
     } catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "EPERM") throw error;

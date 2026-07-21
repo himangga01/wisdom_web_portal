@@ -1,4 +1,5 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -214,8 +215,24 @@ async function checkUrl(url, expectedText) {
   throw Object.assign(new Error("Health check failed", { cause: lastError }), { code: "RELEASE_HEALTH_FAILED" });
 }
 
+function readyUrlFromRuntimeConfig(runtimeConfig) {
+  // The active-service health check must target the port the deployed service
+  // actually binds (runtime.env CONTROL_PORT), not the deployer shell's env,
+  // otherwise a non-default port makes every deploy fail health and auto-roll back.
+  if (typeof runtimeConfig !== "string" || runtimeConfig === "") return undefined;
+  let runtime;
+  try {
+    runtime = readFileSync(runtimeConfig, "utf8");
+  } catch {
+    return undefined;
+  }
+  const match = /^CONTROL_PORT=(\d+)$/mu.exec(runtime);
+  return match ? `http://127.0.0.1:${match[1]}/health/ready` : undefined;
+}
+
 export function createMacReleaseAdapter(options) {
-  const serviceAdapter = createMacServiceAdapter();
+  const readyUrl = readyUrlFromRuntimeConfig(options.runtimeConfig);
+  const serviceAdapter = createMacServiceAdapter(readyUrl ? { readyUrl } : {});
   const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
   if (!path.isAbsolute(opsRoot)) throw Object.assign(new Error("opsRoot must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
   return {

@@ -548,7 +548,7 @@ function insertPreparedRelease(
 ): SealedPublicationRelease {
   const sourcePath = assertDirectReleasePath(config.releaseRoot, release.sourcePath);
   const root = realpathSync(config.releaseRoot);
-  if (dirname(resolve(release.path)) !== root
+  if (realpathSync(dirname(resolve(release.path))) !== root
     || basename(release.path) !== release.version
     || existsSync(release.path)) {
     throw new Error("PUBLICATION_FINAL_PATH_INVALID");

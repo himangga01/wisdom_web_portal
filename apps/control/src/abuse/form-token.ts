@@ -20,6 +20,16 @@ interface FormTokenPayload extends FormTokenBinding {
 const MINIMUM_FILL_MS = 2_000;
 const MAXIMUM_AGE_MS = 2 * 60 * 60 * 1_000;
 
+export const FORM_TOKEN_EXPIRED = "FORM_TOKEN_EXPIRED";
+
+export class FormTokenExpiredError extends Error {
+  readonly code = FORM_TOKEN_EXPIRED;
+
+  constructor() {
+    super("Form token has expired");
+  }
+}
+
 export function issueFormToken(
   provider: KeyProvider,
   binding: FormTokenBinding,
@@ -83,7 +93,10 @@ export function verifyFormToken(
     throw new Error("Form token consent binding does not match");
   }
   const age = nowMs - payload.issuedAtMs;
-  if (age < MINIMUM_FILL_MS || age >= MAXIMUM_AGE_MS) {
+  if (age >= MAXIMUM_AGE_MS) {
+    throw new FormTokenExpiredError();
+  }
+  if (age < MINIMUM_FILL_MS) {
     throw new Error("Form token age is invalid");
   }
   return payload;

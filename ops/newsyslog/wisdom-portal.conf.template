@@ -1,2 +1,26 @@
-# logfilename                                               owner:group          mode count size(KB) when flags
-{{LOG_ROOT}}/*.log                                          {{USER_NAME}}:staff  640  10    10240    *    GJN
+# logfilename                                              owner:group          mode count size(KB) when flags
+#
+# Short-lived StartInterval jobs (backup, monitor, retention) reopen their log
+# on every run, so immediate bzip2 compression on rotation is safe.
+{{LOG_ROOT}}/backup.stdout.log                            {{USER_NAME}}:staff  640  10    10240    *    JN
+{{LOG_ROOT}}/backup.stderr.log                            {{USER_NAME}}:staff  640  10    10240    *    JN
+{{LOG_ROOT}}/monitor.stdout.log                           {{USER_NAME}}:staff  640  10    10240    *    JN
+{{LOG_ROOT}}/monitor.stderr.log                           {{USER_NAME}}:staff  640  10    10240    *    JN
+{{LOG_ROOT}}/retention.stdout.log                         {{USER_NAME}}:staff  640  10    10240    *    JN
+{{LOG_ROOT}}/retention.stderr.log                         {{USER_NAME}}:staff  640  10    10240    *    JN
+#
+# Long-lived KeepAlive daemons hold their log fd open across rotations. Do NOT
+# compress on rotation: bzip2 (J) unlinks the rotated file and orphans the open
+# fd, losing every subsequent line and hiding the still-growing inode from disk
+# accounting. Rotate daily and rely on the post-rotation `launchctl kickstart -k`
+# step (ops/runbooks/deployment.md) to make each daemon reopen its fresh log.
+{{LOG_ROOT}}/caddy.stdout.log                             {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/caddy.stderr.log                             {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/cloudflared.stdout.log                       {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/cloudflared.stderr.log                       {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/control.stdout.log                           {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/control.stderr.log                           {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/notification-worker.stdout.log               {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/notification-worker.stderr.log               {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/content-worker.stdout.log                    {{USER_NAME}}:staff  640  10    10240    $D0  N
+{{LOG_ROOT}}/content-worker.stderr.log                    {{USER_NAME}}:staff  640  10    10240    $D0  N

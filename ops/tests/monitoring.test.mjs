@@ -45,8 +45,10 @@ function configValue(overrides = {}) {
       ],
       thresholds: {
         backupFreshnessMinutes: 90,
+        dailyBackupFreshnessHours: 26,
         diskFreePercentMinimum: 15,
         queueStallMinutes: 15,
+        retentionOverdueGraceMinutes: 120,
         retentionOverdueMaximum: 0,
         notificationFailureBacklogMaximum: 0,
         translationFailureBacklogMaximum: 0,
@@ -172,6 +174,40 @@ test("aged queue work and overdue retained PII make the monitor unhealthy", asyn
       { id: "indexnow-stalled", code: "INDEXNOW_QUEUE_STALLED", value: 4 },
       { id: "retention-overdue", code: "RETENTION_OVERDUE", value: 1 },
     ],
+  );
+});
+
+test("a stale or missing daily backup pair makes the monitor unhealthy", async () => {
+  const staleReport = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date("2026-07-18T05:00:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000110",
+    dryRun: true,
+  }, healthyAdapters({
+    loadNewestBackupStatus: async (_root, { kind } = {}) => (kind === "daily"
+      ? { verified: true, createdAt: "2026-07-16T00:30:00.000Z" }
+      : { verified: true, createdAt: "2026-07-18T04:30:00.000Z" }),
+  }));
+  assert.equal(staleReport.ok, false);
+  assert.deepEqual(
+    staleReport.checks.filter(({ state }) => state === "failed").map(({ id, code }) => ({ id, code })),
+    [{ id: "daily-backup", code: "BACKUP_DAILY_PAIR_STALE" }],
+  );
+
+  const missingReport = await runLocalMonitor({
+    config: parseMonitoringConfig(JSON.stringify(configValue())),
+    now: new Date("2026-07-18T05:00:00.000Z"),
+    runId: "00000000-0000-4000-8000-000000000111",
+    dryRun: true,
+  }, healthyAdapters({
+    loadNewestBackupStatus: async (_root, { kind } = {}) => (kind === "daily"
+      ? undefined
+      : { verified: true, createdAt: "2026-07-18T04:30:00.000Z" }),
+  }));
+  assert.equal(missingReport.ok, false);
+  assert.deepEqual(
+    missingReport.checks.filter(({ state }) => state === "failed").map(({ id, code }) => ({ id, code })),
+    [{ id: "daily-backup", code: "BACKUP_DAILY_PAIR_MISSING" }],
   );
 });
 
@@ -499,6 +535,49 @@ test("system backlog reader opens only aggregate operational tables", async () =
   });
 });
 
+test("retention overdue grace window excludes rows expiring inside the grace period", async (t) => {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-retention-grace-")));
+  t.after(async () => rm(directory, { force: true, recursive: true }));
+  const databasePath = path.join(directory, "portal.sqlite");
+  const { default: Database } = await import("better-sqlite3");
+  const database = new Database(databasePath);
+  database.exec(`
+    CREATE TABLE notification_outbox (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE publication_outbox (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE article_translation_jobs (
+      state TEXT NOT NULL, available_at_ms INTEGER NOT NULL, lease_expires_at_ms INTEGER
+    );
+    CREATE TABLE consultations (retention_expires_at_ms INTEGER NOT NULL, purged_at_ms INTEGER);
+    CREATE TABLE release_activations (state TEXT NOT NULL);
+    CREATE TABLE releases (state TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+    INSERT INTO consultations VALUES (100000, NULL), (1000, NULL);
+  `);
+  database.close();
+
+  const adapters = createSystemMonitoringAdapters();
+  // Grace bound below the recently expired row: only the long-overdue row counts.
+  const graced = await adapters.readBacklogs(databasePath, {
+    timeoutMs: 1_000,
+    nowMs: 200000,
+    staleBeforeMs: 100000,
+    retentionOverdueBeforeMs: 90000,
+  });
+  assert.equal(graced.retentionOverdue, 1);
+
+  // Without a grace window both expired rows are overdue.
+  const ungraced = await adapters.readBacklogs(databasePath, {
+    timeoutMs: 1_000,
+    nowMs: 200000,
+    staleBeforeMs: 100000,
+    retentionOverdueBeforeMs: 200000,
+  });
+  assert.equal(ungraced.retentionOverdue, 2);
+});
+
 test("hung database helper is hard-killed within the bound and Hermes receives only DB_TIMEOUT", async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-timeout-")));
   const databasePath = path.join(root, "portal.sqlite");
@@ -603,7 +682,7 @@ test("database helper rejects a final file swap after SQLite opens the verified 
       await rename(databasePath, movedPath);
       await rename(replacementPath, databasePath);
     },
-  }), { code: "MONITOR_DATABASE_QUERY_FAILED" });
+  }), { code: "DB_PATH_CHANGED" });
 });
 
 test("Hermes handoff retries are bounded and discard private response bodies", async () => {

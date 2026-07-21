@@ -576,6 +576,22 @@ describe("public control API", () => {
     expect(replayAfterTokenExpiry.headers.get("idempotent-replayed")).toBe("true");
   });
 
+  it("reports an expired form token as a recoverable 409 FORM_TOKEN_STALE", async () => {
+    const current = fixture();
+    const consent = await consentConfiguration(current.app);
+    const body = JSON.stringify(submission(consent));
+
+    current.now += 2 * 60 * 60 * 1_000;
+    const expired = await post(current.app, body, "00000000-0000-4000-8000-000000000014");
+    expect(expired.status).toBe(409);
+    expect(await expired.json()).toMatchObject({ code: "FORM_TOKEN_STALE" });
+
+    const refreshed = await consentConfiguration(current.app);
+    const refreshedBody = JSON.stringify(submission(refreshed));
+    current.now += 2_000;
+    expect((await post(current.app, refreshedBody, "00000000-0000-4000-8000-000000000015")).status).toBe(201);
+  });
+
   it("applies exact contact and IP ten-minute limits after replay checks", async () => {
     const contactLimited = fixture();
     const consent = await consentConfiguration(contactLimited.app);

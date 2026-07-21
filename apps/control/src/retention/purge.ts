@@ -135,7 +135,7 @@ export function purgeExpiredConsultations(
   const batchSize = options.batchSize ?? 100;
   assertBatchSize(batchSize);
   if (options.apply !== true) {
-    return { dueCount: selectDue(db, options.nowMs, batchSize).length, purgedCount: 0 };
+    return { dueCount: countDue(db, options.nowMs), purgedCount: 0 };
   }
 
   const createId = options.randomUUID ?? nodeRandomUUID;

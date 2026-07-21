@@ -93,12 +93,15 @@ function boundedCount(value) {
 export async function queryDatabaseAggregates(databasePath, {
   nowMs = Date.now(),
   staleBeforeMs = nowMs - 15 * 60_000,
+  retentionOverdueBeforeMs = nowMs,
   afterSqliteOpen,
   beforeFinalIdentityCheck,
 } = {}) {
   if (
     !Number.isSafeInteger(nowMs) || nowMs < 0 ||
-    !Number.isSafeInteger(staleBeforeMs) || staleBeforeMs < 0 || staleBeforeMs > nowMs
+    !Number.isSafeInteger(staleBeforeMs) || staleBeforeMs < 0 || staleBeforeMs > nowMs ||
+    !Number.isSafeInteger(retentionOverdueBeforeMs) || retentionOverdueBeforeMs < 0 ||
+    retentionOverdueBeforeMs > nowMs
   ) fail();
   if (afterSqliteOpen !== undefined && typeof afterSqliteOpen !== "function") fail();
   if (beforeFinalIdentityCheck !== undefined && typeof beforeFinalIdentityCheck !== "function") fail();
@@ -152,7 +155,7 @@ export async function queryDatabaseAggregates(databasePath, {
       retentionOverdue: Number(database.prepare(`
         SELECT count(*) count FROM consultations
         WHERE purged_at_ms IS NULL AND retention_expires_at_ms <= ?
-      `).get(nowMs).count),
+      `).get(retentionOverdueBeforeMs).count),
     };
     if (!Object.values(result).every(boundedCount)) fail();
     await beforeFinalIdentityCheck?.();
@@ -169,12 +172,18 @@ export async function queryDatabaseAggregates(databasePath, {
 
 async function main() {
   if (
-    process.argv.length !== 8 || process.argv[2] !== "--database" ||
-    process.argv[4] !== "--now-ms" || process.argv[6] !== "--stale-before-ms"
+    process.argv.length !== 10 || process.argv[2] !== "--database" ||
+    process.argv[4] !== "--now-ms" || process.argv[6] !== "--stale-before-ms" ||
+    process.argv[8] !== "--retention-overdue-before-ms"
   ) fail();
   const nowMs = Number(process.argv[5]);
   const staleBeforeMs = Number(process.argv[7]);
-  const result = await queryDatabaseAggregates(process.argv[3], { nowMs, staleBeforeMs });
+  const retentionOverdueBeforeMs = Number(process.argv[9]);
+  const result = await queryDatabaseAggregates(process.argv[3], {
+    nowMs,
+    staleBeforeMs,
+    retentionOverdueBeforeMs,
+  });
   const output = JSON.stringify(result);
   if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) fail();
   process.stdout.write(`${output}\n`);

@@ -71,7 +71,7 @@ function fail(code, message) {
 
 function normalized(candidate) {
   const resolved = path.resolve(candidate);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
 }
 
 function inside(parent, child) {

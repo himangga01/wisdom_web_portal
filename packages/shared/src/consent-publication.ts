@@ -41,7 +41,10 @@ export const publishedConsentDocumentSchema = z.object({
   title: nonBlankTextSchema.max(200),
   bodyMarkdown: nonBlankTextSchema.max(32_000),
   contentSha256: sha256HexSchema,
-  effectiveAt: z.iso.datetime({ offset: true }),
+  effectiveAt: z.iso.datetime({ offset: true }).refine(
+    (value) => new Date(value).toISOString() === value,
+    { message: "effectiveAt must be canonical UTC with milliseconds" },
+  ),
   retentionMonths: z.union([z.literal(12), z.literal(24)]),
   required: z.boolean(),
 }).strict().superRefine((value, context) => {

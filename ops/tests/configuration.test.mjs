@@ -328,7 +328,18 @@ test("backup schedule and log rotation are bounded", async () => {
   assert.match(backup, /<string>--apply<\/string>/);
   assert.match(backup, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/(?:keychain-exec|backup)\.mjs/);
   assert.doesNotMatch(backup, /\/Users\/wisdom\/portal\/ops\/scripts/);
-  assert.match(newsyslog, /\/Users\/wisdom\/Library\/Logs\/WisdomPortal\/\*\.log\s+wisdom:staff\s+640\s+10\s+10240\s+\*\s+GJN/);
+  // Short-lived jobs still compress on rotation.
+  assert.match(newsyslog, /\/Users\/wisdom\/Library\/Logs\/WisdomPortal\/backup\.stdout\.log\s+wisdom:staff\s+640\s+10\s+10240\s+\*\s+JN\b/);
+  // Long-lived daemons rotate daily WITHOUT bzip2 so their open fd is never orphaned.
+  assert.match(newsyslog, /\/Users\/wisdom\/Library\/Logs\/WisdomPortal\/control\.stdout\.log\s+wisdom:staff\s+640\s+10\s+10240\s+\$D0\s+N\b/);
+  for (const daemon of ["caddy", "cloudflared", "control", "notification-worker", "content-worker"]) {
+    for (const stream of ["stdout", "stderr"]) {
+      assert.match(
+        newsyslog,
+        new RegExp(`/${daemon}\\.${stream}\\.log\\s+wisdom:staff\\s+640\\s+10\\s+10240\\s+\\$D0\\s+N(?![A-Za-z])`),
+      );
+    }
+  }
   assert.doesNotMatch(newsyslog, /world|777/i);
 });
 
@@ -355,8 +366,10 @@ test("monitoring template keeps external uptime separate from executable local c
     source: "outside-mac-and-lan",
   });
   assert.equal(parsed.local.thresholds.backupFreshnessMinutes, 90);
+  assert.equal(parsed.local.thresholds.dailyBackupFreshnessHours, 26);
   assert.equal(parsed.local.thresholds.diskFreePercentMinimum, 15);
   assert.equal(parsed.local.thresholds.queueStallMinutes, 15);
+  assert.equal(parsed.local.thresholds.retentionOverdueGraceMinutes, 120);
   assert.equal(parsed.local.thresholds.retentionOverdueMaximum, 0);
   assert.equal(parsed.local.thresholds.notificationFailureBacklogMaximum, 0);
   assert.equal(parsed.local.thresholds.translationFailureBacklogMaximum, 0);

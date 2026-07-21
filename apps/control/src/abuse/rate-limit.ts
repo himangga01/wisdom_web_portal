@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 
 import type { ControlDatabase } from "../db/client.js";
 import { keyedDigest, type KeyProvider } from "../crypto/index.js";
+import { bucketAddress } from "./client-ip.js";
 
 const TEN_MINUTES_MS = 10 * 60 * 1_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -54,7 +55,7 @@ export function applyRateLimitsInTransaction(
 ): RateLimitResult {
   if (!db.sqlite.inTransaction) throw new Error("Rate limits require an active write transaction");
   const subjects: RateSubject[] = [
-    { kind: "ip", value: input.clientIp },
+    { kind: "ip", value: bucketAddress(input.clientIp) },
     { kind: "phone", value: input.phone },
     ...(input.email ? [{ kind: "email" as const, value: input.email.trim().normalize("NFKC").toLowerCase() }] : []),
   ];

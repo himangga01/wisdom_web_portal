@@ -86,7 +86,7 @@ function isPublicIpv4(address: string): boolean {
 function isPublicIpv6(address: string): boolean {
   const words = ipv6Words(address);
   if (!words) return false;
-  const [a, b, c] = words;
+  const [a, b] = words;
   // Reject IPv4-compatible/mapped forms and translation prefixes instead of
   // letting alternate textual forms bypass the IPv4 policy.
   if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) return false;
@@ -98,7 +98,7 @@ function isPublicIpv6(address: string): boolean {
   if (a === 0x2001 && b === 0x0002) return false; // benchmarking
   if (a === 0x2001 && b! >= 0x0010 && b! <= 0x001f) return false; // ORCHID
   if (a === 0x2001 && b! >= 0x0020 && b! <= 0x002f) return false; // ORCHIDv2
-  if (a === 0x2001 && b === 0 && c === 0) return false;
+  if (a === 0x2001 && b === 0) return false; // Teredo 2001::/32
   return true;
 }
 

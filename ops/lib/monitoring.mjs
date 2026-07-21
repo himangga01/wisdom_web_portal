@@ -107,13 +107,16 @@ function validateConfig(value) {
 
   const thresholds = local.thresholds;
   if (!exactKeys(thresholds, [
-    "backupFreshnessMinutes", "diskFreePercentMinimum", "indexNowFailureBacklogMaximum",
-    "notificationFailureBacklogMaximum", "publicationFailureBacklogMaximum", "queueStallMinutes",
+    "backupFreshnessMinutes", "dailyBackupFreshnessHours", "diskFreePercentMinimum",
+    "indexNowFailureBacklogMaximum", "notificationFailureBacklogMaximum",
+    "publicationFailureBacklogMaximum", "queueStallMinutes", "retentionOverdueGraceMinutes",
     "retentionOverdueMaximum", "translationFailureBacklogMaximum",
   ]) ||
     !integer(thresholds.backupFreshnessMinutes, 1, 1_440) ||
+    !integer(thresholds.dailyBackupFreshnessHours, 1, 168) ||
     !integer(thresholds.diskFreePercentMinimum, 1, 99) ||
     !integer(thresholds.queueStallMinutes, 1, 1_440) ||
+    !integer(thresholds.retentionOverdueGraceMinutes, 0, 1_440) ||
     !integer(thresholds.retentionOverdueMaximum, 0, 1_000_000) ||
     !integer(thresholds.notificationFailureBacklogMaximum, 0, 1_000_000) ||
     !integer(thresholds.translationFailureBacklogMaximum, 0, 1_000_000) ||
@@ -173,8 +176,10 @@ export async function loadNewestBackupStatus(backupRoot, {
   signal,
   maxArtifactBytes = MAX_BACKUP_BYTES,
   beforeReadEntries,
+  kind = "hourly",
 } = {}) {
   if (!absolutePath(backupRoot)) fail("MONITOR_INPUT_INVALID", "Backup root must be absolute");
+  if (kind !== "hourly" && kind !== "daily") fail("MONITOR_INPUT_INVALID", "Backup status kind is invalid");
   if (beforeReadEntries !== undefined && typeof beforeReadEntries !== "function") {
     fail("MONITOR_INPUT_INVALID", "Backup directory hook is invalid");
   }
@@ -183,8 +188,9 @@ export async function loadNewestBackupStatus(backupRoot, {
     requireProtected: true,
   }, async ({ canonicalPath: canonicalRoot }) => {
     await beforeReadEntries?.();
+    const namePattern = kind === "hourly" ? /^hourly-\d{8}T\d{6}Z\.json$/u : /^daily-\d{8}\.json$/u;
     const names = (await readdir(canonicalRoot))
-      .filter((name) => /^hourly-\d{8}T\d{6}Z\.json$/u.test(name))
+      .filter((name) => namePattern.test(name))
       .toSorted((left, right) => right.localeCompare(left))
       .slice(0, 48);
     for (const name of names) {
@@ -209,9 +215,12 @@ export async function loadNewestBackupStatus(backupRoot, {
           requireProtected: true,
         });
         if (signal?.aborted) fail("MONITOR_BACKUP_INVALID", "Backup metadata check was interrupted");
+        const expectedName = kind === "hourly"
+          ? `hourly-${timestamp}.json`
+          : `daily-${timestamp.slice(0, 8)}.json`;
         if (
-          value.verified === true && value.integrity === "ok" && value.kind === "hourly" &&
-          name === `hourly-${timestamp}.json` &&
+          value.verified === true && value.integrity === "ok" && value.kind === kind &&
+          name === expectedName &&
           /^[a-f0-9]{64}$/u.test(value.encryptedSha256 ?? "") &&
           value.encryptedBytes === artifact.size
         ) return value;
@@ -360,6 +369,15 @@ export async function runLocalMonitor({
       if (freshness.state === "stale") return failed("backup", "BACKUP_VERIFIED_PAIR_STALE", ageMinutes);
       return healthy("backup", ageMinutes);
     }),
+    safeCheck("daily-backup", "BACKUP_CHECK_FAILED", checkMs, async (signal) => {
+      const status = await adapters.loadNewestBackupStatus(local.backupRoot, { signal, kind: "daily" });
+      const freshness = backupFreshness(status, now, local.thresholds.dailyBackupFreshnessHours * 3_600_000);
+      const ageHours = freshness.ageMs === undefined ? undefined : Math.floor(freshness.ageMs / 3_600_000);
+      if (freshness.state === "missing") return failed("daily-backup", "BACKUP_DAILY_PAIR_MISSING");
+      if (freshness.state === "invalid") return failed("daily-backup", "BACKUP_TIMESTAMP_INVALID");
+      if (freshness.state === "stale") return failed("daily-backup", "BACKUP_DAILY_PAIR_STALE", ageHours);
+      return healthy("daily-backup", ageHours);
+    }),
     safeCheck("disk", "DISK_CHECK_FAILED", checkMs, async (signal) => {
       const value = await adapters.diskFreePercent(local.diskPath, { signal });
       if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
@@ -389,6 +407,7 @@ export async function runLocalMonitor({
         timeoutMs: checkMs,
         nowMs,
         staleBeforeMs: nowMs - local.thresholds.queueStallMinutes * 60_000,
+        retentionOverdueBeforeMs: nowMs - local.thresholds.retentionOverdueGraceMinutes * 60_000,
       });
       const notification = boundedCount(values?.notificationFailures);
       const translation = boundedCount(values?.translationFailures);
@@ -570,6 +589,7 @@ export function createSystemMonitoringAdapters({
       timeoutMs,
       nowMs = Date.now(),
       staleBeforeMs = nowMs - 15 * 60_000,
+      retentionOverdueBeforeMs = nowMs,
     }) => {
       await assertSecureRealDirectory(path.dirname(databasePath), {
         code: "MONITOR_DATABASE_INVALID",
@@ -584,7 +604,10 @@ export function createSystemMonitoringAdapters({
       }
       let output;
       try {
-        if (!integer(nowMs, 0, Number.MAX_SAFE_INTEGER) || !integer(staleBeforeMs, 0, nowMs)) {
+        if (
+          !integer(nowMs, 0, Number.MAX_SAFE_INTEGER) || !integer(staleBeforeMs, 0, nowMs) ||
+          !integer(retentionOverdueBeforeMs, 0, nowMs)
+        ) {
           fail("MONITOR_DATABASE_QUERY_FAILED", "Database aggregate time bounds are invalid");
         }
         output = await execute(nodeBinary, [
@@ -595,6 +618,8 @@ export function createSystemMonitoringAdapters({
           String(nowMs),
           "--stale-before-ms",
           String(staleBeforeMs),
+          "--retention-overdue-before-ms",
+          String(retentionOverdueBeforeMs),
         ], {
           encoding: "utf8",
           env: {

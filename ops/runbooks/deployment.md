@@ -111,6 +111,6 @@ FileVault has a pre-login limit: after a cold boot, the user must unlock the vol
 ## 로그와 감시
 
 - Caddy access log는 비활성 상태를 유지한다. 애플리케이션 로그는 allowlist된 이벤트만 기록하고 PII, capability token, request body, secret을 기록하지 않는다.
-- `newsyslog/wisdom-portal.conf.template`를 운영 사용자/`staff`, glob `G`, 압축 `J`, 불필요한 syslogd signal 방지 `N`으로 렌더링하여 파일당 10 MiB, 10개로 제한한다. 강제 rotation 시험 뒤 launchd 프로세스가 새 파일 descriptor에 계속 쓰는지 확인하고, 그렇지 않으면 maintenance `kickstart -k`로 writer를 재시작한다. 회전본 소유권/권한과 실제 크기 상한을 감시한다.
+- `newsyslog/wisdom-portal.conf.template`를 운영 사용자/`staff`로 렌더링하여 파일당 10 MiB, 10개로 제한한다. 로그는 두 부류로 분리한다. (1) 단명 StartInterval job(`backup`/`monitor`/`retention`)은 매 실행마다 로그를 다시 열므로 즉시 `J`(bzip2) 압축이 안전하다. (2) 장수명 KeepAlive 데몬(`caddy`/`cloudflared`/`control`/`notification-worker`/`content-worker`)은 로그 fd를 계속 열고 있으므로 `J`를 제거하고 매일(`$D0`) rotation만 수행한다. `J`로 즉시 압축하면 rotation된 파일을 unlink해 열린 fd가 고아가 되고 이후 모든 줄이 유실되며 해당 inode가 디스크 계정에서 숨는다. 데몬 로그는 rotation 직후 각 데몬을 `launchctl kickstart -k gui/$(id -u)/<label>`로 재시작해 새 로그 파일을 다시 열게 한다(예: 일 1회 유지보수 절차). 회전본 소유권/권한과 실제 크기 상한을 감시한다.
 - 로컬 monitor는 verified age backup pair의 hash·freshness, disk free, Caddy/tunnel/control/worker launchd 상태, loopback `/health/ready`, 실패 backlog, 15분 이상 지연된 notification/translation/IndexNow 작업, 보유기간이 지난 미파기 상담의 집계 숫자만 확인한다. 읽기 전용 helper는 본문·연락처·request body를 선택하거나 출력하지 않는다. unhealthy이면 독립 HMAC으로 등록된 loopback Hermes endpoint에 metadata와 오류 코드만 전달하고 Telegram에 직접 연결하지 않는다.
 - 외부 감시는 Mac/LAN 밖에서 공개 live URL과 예상 본문을 확인한다. 로컬 monitor가 Mac·전원·LAN 전체 장애를 스스로 보고할 수 없으므로 외부 계정과 외부 알림 목적지를 반드시 별도로 운영한다.

@@ -198,6 +198,8 @@ interface LocaleText {
           configurationFailure: string;
           consentReady: string;
           consentUpdated: string;
+          consentLoading: string;
+          sessionRefreshed: string;
           invalid: string;
         };
         submit: string;
@@ -348,6 +350,8 @@ const localizedText = {
           configurationFailure: "최신 동의 문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
           consentReady: "최신 동의 문서를 불러왔습니다. 내용을 확인하고 동의해 주세요.",
           consentUpdated: "동의 문서가 변경되었습니다. 최신 내용을 확인한 뒤 다시 동의해 주세요.",
+          consentLoading: "동의 문서를 불러오는 중입니다. 잠시만 기다려 주세요.",
+          sessionRefreshed: "화면이 오래 열려 있어 접수 준비를 새로 했습니다. 내용을 확인한 뒤 다시 제출해 주세요.",
           invalid: "입력 내용을 다시 확인해 주세요.",
         },
         submit: "상담 요청 보내기",
@@ -557,6 +561,8 @@ const localizedText = {
           configurationFailure: "We could not load the current consent documents. Please try again shortly.",
           consentReady: "The current consent documents are ready. Review them before giving consent.",
           consentUpdated: "The consent documents changed. Review the current text and consent again.",
+          consentLoading: "Loading the consent documents. Please wait a moment.",
+          sessionRefreshed: "This page was open for a while, so the form was refreshed. Please review and submit again.",
           invalid: "Review the form fields and try again.",
         },
         submit: "Send consultation request",
@@ -777,6 +783,8 @@ const localizedText = {
           configurationFailure: "无法载入当前同意文件，请稍后重试。",
           consentReady: "当前同意文件已载入，请查看内容后再表示同意。",
           consentUpdated: "同意文件已更新。请查看最新内容并重新同意。",
+          consentLoading: "正在加载同意文件，请稍候。",
+          sessionRefreshed: "页面打开时间较长，表单已重新准备。请确认内容后重新提交。",
           invalid: "请检查输入内容后重试。",
         },
         submit: "提交咨询申请",
@@ -986,6 +994,8 @@ const localizedText = {
           configurationFailure: "無法載入目前同意文件，請稍後重試。",
           consentReady: "目前同意文件已載入，請查看內容後再表示同意。",
           consentUpdated: "同意文件已更新。請查看最新內容並重新同意。",
+          consentLoading: "正在載入同意文件，請稍候。",
+          sessionRefreshed: "頁面開啟時間較長，表單已重新準備。請確認內容後重新提交。",
           invalid: "請檢查輸入內容後重試。",
         },
         submit: "提交諮詢申請",

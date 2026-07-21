@@ -23,8 +23,10 @@
     ],
     "thresholds": {
       "backupFreshnessMinutes": 90,
+      "dailyBackupFreshnessHours": 26,
       "diskFreePercentMinimum": 15,
       "queueStallMinutes": 15,
+      "retentionOverdueGraceMinutes": 120,
       "retentionOverdueMaximum": 0,
       "notificationFailureBacklogMaximum": 0,
       "translationFailureBacklogMaximum": 0,

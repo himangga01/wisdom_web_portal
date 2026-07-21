@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -31,7 +31,7 @@ const fixtureContentRoot = path.join(
 let root;
 
 beforeEach(() => {
-  root = mkdtempSync(path.join(tmpdir(), "wisdom-publication-boundary-"));
+  root = realpathSync(mkdtempSync(path.join(tmpdir(), "wisdom-publication-boundary-")));
   mkdirSync(path.join(root, "home"));
 });
 
