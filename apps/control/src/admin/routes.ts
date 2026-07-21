@@ -56,6 +56,8 @@ import {
 import {
   articlesBodyHtml,
   consentsBodyHtml,
+  consultationDetailBodyHtml,
+  consultationsBodyHtml,
   dashboardBodyHtml,
   failuresBodyHtml,
   healthBodyHtml,
@@ -402,14 +404,21 @@ function consultationDetail(
   const pii = row.pii_envelope === null
     ? undefined
     : decryptPii(dependencies.keyProvider, row.id, row.pii_envelope);
-  const piiMarkup = pii
-    ? `<dl><dt>이름</dt><dd>${escapeHtml(pii.name)}</dd><dt>전화</dt><dd>${escapeHtml(pii.phone)}</dd><dt>이메일</dt><dd>${escapeHtml(pii.email ?? "")}</dd><dt>회사</dt><dd>${escapeHtml(pii.company ?? "")}</dd><dt>문의 내용</dt><dd>${escapeHtml(pii.message)}</dd></dl>`
-    : "<p class=\"muted\">개인정보는 보유기간이 지나 파기되었습니다.</p>";
   const nextStatuses = allowedNextConsultationStatuses(row.status);
-  const statusForm = nextStatuses.length === 0
-    ? "<p class=\"muted\">이 상담은 더 이상 상태를 변경할 수 없는 최종 단계입니다.</p>"
-    : `<form method="post" action="/admin/consultations/${encodeURIComponent(row.id)}/status"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}"><input type="hidden" name="rowVersion" value="${row.row_version}"><label for="consultation-status">다음 상태</label><select id="consultation-status" name="status" required><option value="" selected disabled>변경할 상태를 선택하세요</option>${nextStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join("")}</select><label><input type="checkbox" name="email" value="1"> 고객에게 이메일 통지</label><label><input type="checkbox" name="hermes" value="1"> 담당자 Hermes 알림</label><button type="submit">상태 변경</button></form>`;
-  return `<h1>상담 상세</h1><dl><dt>접수번호</dt><dd>${escapeHtml(row.receipt_id)}</dd><dt>상태</dt><dd>${escapeHtml(row.status)}</dd><dt>언어</dt><dd>${escapeHtml(row.locale)}</dd><dt>분야</dt><dd>${escapeHtml(row.category)}</dd><dt>접수 시각</dt><dd>${escapeHtml(formatSeoulTime(row.received_at_ms))}</dd></dl>${piiMarkup}${statusForm}`;
+  return consultationDetailBodyHtml({
+    id: row.id,
+    receiptId: row.receipt_id,
+    status: row.status,
+    locale: row.locale,
+    category: row.category,
+    receivedAt: formatSeoulTime(row.received_at_ms),
+    ...(pii
+      ? { pii: { name: pii.name, phone: pii.phone, email: pii.email ?? "", company: pii.company ?? "", message: pii.message } }
+      : {}),
+    ...(nextStatuses.length === 0
+      ? {}
+      : { statusForm: { csrfToken, rowVersion: row.row_version, nextStatuses } }),
+  });
 }
 
 function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4RouteDependencies): void {
@@ -841,12 +850,17 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
     `).all((pageNumber - 1) * 20) as Array<Record<string, string | number>>;
     const hasNext = fetched.length > 20;
-    const rows = fetched.slice(0, 20);
-    const table = rows.length === 0
-      ? emptyState("표시할 상담이 없습니다.")
-      : `<table><thead><tr><th>접수번호</th><th>상태</th><th>언어</th><th>분야</th><th>접수 시각</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="/admin/consultations/${encodeURIComponent(String(row.id))}">${escapeHtml(String(row.receipt_id))}</a></td><td>${escapeHtml(String(row.status))}</td><td>${escapeHtml(String(row.locale))}</td><td>${escapeHtml(String(row.category))}</td><td>${escapeHtml(formatSeoulTime(Number(row.received_at_ms)))}</td></tr>`).join("")}</tbody></table>`;
-    const pager = `<p>${pageNumber > 1 ? `<a href="/admin/consultations?page=${pageNumber - 1}">« 이전</a>` : ""}${pageNumber > 1 && hasNext ? " · " : ""}${hasNext ? `<a href="/admin/consultations?page=${pageNumber + 1}">다음 »</a>` : ""}</p>`;
-    return context.html(page("상담 목록", `<h1>상담 목록</h1>${savedBanner(context)}${table}${pager}`, "ko", auth.csrfToken));
+    const rows = fetched.slice(0, 20).map((row) => ({
+      id: String(row.id),
+      receiptId: String(row.receipt_id),
+      status: String(row.status),
+      locale: String(row.locale),
+      category: String(row.category),
+      receivedAt: formatSeoulTime(Number(row.received_at_ms)),
+    }));
+    return context.html(
+      page("상담 목록", consultationsBodyHtml(rows, pageNumber, hasNext, savedBanner(context)), "ko", auth.csrfToken),
+    );
   });
 
   app.get("/admin/consultations/:id", (context) => {

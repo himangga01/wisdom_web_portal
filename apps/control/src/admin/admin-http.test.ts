@@ -582,7 +582,7 @@ describe("separate host and administrator browser boundary", () => {
     expect(html).not.toContain("<script>stored-name</script>");
     expect(html).toMatch(/<title>상담 상세<\/title>/);
     expect(html).toContain('<label for="consultation-status">다음 상태</label>');
-    expect(html).toContain('<option value="" selected disabled>변경할 상태를 선택하세요</option>');
+    expect(html).toContain('<option value="" selected="" disabled="">변경할 상태를 선택하세요</option>');
     expect(html).not.toContain('<option value="received">');
     expect(html).toContain('<option value="acknowledged">acknowledged</option>');
     const detailCsrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
