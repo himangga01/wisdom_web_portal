@@ -46,7 +46,13 @@ import {
   withdrawMarketingConsent,
 } from "../withdrawal/service.js";
 import { renderAdminPage, renderPlainPage } from "./ui/Layout.js";
-import { backLinkHtml, emptyStateHtml } from "./ui/primitives.js";
+import {
+  SAVED_BANNER_FLAGS,
+  backLinkHtml,
+  emptyStateHtml,
+  errorBodyHtml,
+  savedBannerHtml,
+} from "./ui/primitives.js";
 
 interface AdminEnvironment {
   Variables: { requestId: string };
@@ -135,31 +141,24 @@ function backLink(href: string, label: string): string {
 function forbiddenPage(): string {
   return page(
     "요청을 처리할 수 없습니다",
-    `<h1>요청을 처리할 수 없습니다</h1><p>페이지가 오래되었거나 로그인 세션이 만료되어 저장하지 못했습니다. `
-      + `작성 중이던 내용이 있다면 복사해 두시고, 새로고침하거나 다시 로그인한 뒤 시도해 주세요.</p>`
-      + backLink("/admin", "관리자 홈으로 돌아가기"),
+    errorBodyHtml(
+      "요청을 처리할 수 없습니다",
+      "페이지가 오래되었거나 로그인 세션이 만료되어 저장하지 못했습니다. 작성 중이던 내용이 있다면 복사해 두시고, 새로고침하거나 다시 로그인한 뒤 시도해 주세요.",
+      "/admin",
+      "관리자 홈으로 돌아가기",
+    ),
   );
 }
 
 function actionErrorPage(title: string, kind: string, backHref: string, backLabel: string): string {
-  return page(
-    title,
-    `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(resultMessage(kind))}</p>${backLink(backHref, backLabel)}`,
-  );
+  return page(title, errorBodyHtml(title, resultMessage(kind), backHref, backLabel));
 }
 
 // Post/Redirect/Get success confirmation: a GET renders a banner when its
 // redirect target carried a recognised query flag (e.g. ?saved=1).
-const SAVED_BANNERS: Record<string, string> = {
-  saved: "저장되었습니다.",
-  published: "새 버전을 발행했습니다.",
-  rolledback: "이전 발행본으로 롤백했습니다.",
-  sent: `테스트 알림을 대기열에 넣었습니다. 발송 결과는 <a href="/admin/failures">발송 실패</a> 화면에서 확인하세요.`,
-};
-
 function savedBanner(context: Context<AdminEnvironment>): string {
-  for (const [flag, message] of Object.entries(SAVED_BANNERS)) {
-    if (context.req.query(flag) === "1") return `<p class="banner banner-ok">${message}</p>`;
+  for (const flag of SAVED_BANNER_FLAGS) {
+    if (context.req.query(flag) === "1") return savedBannerHtml(flag);
   }
   return "";
 }
