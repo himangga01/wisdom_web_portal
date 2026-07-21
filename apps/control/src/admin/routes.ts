@@ -84,20 +84,34 @@ const MAX_FORM_FIELDS = 32;
 const MAX_FORM_FIELD_NAME = 128;
 const MAX_FORM_FIELD_VALUE = 4_096;
 const ARTICLE_PAGE_SIZE = 50;
+const ARTICLE_REVISION_PAGE_SIZE = 50;
 const CONSULTATION_PAGE_SIZE = 20;
+const FAILURE_PAGE_SIZE = 50;
 const RELEASE_PAGE_SIZE = 25;
 
-function requestedPage(value: string | undefined): number {
-  const parsed = Number(value ?? "1");
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
+function requestedPage(
+  value: string | undefined,
+  pageSize: number,
+  total: number,
+): number {
+  if (!value || !/^\d{1,9}$/u.test(value)) return 1;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return 1;
+  return Math.min(parsed, Math.max(1, Math.ceil(total / pageSize)));
 }
 
-function pagination(path: string, pageNumber: number, pageSize: number, total: number): string {
+function pagination(
+  path: string,
+  pageNumber: number,
+  pageSize: number,
+  total: number,
+  queryParameter = "page",
+): string {
   const previous = pageNumber > 1
-    ? `<a rel="prev" href="${path}?page=${pageNumber - 1}">Previous</a>`
+    ? `<a rel="prev" href="${path}?${queryParameter}=${pageNumber - 1}">Previous</a>`
     : "";
   const next = pageNumber * pageSize < total
-    ? `<a rel="next" href="${path}?page=${pageNumber + 1}">Next</a>`
+    ? `<a rel="next" href="${path}?${queryParameter}=${pageNumber + 1}">Next</a>`
     : "";
   return `<nav class="pagination" aria-label="Pagination"><span>${total} total · Page ${pageNumber}</span>${previous}${next}</nav>`;
 }
@@ -482,10 +496,10 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/articles", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
-    const pageNumber = requestedPage(context.req.query("page"));
     const total = (dependencies.db.sqlite.prepare(`
       SELECT count(*) count FROM article_locale_heads
     `).get() as { count: number }).count;
+    const pageNumber = requestedPage(context.req.query("page"), ARTICLE_PAGE_SIZE, total);
     const rows = dependencies.db.sqlite.prepare(`
       SELECT article.id, article.source_locale, head.locale, head.slug,
         head.state, head.row_version, revision.title, head.updated_at_ms
@@ -519,6 +533,14 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       id: string; source_locale: Locale; created_at_ms: number; updated_at_ms: number;
     } | undefined;
     if (!article) return context.html(page("Article not found", "<h1>Article not found</h1>"), 404);
+    const revisionTotal = (dependencies.db.sqlite.prepare(`
+      SELECT count(*) count FROM article_revisions WHERE article_id = ?
+    `).get(article.id) as { count: number }).count;
+    const revisionPage = requestedPage(
+      context.req.query("revisionPage"),
+      ARTICLE_REVISION_PAGE_SIZE,
+      revisionTotal,
+    );
     const heads = dependencies.db.sqlite.prepare(`
       SELECT head.locale, head.slug, head.state, head.row_version,
         head.head_revision_id, revision.title, revision.summary,
@@ -544,7 +566,12 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT id, locale, revision_no, title, created_at_ms, created_by_type
       FROM article_revisions WHERE article_id = ?
       ORDER BY locale, revision_no DESC
-    `).all(article.id) as Array<{
+      LIMIT ? OFFSET ?
+    `).all(
+      article.id,
+      ARTICLE_REVISION_PAGE_SIZE,
+      (revisionPage - 1) * ARTICLE_REVISION_PAGE_SIZE,
+    ) as Array<{
       id: string; locale: Locale; revision_no: number; title: string;
       created_at_ms: number; created_by_type: string;
     }>;
@@ -582,7 +609,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
         : "";
       return `<li>${escapeHtml(revision.locale)} #${revision.revision_no} ${escapeHtml(revision.title)} (${escapeHtml(revision.created_by_type)})${diff}</li>`;
     }).join("");
-    return context.html(page("Article detail", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1><p>Source locale: ${escapeHtml(article.source_locale)}</p>${translate}<h2>Locales</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>Markdown</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>Sources</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>Immutable revisions</h2><ul>${revisionItems}</ul>`, "en", auth.csrfToken));
+    return context.html(page("Article detail", `<h1>${escapeHtml(sourceHead?.title ?? article.id)}</h1><p>Source locale: ${escapeHtml(article.source_locale)}</p>${translate}<h2>Locales</h2>${heads.map((head) => `<section><h3>${escapeHtml(head.locale)} / ${escapeHtml(head.state)}</h3><p>${escapeHtml(head.title)}</p><p>${escapeHtml(head.summary)}</p><h4>Markdown</h4><pre>${escapeHtml(head.body_markdown)}</pre><h4>Sources</h4><pre>${escapeHtml(head.sources_json)}</pre>${actionForms(head)}</section>`).join("")}<h2>Immutable revisions</h2>${pagination(`/admin/articles/${encodeURIComponent(article.id)}`, revisionPage, ARTICLE_REVISION_PAGE_SIZE, revisionTotal, "revisionPage")}<ul>${revisionItems}</ul>`, "en", auth.csrfToken));
   });
 
   app.get("/admin/articles/:id/revisions/:revisionId/diff", (context) => {
@@ -765,8 +792,8 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/releases", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
-    const pageNumber = requestedPage(context.req.query("page"));
     const total = (dependencies.db.sqlite.prepare(`SELECT count(*) count FROM releases`).get() as { count: number }).count;
+    const pageNumber = requestedPage(context.req.query("page"), RELEASE_PAGE_SIZE, total);
     const rows = dependencies.db.sqlite.prepare(`
       SELECT id, version, state, manifest_sha256, verified_at_ms,
         activated_at_ms, rolled_back_at_ms, created_at_ms
@@ -828,8 +855,8 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/consultations", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
-    const pageNumber = requestedPage(context.req.query("page"));
     const total = (dependencies.db.sqlite.prepare(`SELECT count(*) count FROM consultations`).get() as { count: number }).count;
+    const pageNumber = requestedPage(context.req.query("page"), CONSULTATION_PAGE_SIZE, total);
     const rows = dependencies.db.sqlite.prepare(`
       SELECT id, receipt_id, status, locale, category, received_at_ms
       FROM consultations ORDER BY received_at_ms DESC, id LIMIT ? OFFSET ?
@@ -933,7 +960,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     if (channel === "email" && enabled && smtp === undefined) {
       return context.html(page("Invalid settings", "<h1>Complete SMTP TLS configuration is required.</h1>"), 422);
     }
-    if (payloadMode === "full-inquiry") {
+    if (enabled && payloadMode === "full-inquiry") {
       if (auth.form.fullInquiryApproved !== "yes" || smtp === undefined) {
         return context.html(page("Explicit approval required", "<h1>Explicit approval and complete TLS SMTP configuration are required.</h1>"), 422);
       }
@@ -1048,11 +1075,16 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
   app.get("/admin/failures", (context) => {
     const auth = protectedSession(context, dependencies);
     if (auth instanceof Response) return auth;
+    const total = (dependencies.db.sqlite.prepare(`
+      SELECT count(*) count FROM notification_outbox WHERE state = 'failed'
+    `).get() as { count: number }).count;
+    const pageNumber = requestedPage(context.req.query("page"), FAILURE_PAGE_SIZE, total);
     const rows = dependencies.db.sqlite.prepare(`
       SELECT id, channel, event_type, attempt_count, last_error_code
       FROM notification_outbox WHERE state = 'failed' ORDER BY updated_at_ms DESC
-    `).all() as Array<Record<string, unknown>>;
-    return context.html(page("Notification failures", `<h1>Notification failures</h1><ul>${rows.map((row) => `<li>${escapeHtml(row.id)} / ${escapeHtml(row.channel)} / ${escapeHtml(row.last_error_code)}<form method="post" action="/admin/failures/${encodeURIComponent(String(row.id))}/requeue"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">Requeue</button></form></li>`).join("")}</ul>`, "en", auth.csrfToken));
+      LIMIT ? OFFSET ?
+    `).all(FAILURE_PAGE_SIZE, (pageNumber - 1) * FAILURE_PAGE_SIZE) as Array<Record<string, unknown>>;
+    return context.html(page("Notification failures", `<h1>Notification failures</h1>${pagination("/admin/failures", pageNumber, FAILURE_PAGE_SIZE, total)}<ul>${rows.map((row) => `<li>${escapeHtml(row.id)} / ${escapeHtml(row.channel)} / ${escapeHtml(row.last_error_code)}<form method="post" action="/admin/failures/${encodeURIComponent(String(row.id))}/requeue"><input type="hidden" name="csrf" value="${escapeHtml(auth.csrfToken)}"><button type="submit">Requeue</button></form></li>`).join("")}</ul>`, "en", auth.csrfToken));
   });
 
   app.post("/admin/failures/:id/requeue", async (context) => {

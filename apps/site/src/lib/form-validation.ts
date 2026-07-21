@@ -10,6 +10,7 @@ import {
 } from "./consultation-adapter.js";
 
 const FORM_SELECTOR = "[data-consultation-form]";
+type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 function supportedLocale(value: unknown): Locale | undefined {
   if (typeof value !== "string") return undefined;
@@ -17,7 +18,19 @@ function supportedLocale(value: unknown): Locale | undefined {
   return LOCALES.includes(locale) ? locale : undefined;
 }
 
-function validationMessage(control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): string {
+function isFormControl(control: Element): control is FormControl {
+  return control instanceof HTMLInputElement
+    || control instanceof HTMLSelectElement
+    || control instanceof HTMLTextAreaElement;
+}
+
+function controlsForField(form: HTMLFormElement, name: string): FormControl[] {
+  return Array.from(form.elements).filter(
+    (control): control is FormControl => isFormControl(control) && control.name === name,
+  );
+}
+
+function validationMessage(control: FormControl): string {
   if (control.validity.valueMissing) return control.dataset.errorRequired ?? "";
   if (control.validity.patternMismatch) return control.dataset.errorPattern ?? "";
   if (control.validity.typeMismatch) return control.dataset.errorType ?? "";
@@ -69,18 +82,17 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     const applyServerFieldErrors = (errors: Record<string, string[]> | undefined): boolean => {
       if (!errors) return false;
-      let first: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | undefined;
-      for (const [name, messages] of Object.entries(errors)) {
-        const control = form.elements.namedItem(name);
-        if (
-          !(control instanceof HTMLInputElement)
-          && !(control instanceof HTMLSelectElement)
-          && !(control instanceof HTMLTextAreaElement)
-        ) continue;
-        control.setCustomValidity(messages[0] ?? form.dataset.statusInvalid ?? "");
-        control.setAttribute("aria-invalid", "true");
-        control.dataset.serverError = "true";
-        first ??= control;
+      let first: FormControl | undefined;
+      const localizedMessage = form.dataset.errorServer ?? form.dataset.statusInvalid ?? "";
+      for (const name of Object.keys(errors)) {
+        const controls = controlsForField(form, name);
+        if (controls.length === 0) continue;
+        controls[0]?.setCustomValidity(localizedMessage);
+        for (const control of controls) {
+          control.setAttribute("aria-invalid", "true");
+          control.dataset.serverError = "true";
+        }
+        first ??= controls[0];
       }
       first?.focus();
       first?.reportValidity();
@@ -194,14 +206,15 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
     form.addEventListener("input", (event) => {
       const control = event.target;
-      if (
-        control instanceof HTMLInputElement
-        || control instanceof HTMLSelectElement
-        || control instanceof HTMLTextAreaElement
-      ) {
-        control.setCustomValidity("");
-        control.removeAttribute("aria-invalid");
-        delete control.dataset.serverError;
+      if (control instanceof Element && isFormControl(control)) {
+        const relatedControls = control.name === ""
+          ? [control]
+          : controlsForField(form, control.name);
+        for (const relatedControl of relatedControls) {
+          relatedControl.setCustomValidity("");
+          relatedControl.removeAttribute("aria-invalid");
+          delete relatedControl.dataset.serverError;
+        }
       }
       updateEmailConstraint();
     });
@@ -270,8 +283,10 @@ export function initializeConsultationForms(documentRef: Document = document): v
               if (result.status === 429) {
                 terminalStatus = {
                   state: "error",
-                  message: (form.dataset.statusRateLimited ?? form.dataset.statusFailure ?? "")
-                    .replace("{seconds}", String(result.retryAfterSeconds ?? 60)),
+                  message: result.retryAfterSeconds === undefined
+                    ? form.dataset.statusRateLimitedGeneric ?? form.dataset.statusFailure ?? ""
+                    : (form.dataset.statusRateLimited ?? form.dataset.statusFailure ?? "")
+                      .replace("{seconds}", String(result.retryAfterSeconds)),
                 };
                 return;
               }

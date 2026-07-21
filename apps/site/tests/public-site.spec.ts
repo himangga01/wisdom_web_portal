@@ -797,7 +797,7 @@ test("submits checked marketing consent and shows localized API failure", async 
   });
 });
 
-test("maps structured field errors and Retry-After into accessible localized feedback", async ({ page }) => {
+test("localizes grouped field errors and handles optional Retry-After feedback", async ({ page }) => {
   let attempts = 0;
   await page.route("**/api/v1/consent-documents**", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(consentResponse("en")) });
@@ -811,8 +811,20 @@ test("maps structured field errors and Retry-After into accessible localized fee
         body: JSON.stringify({
           code: "VALIDATION_FAILED",
           message: "Invalid request",
-          fieldErrors: { email: ["Email rejected by server"] },
+          fieldErrors: { preferredContact: ["Raw server contact error"] },
           requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+        }),
+      });
+      return;
+    }
+    if (attempts === 2) {
+      await route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "RATE_LIMITED",
+          message: "Try later",
+          requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZY",
         }),
       });
       return;
@@ -837,10 +849,18 @@ test("maps structured field errors and Retry-After into accessible localized fee
   await page.check('[name="privacyConsent"]');
   const submit = page.getByRole("button", { name: "Send consultation request" });
   await submit.click();
-  await expect(page.locator('[name="email"]')).toHaveAttribute("aria-invalid", "true");
-  await expect(page.locator('[name="email"]')).toBeFocused();
-  await page.fill('[name="email"]', "updated@example.com");
-  await expect(page.locator('[name="email"]')).not.toHaveAttribute("aria-invalid", "true");
+  const contactMethods = page.locator('[name="preferredContact"]');
+  await expect(contactMethods.first()).toHaveAttribute("aria-invalid", "true");
+  await expect(contactMethods.first()).toBeFocused();
+  expect(await contactMethods.first().evaluate((control: HTMLInputElement) => control.validationMessage))
+    .not.toContain("Raw server contact error");
+  await page.check('[name="preferredContact"][value="email"]');
+  await expect(contactMethods.first()).not.toHaveAttribute("aria-invalid", "true");
+  await submit.click();
+  await expect(page.locator("[data-form-status]")).toContainText(
+    "Too many requests. Please try again later.",
+  );
+  await expect(page.locator("[data-form-status]")).not.toContainText("60 seconds");
   await submit.click();
   await expect(page.locator("[data-form-status]")).toContainText("Try again in 7 seconds");
 });

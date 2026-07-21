@@ -336,9 +336,11 @@ export async function applyBackupRetention(backupRoot, limits, workLimitOverride
     fail("BACKUP_RETENTION_LIMIT_EXCEEDED", "Backup retention candidates exceed the bounded work limit");
   }
   const records = { hourly: [], daily: [] };
+  const orphanStatuses = [];
   for (const name of candidateNames) {
     const match = /^(hourly-\d{8}T\d{6}Z|daily-\d{8})\.json$/u.exec(name);
     if (!match) continue;
+    const expectedKind = match[1].startsWith("hourly-") ? "hourly" : "daily";
     const statusPath = path.join(backupRoot, name);
     const metadata = await lstat(statusPath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) fail("BACKUP_RETENTION_INVALID", "Backup status cannot be a symlink");
@@ -348,15 +350,21 @@ export async function applyBackupRetention(backupRoot, limits, workLimitOverride
     } catch {
       continue;
     }
-    if (!status.verified || !["hourly", "daily"].includes(status.kind) || Number.isNaN(Date.parse(status.createdAt))) continue;
+    if (
+      status.verified !== true || status.kind !== expectedKind ||
+      Number.isNaN(Date.parse(status.createdAt)) ||
+      !Number.isSafeInteger(status.encryptedBytes) || status.encryptedBytes < 0 ||
+      !/^[a-f0-9]{64}$/u.test(status.encryptedSha256 ?? "")
+    ) continue;
     const artifactPath = statusPath.replace(/\.json$/u, ".age");
-    if (!(await exists(artifactPath))) continue;
+    if (!(await exists(artifactPath))) {
+      orphanStatuses.push({ statusPath, artifactPath });
+      continue;
+    }
     const artifactMetadata = await lstat(artifactPath);
     if (!artifactMetadata.isFile() || artifactMetadata.isSymbolicLink()) fail("BACKUP_RETENTION_INVALID", "Backup artifact cannot be a symlink");
     if (
-      artifactMetadata.size !== status.encryptedBytes ||
-      !Number.isSafeInteger(status.encryptedBytes) || status.encryptedBytes < 0 ||
-      !/^[a-f0-9]{64}$/u.test(status.encryptedSha256 ?? "")
+      artifactMetadata.size !== status.encryptedBytes
     ) continue;
     records[status.kind].push({
       statusPath,
@@ -397,5 +405,34 @@ export async function applyBackupRetention(backupRoot, limits, workLimitOverride
     await rm(record.statusPath);
     deletedArtifacts++;
   }
-  return { deletedArtifacts, deferredArtifacts, hashedBytes };
+  let deletedOrphanStatuses = 0;
+  orphanStatuses.sort((left, right) => left.statusPath.localeCompare(right.statusPath));
+  const remainingDeletionBudget = Math.max(0, workLimits.maxDeletions - deletedArtifacts);
+  const boundedOrphanStatuses = orphanStatuses.slice(0, remainingDeletionBudget);
+  for (const record of boundedOrphanStatuses) {
+    if (!isInside(backupRoot, record.statusPath) || !isInside(backupRoot, record.artifactPath)) {
+      fail("BACKUP_RETENTION_INVALID", "Retention target escaped the backup root");
+    }
+    if (await exists(record.artifactPath)) continue;
+    let statusMetadata;
+    try {
+      statusMetadata = await lstat(record.statusPath);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (!statusMetadata.isFile() || statusMetadata.isSymbolicLink()) {
+      fail("BACKUP_RETENTION_INVALID", "Backup status cannot be a symlink");
+    }
+    await rm(record.statusPath);
+    deletedOrphanStatuses++;
+  }
+  const deferredOrphanStatuses = orphanStatuses.length - boundedOrphanStatuses.length;
+  return {
+    deletedArtifacts,
+    deletedOrphanStatuses,
+    deferredArtifacts,
+    deferredOrphanStatuses,
+    hashedBytes,
+  };
 }

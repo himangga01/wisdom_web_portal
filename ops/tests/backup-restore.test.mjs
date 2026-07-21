@@ -365,6 +365,41 @@ test("retention keeps 24 hourly and 14 daily verified snapshots", async () => {
   assert.ok(names.includes("hourly-20260727T000000Z.age"));
 });
 
+test("retention removes only verified orphan backup status files", async () => {
+  const backupRoot = await fixtureDirectory("retention-orphan-status");
+  const encrypted = "ciphertext";
+  const encryptedSha256 = createHash("sha256").update(encrypted).digest("hex");
+  const validStatus = {
+    verified: true,
+    kind: "hourly",
+    createdAt: "2026-07-16T01:00:00.000Z",
+    encryptedSha256,
+    encryptedBytes: Buffer.byteLength(encrypted),
+  };
+  await writeFile(path.join(backupRoot, "hourly-20260716T020000Z.age"), encrypted);
+  await writeFile(
+    path.join(backupRoot, "hourly-20260716T020000Z.json"),
+    JSON.stringify({ ...validStatus, createdAt: "2026-07-16T02:00:00.000Z" }),
+  );
+  await writeFile(
+    path.join(backupRoot, "hourly-20260716T010000Z.json"),
+    JSON.stringify(validStatus),
+  );
+  await writeFile(
+    path.join(backupRoot, "hourly-20260716T000000Z.json"),
+    JSON.stringify({ ...validStatus, verified: false }),
+  );
+
+  const result = await applyBackupRetention(backupRoot, { hourly: 1, daily: 1 });
+  const names = await readdir(backupRoot);
+
+  assert.equal(result.deletedOrphanStatuses, 1);
+  assert.ok(!names.includes("hourly-20260716T010000Z.json"));
+  assert.ok(names.includes("hourly-20260716T000000Z.json"));
+  assert.ok(names.includes("hourly-20260716T020000Z.age"));
+  assert.ok(names.includes("hourly-20260716T020000Z.json"));
+});
+
 test("retention ignores oversized status files without reading or deleting their artifacts", async () => {
   const backupRoot = await fixtureDirectory("retention-oversized-status");
   const encrypted = "ciphertext";
@@ -439,7 +474,9 @@ test("retention bounds deletion count and total artifact hash bytes per run", as
   });
   assert.deepEqual(first, {
     deletedArtifacts: 1,
+    deletedOrphanStatuses: 0,
     deferredArtifacts: 1,
+    deferredOrphanStatuses: 0,
     hashedBytes: Buffer.byteLength(encrypted),
   });
   assert.equal((await readdir(backupRoot)).filter((name) => name.endsWith(".age")).length, 2);
@@ -448,7 +485,13 @@ test("retention bounds deletion count and total artifact hash bytes per run", as
     maxDeletions: 1,
     maxHashBytes: Buffer.byteLength(encrypted) - 1,
   });
-  assert.deepEqual(second, { deletedArtifacts: 0, deferredArtifacts: 1, hashedBytes: 0 });
+  assert.deepEqual(second, {
+    deletedArtifacts: 0,
+    deletedOrphanStatuses: 0,
+    deferredArtifacts: 1,
+    deferredOrphanStatuses: 0,
+    hashedBytes: 0,
+  });
   assert.equal((await readdir(backupRoot)).filter((name) => name.endsWith(".age")).length, 2);
 });
 

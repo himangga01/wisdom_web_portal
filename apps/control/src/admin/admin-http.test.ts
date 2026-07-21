@@ -964,6 +964,88 @@ describe("separate host and administrator browser boundary", () => {
     expect(degraded.status).toBe(503);
     expect(await degraded.text()).toContain("not ready");
   });
+
+  it("clamps unsafe pages and bounds the failed notification list", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    for (let index = 0; index < 51; index += 1) {
+      current.database.db.sqlite.prepare(`
+        INSERT INTO notification_outbox (
+          id, consultation_id, channel, event_type, state, attempt_count,
+          available_at_ms, purpose, delivery_cycle, last_error_code,
+          created_at_ms, updated_at_ms
+        ) VALUES (?, 'consultation-1', 'email', ?,
+          'failed', 5, 0, 'test', 1, 'PROVIDER_ERROR', ?, ?)
+      `).run(`failure-${index}`, `notification.failed-${index}`, index, index);
+    }
+
+    const unsafePage = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations?page=999999999999999999999999`,
+      { headers: { cookie: session.cookie } },
+    );
+    expect(unsafePage.status).toBe(200);
+    expect(await unsafePage.text()).toContain("Page 1");
+
+    const beyondLastPage = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations?page=999999999`,
+      { headers: { cookie: session.cookie } },
+    );
+    expect(await beyondLastPage.text()).toContain("Page 1");
+
+    const failures = await current.app.request(`${ADMIN_ORIGIN}/admin/failures`, {
+      headers: { cookie: session.cookie },
+    });
+    const failuresHtml = await failures.text();
+    expect(failuresHtml).toContain("51 total · Page 1");
+    expect(failuresHtml).toContain('href="/admin/failures?page=2"');
+    expect(failuresHtml).toContain("failure-50");
+    expect(failuresHtml).not.toContain("failure-0");
+  });
+
+  it("allows disabling full inquiry email without repeating approval", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const pageResponse = await current.app.request(`${ADMIN_ORIGIN}/admin/notifications`, {
+      headers: { cookie: session.cookie },
+    });
+    const pageHtml = await pageResponse.text();
+    const csrf = /action="\/admin\/notifications"[^>]*>[\s\S]*?name="csrf" value="([^"]+)"/.exec(pageHtml)?.[1];
+    expect(csrf).toBe(session.csrf);
+    const smtpValues = {
+      smtpHost: "smtp.example.com",
+      smtpPort: "465",
+      smtpFrom: "office@example.test",
+      smtpTo: "owner@example.test",
+      smtpTlsMode: "implicit-tls",
+      smtpSecretRef: "keychain:smtp",
+    };
+    const postSettings = (values: Record<string, string>) => current.app.request(
+      `${ADMIN_ORIGIN}/admin/notifications`,
+      {
+        method: "POST",
+        headers: {
+          origin: ADMIN_ORIGIN,
+          cookie: session.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ csrf: csrf!, channel: "email", ...values }),
+      },
+    );
+
+    expect((await postSettings({
+      enabled: "1",
+      payloadMode: "full-inquiry",
+      fullInquiryApproved: "yes",
+      ...smtpValues,
+    })).status).toBe(303);
+    expect((await postSettings({
+      payloadMode: "full-inquiry",
+      ...smtpValues,
+    })).status).toBe(303);
+    expect(current.database.db.sqlite.prepare(`
+      SELECT enabled, payload_mode FROM notification_settings WHERE channel = 'email'
+    `).get()).toEqual({ enabled: 0, payload_mode: "full-inquiry" });
+  });
 });
 
 describe("marketing withdrawal HTTP ceremony", () => {
