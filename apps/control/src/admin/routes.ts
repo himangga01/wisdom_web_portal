@@ -45,6 +45,7 @@ import {
   openMarketingWithdrawalCapability,
   withdrawMarketingConsent,
 } from "../withdrawal/service.js";
+import { backLinkHtml, emptyStateHtml } from "./ui/primitives.js";
 
 interface AdminEnvironment {
   Variables: { requestId: string };
@@ -166,7 +167,7 @@ function resultMessage(kind: string): string {
 }
 
 function backLink(href: string, label: string): string {
-  return `<p><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></p>`;
+  return backLinkHtml(href, label);
 }
 
 // Shown when Origin/CSRF checks fail or a session has expired mid-edit, so the
@@ -204,7 +205,7 @@ function savedBanner(context: Context<AdminEnvironment>): string {
 }
 
 function emptyState(message: string): string {
-  return `<p class="muted">${escapeHtml(message)}</p>`;
+  return emptyStateHtml(message);
 }
 
 function cookieValue(header: string, name: string): string | undefined {

@@ -6,4 +6,8 @@ export default defineConfig({
     fileParallelism: false,
     testTimeout: 15_000,
   },
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "hono/jsx",
+  },
 });

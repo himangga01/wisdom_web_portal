@@ -9,5 +9,5 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "exclude": ["src/**/*.test.ts", "test", "vitest.config.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "test", "vitest.config.ts"]
 }
