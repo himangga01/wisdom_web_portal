@@ -46,7 +46,7 @@ import {
   openMarketingWithdrawalCapability,
   withdrawMarketingConsent,
 } from "../withdrawal/service.js";
-import { preferredContactLabel } from "./ui/labels.js";
+import { payloadModeLabel, preferredContactLabel } from "./ui/labels.js";
 import { renderAdminPage, renderPlainPage } from "./ui/Layout.js";
 import {
   SAVED_BANNER_FLAGS,
@@ -1044,7 +1044,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const statusRows = rows.map((row) => ({
       channelLabel: channelLabel(row.channel),
       enabled: row.enabled === 1,
-      payloadMode: String(row.payload_mode ?? "-"),
+      payloadMode: row.payload_mode == null ? "-" : payloadModeLabel(String(row.payload_mode)),
       smtpConfigured: typeof row.secret_ref === "string" && row.secret_ref.length > 0,
     }));
     return context.html(page("알림 설정", notificationSettingsBodyHtml({
