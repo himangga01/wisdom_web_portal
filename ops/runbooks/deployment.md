@@ -21,6 +21,8 @@
 10. monitor 설정은 먼저 `node ops/scripts/monitor.mjs --config /Users/wisdom/portal/shared/monitoring.json --validate-only`로 구조만 검증한다. 필요한 서비스와 첫 verified backup이 준비되면 같은 절대 경로에 `--dry-run`을 사용해 실제 사설 검사를 수행하되 Hermes 전송은 억제한다. 출력에는 check ID, 안전한 오류 코드, 숫자 메트릭만 있는지 확인한다.
 11. launchd plist를 `plutil -lint`로 확인하고 사용자 LaunchAgents로 설치한다. `com.jihye.portal.monitor`는 5분마다 Keychain wrapper를 통해 독립 monitor HMAC 하나만 읽는다. `com.jihye.portal.retention`은 시작 시와 매시간 같은 보호된 runtime/Keychain 경로에서 `purge.js --apply --batch-size 1000 --max-batches 10`을 실행한다. 두 job을 각각 `launchctl print`와 `launchctl kickstart -k`로 첫 실행 및 exit status까지 확인한다. bootstrap public release 동안에는 tunnel agent를 시작하지 않는다. application과 정상 Wisdom public release를 게시한 뒤 `preflight.mjs`에 `--monitor-config /Users/wisdom/portal/shared/monitoring.json`을 포함한 플래그 없는 외부 preflight가 `monitoringConfigValidated: true`, `tunnelReady: true`를 반환해야만 tunnel을 `launchctl bootstrap`한다. 그 후 Caddy, tunnel, control, worker, monitor 상태와 공개 live 응답을 확인한다.
 
+관리자 React 번들은 application release에 포함한다. 전환 전 `apps/admin/dist/admin/index.html`, `apps/admin/dist/admin/manifest.json`과 manifest가 참조하는 해시 포함 JS/CSS가 release manifest에 포함되었는지 확인한다. `/admin`과 `/admin/api/*`는 `no-store`, 해시 파일명인 `/admin/assets/*`만 immutable cache인지 확인하고 로그인·MFA·상담 목록 조회까지 점검한다.
+
 Applied monitoring has an additional fail-closed preflight. In apply mode, the independent
 Keychain HMAC secret must be present and at least 32 bytes before any local checks, incident
 state reads, or Hermes requests begin. A missing, short, or malformed secret stops the run

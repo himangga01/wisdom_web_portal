@@ -1,4 +1,5 @@
 export * from "./article.js";
+export * from "./admin-api.js";
 export * from "./article-markdown.js";
 export * from "./article-content.js";
 export * from "./consultation.js";

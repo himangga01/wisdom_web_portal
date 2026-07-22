@@ -44,7 +44,7 @@
 | 4개 언어 공개 사이트 | `apps/site`, locale별 정적 경로와 실제 언어 전환 | Site unit/type/build, 3-browser E2E | 구현 완료 |
 | bronze/sand/ivory 디자인과 C1 모션 | 공용 토큰, 18개·500ms·64px·60ms, reduced-motion/no-JS 폴백 | 320/390/768/1440 overflow와 모션 브라우저 검사 | 구현 완료 |
 | 상담 접수와 동의 | 로컬 SQLite, 필수 개인정보 동의, 선택 마케팅 동의, 계정 없는 1회 링크 철회 | API·트랜잭션·멱등성·보존기간·정책 snapshot parity 테스트 | 구현 완료 |
-| 관리자 포털 | 별도 호스트, Argon2id, TOTP/복구 코드, CSRF, 감사 이벤트 | 인증·세션·상태전이·host routing 테스트 | 구현 완료 |
+| 관리자 포털 | 별도 호스트의 React+Tailwind UI, Hono JSON API, Argon2id, TOTP/복구 코드, CSRF, 감사 이벤트 | 관리자 타입체크·프로덕션 빌드, 인증·세션·상태전이·host routing 테스트 | 구현 완료 |
 | Telegram·이메일 알림 | Hermes metadata-only, SMTP `receipt-only` 기본, 관리자 선택 | lease/fencing/backoff와 PII 비노출 테스트 | 구현 완료 |
 | Hermes 글 작성과 Codex 번역 | HMAC draft intake, 명시적 번역, shell tool 비활성 Codex CLI 3회 검수, locale별 승인 | 스키마·stdin 입력·no-shell 실행·PII guard·작업 복구 테스트 | 구현 완료 |
 | 정적 발행과 롤백 | 승인 글과 활성 8개 동의 문서를 함께 봉인한 snapshot/build, 원자 pointer 전환, active+retired 2개 보존 | 정책 body/hash/보존기간 parity·장애 주입·reconcile·rollback·retention 테스트 | 구현 완료 |
@@ -86,6 +86,8 @@
 5. 실제 도메인에서 `/robots.txt`, `/sitemap.xml`, `/rss.xml`, `/indexnow-key.txt`의 status·MIME·cache·noindex 정책을 확인한다.
 
 실제 Samsung Internet·Safari·Kakao/Naver 앱 점검은 Windows CI로 대체할 수 없으므로 공개 전 수동 게이트로 유지한다.
+
+관리자 호스트에서는 `/admin` 로그인, MFA, 대시보드, 상담 상세·상태 변경, 콘텐츠 검토, 게시 미리보기, 릴리스, 알림, 동의 문서, 실패 작업, 상태 화면을 확인한다. `/admin`과 `/admin/api/*`는 `no-store`, `/admin/assets/*`만 immutable인지 확인하고 공개 호스트에서 `/admin*`가 404인지 다시 확인한다.
 
 ## 운영 전환 순서
 

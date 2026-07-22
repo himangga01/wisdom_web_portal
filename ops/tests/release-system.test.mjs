@@ -42,6 +42,11 @@ test("release operation lock serializes deploy, rollback, and retention", async 
 const minimalRuntimeFiles = [
   "package.json",
   "package-lock.json",
+  "apps/admin/package.json",
+  "apps/admin/dist/admin/index.html",
+  "apps/admin/dist/admin/manifest.json",
+  "apps/admin/dist/admin/assets/admin-a1b2c3d4e5f6.js",
+  "apps/admin/dist/admin/assets/admin-a1b2c3d4e5f6.css",
   "apps/control/package.json",
   "apps/control/dist/server.js",
   "apps/control/dist/notification-worker.js",
@@ -75,11 +80,29 @@ const minimalRuntimeFiles = [
   "ops/scripts/seed-public.mjs",
 ];
 
+function runtimeFileContent(relative) {
+  if (relative === "apps/admin/dist/admin/manifest.json") {
+    return `${JSON.stringify({
+      "index.html": {
+        file: "assets/admin-a1b2c3d4e5f6.js",
+        name: "index",
+        src: "index.html",
+        isEntry: true,
+        css: ["assets/admin-a1b2c3d4e5f6.css"],
+      },
+    }, null, 2)}\n`;
+  }
+  if (relative === "apps/admin/dist/admin/index.html") {
+    return "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/admin/assets/admin-a1b2c3d4e5f6.css\"></head><body><div id=\"root\"></div><script type=\"module\" src=\"/admin/assets/admin-a1b2c3d4e5f6.js\"></script></body></html>";
+  }
+  return relative;
+}
+
 async function populateRelease(destination, releaseId) {
   for (const relative of minimalRuntimeFiles) {
     const absolute = path.join(destination, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
   await createReleaseManifest(destination, releaseId, new Date("2026-07-16T01:02:03.000Z"));
 }
@@ -168,7 +191,7 @@ test("source copy excludes native installs, VCS, local data, secrets, and worktr
   ]) {
     const absolute = path.join(fixture.sourceRoot, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
 
   await copyReleaseSource(fixture.sourceRoot, fixture.destination);
@@ -217,12 +240,52 @@ test("release manifest binds the required built artifacts and detects tampering"
   await assert.rejects(verifyReleaseManifest(fixture.destination, fixture.releaseId), { code: "RELEASE_MANIFEST_INVALID" });
 });
 
+test("release manifest requires the administrator index, Vite manifest, and referenced assets", async (t) => {
+  for (const required of [
+    "apps/admin/dist/admin/index.html",
+    "apps/admin/dist/admin/manifest.json",
+    "apps/admin/dist/admin/assets/admin-a1b2c3d4e5f6.js",
+    "apps/admin/dist/admin/assets/admin-a1b2c3d4e5f6.css",
+  ]) {
+    await t.test(required, async () => {
+      const fixture = await releaseFixture();
+      for (const relative of minimalRuntimeFiles.filter((value) => value !== required)) {
+        const absolute = path.join(fixture.destination, relative);
+        await mkdir(path.dirname(absolute), { recursive: true });
+        await writeFile(absolute, runtimeFileContent(relative));
+      }
+      await assert.rejects(
+        createReleaseManifest(fixture.destination, fixture.releaseId),
+        { code: "RELEASE_MANIFEST_INVALID" },
+      );
+    });
+  }
+});
+
+test("release manifest validates executable administrator tags rather than matching references in comments", async () => {
+  const fixture = await releaseFixture();
+  for (const relative of minimalRuntimeFiles) {
+    const absolute = path.join(fixture.destination, relative);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    await writeFile(absolute, runtimeFileContent(relative));
+  }
+  await writeFile(
+    path.join(fixture.destination, "apps/admin/dist/admin/index.html"),
+    "<!-- <link rel=\"stylesheet\" href=\"/admin/assets/admin-a1b2c3d4e5f6.css\"><script type=\"module\" src=\"/admin/assets/admin-a1b2c3d4e5f6.js\"></script> --><link rel=\"stylesheet\" href=\"/admin/assets/admin-production.css\"><script type=\"module\" src=\"/admin/assets/admin-production.js\"></script>",
+  );
+
+  await assert.rejects(
+    createReleaseManifest(fixture.destination, fixture.releaseId),
+    { code: "RELEASE_MANIFEST_INVALID" },
+  );
+});
+
 test("release manifest requires the launchd-referenced monitor runner", async () => {
   const fixture = await releaseFixture();
   for (const relative of minimalRuntimeFiles.filter((value) => value !== "ops/scripts/monitor.mjs")) {
     const absolute = path.join(fixture.destination, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
   await assert.rejects(
     createReleaseManifest(fixture.destination, fixture.releaseId),
@@ -235,7 +298,7 @@ test("release manifest requires the bounded monitor database helper", async () =
   for (const relative of minimalRuntimeFiles.filter((value) => value !== "ops/scripts/monitor-db-check.mjs")) {
     const absolute = path.join(fixture.destination, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
   await assert.rejects(
     createReleaseManifest(fixture.destination, fixture.releaseId),
@@ -249,7 +312,7 @@ test("release manifest requires the monitor runner's runtime library dependency 
     for (const relative of minimalRuntimeFiles.filter((value) => value !== required)) {
       const absolute = path.join(fixture.destination, relative);
       await mkdir(path.dirname(absolute), { recursive: true });
-      await writeFile(absolute, relative);
+      await writeFile(absolute, runtimeFileContent(relative));
     }
     await assert.rejects(
       createReleaseManifest(fixture.destination, fixture.releaseId),
@@ -291,7 +354,7 @@ test("release manifest records internal runtime symlinks and rejects escaping sy
   for (const relative of minimalRuntimeFiles) {
     const absolute = path.join(internal.destination, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
   const workspaceLink = path.join(internal.destination, "node_modules", "@wisdom", "shared");
   await mkdir(path.dirname(workspaceLink), { recursive: true });
@@ -317,7 +380,7 @@ test("release manifest records internal runtime symlinks and rejects escaping sy
   for (const relative of minimalRuntimeFiles) {
     const absolute = path.join(escaping.destination, relative);
     await mkdir(path.dirname(absolute), { recursive: true });
-    await writeFile(absolute, relative);
+    await writeFile(absolute, runtimeFileContent(relative));
   }
   const outside = path.join(escaping.appRoot, "outside-runtime.js");
   const escapingLink = path.join(escaping.destination, "node_modules", "runtime-fixture", "escape.js");

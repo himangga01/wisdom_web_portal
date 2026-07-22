@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { ControlDatabase } from "../db/client.js";
-import { authDigest } from "./digest.js";
+import { authDigest, equalDigest } from "./digest.js";
 
 const PRE_AUTH_TTL_MS = 5 * 60 * 1_000;
 const PRE_AUTH_COOKIE = "__Host-wisdom-preauth";
@@ -56,4 +56,30 @@ export function createAdminPreAuthChallenge(
     expiresAtMs,
   );
   return { challengeToken, csrfToken, expiresAtMs };
+}
+
+export function resolveAdminPreAuthChallenge(
+  db: ControlDatabase,
+  secret: Uint8Array,
+  challengeToken: string,
+  csrfToken: string,
+  nowMs: number,
+): boolean {
+  const row = db.sqlite.prepare(`
+    SELECT challenge.csrf_hash, challenge.expires_at_ms, challenge.used_at_ms,
+      admin.status
+    FROM admin_pre_auth_challenges challenge
+    JOIN admins admin ON admin.id = challenge.admin_id
+    WHERE challenge.challenge_hash = ?
+  `).get(adminPreAuthChallengeDigest(secret, challengeToken)) as {
+    csrf_hash: Buffer;
+    expires_at_ms: number;
+    used_at_ms: number | null;
+    status: string;
+  } | undefined;
+  return row !== undefined && row.status === "active" && row.used_at_ms === null &&
+    nowMs < row.expires_at_ms && equalDigest(
+      row.csrf_hash,
+      adminPreAuthCsrfDigest(secret, challengeToken, csrfToken),
+    );
 }

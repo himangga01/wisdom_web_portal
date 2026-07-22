@@ -134,7 +134,7 @@ test("public dynamic and static routes are mutually exclusive in literal policy 
   assert.ok(publicBlock.indexOf("handle {") < publicBlock.indexOf("try_files"));
 });
 
-test("admin host blocks non-admin control surfaces before its catch-all proxy", async () => {
+test("admin host isolates control surfaces and preserves Control's response-aware cache policy", async () => {
   const caddy = await render("caddy/Caddyfile.template");
   const adminStart = caddy.indexOf("http://admin.example.test:8080");
   const unknownStart = caddy.indexOf("http://:8080", adminStart);
@@ -146,6 +146,14 @@ test("admin host blocks non-admin control surfaces before its catch-all proxy", 
   );
   assert.ok(admin.indexOf("respond @admin_forbidden 404") < admin.indexOf("reverse_proxy 127.0.0.1:8787"));
   assert.doesNotMatch(admin, /@admin_forbidden[^\n]*\/admin\/health/);
+  assert.doesNotMatch(admin, /@admin_assets|Cache-Control/);
+  assert.equal((admin.match(/reverse_proxy 127\.0\.0\.1:8787/g) ?? []).length, 1);
+  const positions = [
+    admin.indexOf("handle @admin_forbidden"),
+    admin.lastIndexOf("handle {"),
+  ];
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
 });
 
 test("static misses retain an actual 404 and every Astro build asset is immutable", async () => {
