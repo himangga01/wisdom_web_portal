@@ -5,8 +5,13 @@ import {
   articleStateLabel,
   categoryLabel,
   channelLabel,
+  consentKindLabel,
   consultationStatusLabel,
+  createdByTypeLabel,
+  localeLabel,
+  notificationErrorLabel,
   notificationStateLabel,
+  releaseStateLabel,
 } from "./labels.js";
 import { EmptyState } from "./primitives.js";
 import { renderToHtml } from "./render.js";
@@ -59,7 +64,7 @@ export function articlesBodyHtml(
           {rows.map((row) => (
             <li>
               <a href={`/admin/articles/${encodeURIComponent(row.id)}`}>{row.title}</a>
-              {" / "}{row.locale}{" / "}{articleStateLabel(row.state)}{" / v"}{row.row_version}{" "}
+              {" / "}{localeLabel(row.locale)}{" / "}{articleStateLabel(row.state)}{" / v"}{row.row_version}{" "}
               <span class="muted">{formatTime(row.updated_at_ms)}</span>
             </li>
           ))}
@@ -79,7 +84,7 @@ export function consentsBodyHtml(
           <p>활성 묶음: {bundle.bundleId}</p>
           <ul>
             {bundle.documents.map((document) => (
-              <li>{document.kind} / {document.locale} / {document.version}</li>
+              <li>{consentKindLabel(document.kind)} / {localeLabel(document.locale)} / {document.version}</li>
             ))}
           </ul>
         </>
@@ -111,14 +116,14 @@ export function failuresBodyHtml(rows: readonly FailureRow[], csrfToken: string,
                 <td>{channelLabel(row.channel)}</td>
                 <td>{notificationStateLabel(row.state)}</td>
                 <td>{row.at}</td>
-                <td>{row.lastErrorCode}</td>
+                <td>{notificationErrorLabel(row.lastErrorCode)}</td>
                 <td>
                   {row.requeueable ? (
                     <form method="post" action={`/admin/failures/${encodeURIComponent(row.id)}/requeue`}>
                       <input type="hidden" name="csrf" value={csrfToken} />
                       <button type="submit">재발송</button>
                     </form>
-                  ) : <span class="muted">채널 설정 확인 필요</span>}
+                  ) : <a href="/admin/notifications">채널 설정 확인</a>}
                 </td>
               </tr>
             ))}
@@ -143,69 +148,100 @@ export interface ConsultationListView {
   pageNumber: number;
   hasNext: boolean;
   statusFilter: string;
-  searchKind: "phone" | "email" | "";
-  searchValue: string;
   statuses: readonly string[];
+  csrfToken: string;
   banner: string;
+  // Present only when rendering contact-search results (a POST response), so the
+  // raw phone/email never travels in a GET URL or the pagination links.
+  search?: {
+    kind: "phone" | "email";
+    value: string;
+    capped: boolean;
+    invalid: boolean;
+  };
 }
 
 function pageHref(view: ConsultationListView, page: number): string {
   const params = new URLSearchParams();
   if (view.statusFilter) params.set("status", view.statusFilter);
-  if (view.searchKind && view.searchValue) {
-    params.set("searchKind", view.searchKind);
-    params.set("q", view.searchValue);
-  }
   params.set("page", String(page));
   return `/admin/consultations?${params.toString()}`;
 }
 
+const ConsultationTable: FC<{ rows: readonly ConsultationListRow[] }> = ({ rows }) => (
+  <table>
+    <thead>
+      <tr><th>접수번호</th><th>상태</th><th>언어</th><th>분야</th><th>접수 시각</th></tr>
+    </thead>
+    <tbody>
+      {rows.map((row) => (
+        <tr>
+          <td><a href={`/admin/consultations/${encodeURIComponent(row.id)}`}>{row.receiptId}</a></td>
+          <td>{consultationStatusLabel(row.status)}</td>
+          <td>{localeLabel(row.locale)}</td>
+          <td>{categoryLabel(row.category)}</td>
+          <td>{row.receivedAt}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+);
+
 export function consultationsBodyHtml(view: ConsultationListView): string {
-  const searching = view.searchKind !== "" && view.searchValue !== "";
+  const search = view.search;
   return renderToHtml(
     <Screen heading="상담 목록" banner={view.banner}>
+      <h2>상태로 거르기</h2>
       <form method="get" action="/admin/consultations">
-        <label for="filter-status">상태</label>
+        <label for="filter-status">상태 필터</label>
         <select id="filter-status" name="status">
           <option value="" selected={view.statusFilter === ""}>전체</option>
           {view.statuses.map((status) => (
             <option value={status} selected={status === view.statusFilter}>{consultationStatusLabel(status)}</option>
           ))}
         </select>
-        <label for="search-kind">연락처 검색</label>
-        <select id="search-kind" name="searchKind">
-          <option value="phone" selected={view.searchKind === "phone"}>전화</option>
-          <option value="email" selected={view.searchKind === "email"}>이메일</option>
-        </select>
-        <input name="q" value={view.searchValue} placeholder="정확히 일치하는 값" maxlength={254} />
-        <button type="submit">검색</button>
+        <button type="submit">필터 적용</button>
       </form>
-      {view.rows.length === 0 ? (
-        <EmptyState>{searching ? "일치하는 상담이 없습니다." : "표시할 상담이 없습니다."}</EmptyState>
+      <h2>연락처로 찾기</h2>
+      <form method="post" action="/admin/consultations/search">
+        <input type="hidden" name="csrf" value={view.csrfToken} />
+        <label for="search-kind">검색 대상</label>
+        <select id="search-kind" name="searchKind">
+          <option value="phone" selected={search?.kind === "phone"}>전화</option>
+          <option value="email" selected={search?.kind === "email"}>이메일</option>
+        </select>
+        <label for="search-q">검색어</label>
+        <input id="search-q" name="q" value={search?.value ?? ""} placeholder="정확히 일치하는 전화/이메일" maxlength={254} required />
+        <button type="submit">검색</button>
+        <p class="muted">전화·이메일이 정확히 일치하는 상담만 찾습니다. 부분 검색은 지원하지 않습니다.</p>
+      </form>
+      {search ? (
+        <>
+          <p><a href="/admin/consultations">« 전체 목록 보기</a></p>
+          {search.invalid ? (
+            <EmptyState>검색어 형식을 확인하세요. 전화번호는 숫자 8~20자리로 입력합니다.</EmptyState>
+          ) : view.rows.length === 0 ? (
+            <EmptyState>일치하는 상담이 없습니다.</EmptyState>
+          ) : (
+            <>
+              {search.capped ? <p class="muted">일치 항목이 많아 최근 50건만 표시합니다.</p> : <></>}
+              <ConsultationTable rows={view.rows} />
+            </>
+          )}
+        </>
       ) : (
-        <table>
-          <thead>
-            <tr><th>접수번호</th><th>상태</th><th>언어</th><th>분야</th><th>접수 시각</th></tr>
-          </thead>
-          <tbody>
-            {view.rows.map((row) => (
-              <tr>
-                <td><a href={`/admin/consultations/${encodeURIComponent(row.id)}`}>{row.receiptId}</a></td>
-                <td>{consultationStatusLabel(row.status)}</td>
-                <td>{row.locale}</td>
-                <td>{categoryLabel(row.category)}</td>
-                <td>{row.receivedAt}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {searching ? null : (
-        <p>
-          {view.pageNumber > 1 ? <a href={pageHref(view, view.pageNumber - 1)}>« 이전</a> : null}
-          {view.pageNumber > 1 && view.hasNext ? " · " : ""}
-          {view.hasNext ? <a href={pageHref(view, view.pageNumber + 1)}>다음 »</a> : null}
-        </p>
+        <>
+          {view.rows.length === 0 ? (
+            <EmptyState>표시할 상담이 없습니다.</EmptyState>
+          ) : (
+            <ConsultationTable rows={view.rows} />
+          )}
+          <p>
+            {view.pageNumber > 1 ? <a href={pageHref(view, view.pageNumber - 1)}>« 이전</a> : <></>}
+            {view.pageNumber > 1 && view.hasNext ? " · " : ""}
+            {view.hasNext ? <a href={pageHref(view, view.pageNumber + 1)}>다음 »</a> : <></>}
+          </p>
+        </>
       )}
     </Screen>,
   );
@@ -233,6 +269,7 @@ export interface ConsultationDetailProps {
   preferredContact: string;
   marketingState: string;
   retentionExpiresAt: string;
+  purged: boolean;
   emailChannelEnabled: boolean;
   hermesChannelEnabled: boolean;
   pii?: { name: string; phone: string; email: string; company: string; message: string };
@@ -252,12 +289,16 @@ export function consultationDetailBodyHtml(props: ConsultationDetailProps): stri
       <dl>
         <dt>접수번호</dt><dd>{props.receiptId}</dd>
         <dt>상태</dt><dd>{consultationStatusLabel(props.status)}</dd>
-        <dt>언어</dt><dd>{props.locale}</dd>
+        <dt>언어</dt><dd>{localeLabel(props.locale)}</dd>
         <dt>분야</dt><dd>{categoryLabel(props.category)}</dd>
-        <dt>희망 연락 방법</dt><dd>{props.preferredContact}</dd>
-        <dt>마케팅 동의</dt><dd>{props.marketingState}</dd>
         <dt>접수 시각</dt><dd>{props.receivedAt}</dd>
-        <dt>파기 예정일</dt><dd>{props.retentionExpiresAt}</dd>
+        {props.purged ? <></> : (
+          <>
+            <dt>희망 연락 방법</dt><dd>{props.preferredContact}</dd>
+            <dt>마케팅 동의</dt><dd>{props.marketingState}</dd>
+            <dt>파기 예정일</dt><dd>{props.retentionExpiresAt}</dd>
+          </>
+        )}
       </dl>
       {props.pii === undefined ? (
         <p class="muted">개인정보는 보유기간이 지나 파기되었습니다.</p>
@@ -270,70 +311,79 @@ export function consultationDetailBodyHtml(props: ConsultationDetailProps): stri
           <dt>문의 내용</dt><dd>{props.pii.message}</dd>
         </dl>
       )}
-      {props.statusForm === undefined ? (
-        <p class="muted">이 상담은 더 이상 상태를 변경할 수 없는 최종 단계입니다.</p>
+      {props.purged ? (
+        // A purged consultation keeps only its receipt/status header; its status
+        // form and processing history are hidden so the screen does not contradict
+        // the "파기됨" declaration or invite notifying a recipient-less record.
+        <p class="muted">파기된 상담은 상태 변경과 처리 이력을 표시하지 않습니다.</p>
       ) : (
-        <form method="post" action={`/admin/consultations/${encodeURIComponent(props.id)}/status`}>
-          <input type="hidden" name="csrf" value={props.statusForm.csrfToken} />
-          <input type="hidden" name="rowVersion" value={props.statusForm.rowVersion} />
-          <label for="consultation-status">다음 상태</label>
-          <select id="consultation-status" name="status" required>
-            <option value="" selected disabled>변경할 상태를 선택하세요</option>
-            {props.statusForm.nextStatuses.map((status) => (
-              <option value={status}>{consultationStatusLabel(status)}</option>
-            ))}
-          </select>
-          {props.statusForm.terminalStatuses.length === 0 ? <></> : (
-            <label>
-              <input type="checkbox" name="confirmTerminal" value="yes" />{" "}
-              종결·스팸으로 바꾸면 되돌릴 수 없음을 확인합니다.
-            </label>
+        <>
+          {props.statusForm === undefined ? (
+            <p class="muted">이 상담은 더 이상 상태를 변경할 수 없는 최종 단계입니다.</p>
+          ) : (
+            <form method="post" action={`/admin/consultations/${encodeURIComponent(props.id)}/status`}>
+              <input type="hidden" name="csrf" value={props.statusForm.csrfToken} />
+              <input type="hidden" name="rowVersion" value={props.statusForm.rowVersion} />
+              <label for="consultation-status">다음 상태</label>
+              <select id="consultation-status" name="status" required>
+                <option value="" selected disabled>변경할 상태를 선택하세요</option>
+                {props.statusForm.nextStatuses.map((status) => (
+                  <option value={status}>{consultationStatusLabel(status)}</option>
+                ))}
+              </select>
+              {props.statusForm.terminalStatuses.length === 0 ? <></> : (
+                <label>
+                  <input type="checkbox" name="confirmTerminal" value="yes" />{" "}
+                  종결·스팸으로 바꾸면 되돌릴 수 없음을 확인합니다.
+                </label>
+              )}
+              <label>
+                <input type="checkbox" name="email" value="1" /> 접수 알림 메일 받기(운영자)
+                <ChannelNote enabled={props.emailChannelEnabled} />
+              </label>
+              <label>
+                <input type="checkbox" name="hermes" value="1" /> 담당자 Hermes 알림
+                <ChannelNote enabled={props.hermesChannelEnabled} />
+              </label>
+              <button type="submit">상태 변경</button>
+            </form>
           )}
-          <label>
-            <input type="checkbox" name="email" value="1" /> 접수 알림 메일 받기(운영자)
-            <ChannelNote enabled={props.emailChannelEnabled} />
-          </label>
-          <label>
-            <input type="checkbox" name="hermes" value="1" /> 담당자 Hermes 알림
-            <ChannelNote enabled={props.hermesChannelEnabled} />
-          </label>
-          <button type="submit">상태 변경</button>
-        </form>
-      )}
-      <h2>알림 이력</h2>
-      {props.notifications.length === 0 ? <EmptyState>이 상담에 대해 발송한 알림이 없습니다.</EmptyState> : (
-        <table>
-          <thead>
-            <tr><th>채널</th><th>상태</th><th>발송 시각</th><th>시도</th><th>오류</th></tr>
-          </thead>
-          <tbody>
-            {props.notifications.map((row) => (
-              <tr>
-                <td>{channelLabel(row.channel)}</td>
-                <td>{notificationStateLabel(row.state)}</td>
-                <td>{row.sentAt ?? "-"}</td>
-                <td>{row.attemptCount}</td>
-                <td>{row.lastErrorCode ?? "-"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <h2>상태 변경 이력</h2>
-      {props.statusHistory.length === 0 ? <EmptyState>기록된 상태 변경이 없습니다.</EmptyState> : (
-        <table>
-          <thead>
-            <tr><th>변경</th><th>시각</th></tr>
-          </thead>
-          <tbody>
-            {props.statusHistory.map((row) => (
-              <tr>
-                <td>{consultationStatusLabel(row.fromStatus)} → {consultationStatusLabel(row.toStatus)}</td>
-                <td>{row.at}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          <h2>알림 이력</h2>
+          {props.notifications.length === 0 ? <EmptyState>이 상담에 대해 발송한 알림이 없습니다.</EmptyState> : (
+            <table>
+              <thead>
+                <tr><th>채널</th><th>상태</th><th>발송 시각</th><th>시도</th><th>오류</th></tr>
+              </thead>
+              <tbody>
+                {props.notifications.map((row) => (
+                  <tr>
+                    <td>{channelLabel(row.channel)}</td>
+                    <td>{notificationStateLabel(row.state)}</td>
+                    <td>{row.sentAt ?? "-"}</td>
+                    <td>{row.attemptCount}</td>
+                    <td>{row.lastErrorCode ? notificationErrorLabel(row.lastErrorCode) : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <h2>상태 변경 이력</h2>
+          {props.statusHistory.length === 0 ? <EmptyState>기록된 상태 변경이 없습니다.</EmptyState> : (
+            <table>
+              <thead>
+                <tr><th>변경</th><th>시각</th></tr>
+              </thead>
+              <tbody>
+                {props.statusHistory.map((row) => (
+                  <tr>
+                    <td>{consultationStatusLabel(row.fromStatus)} → {consultationStatusLabel(row.toStatus)}</td>
+                    <td>{row.at}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
       )}
     </>,
   );
@@ -438,14 +488,14 @@ export function publishPreviewBodyHtml(
       {eligible.length === 0 ? <EmptyState>발행 대상 승인 글이 없습니다. 정책만 발행됩니다.</EmptyState> : (
         <ul>
           {eligible.map((row) => (
-            <li>{row.locale}{" / "}{row.title}{" / "}{row.slug}{" / "}{row.headRevisionId}</li>
+            <li>{localeLabel(row.locale)}{" / "}{row.title}{" / "}{row.slug}{" / "}{row.headRevisionId}</li>
           ))}
         </ul>
       )}
       <h2>제외 대상</h2>
       {blocked.length === 0 ? <EmptyState>제외된 글이 없습니다.</EmptyState> : (
         <ul>
-          {blocked.map((row) => <li>{row.locale}{" / "}{row.title}{" / "}{row.state}</li>)}
+          {blocked.map((row) => <li>{localeLabel(row.locale)}{" / "}{row.title}{" / "}{articleStateLabel(row.state)}</li>)}
         </ul>
       )}
       <form method="post" action="/admin/publish">
@@ -508,18 +558,18 @@ export function notificationSettingsBodyHtml(props: NotificationSettingsProps): 
         </select>
         <fieldset>
           <legend>SMTP TLS 설정</legend>
-          <label>보내는 서버(Host)</label>
-          <input name="smtpHost" value={email.host} maxlength={253} />
-          <label>포트</label>
-          <input name="smtpPort" inputmode="numeric" value={email.port} readonly />
-          <label>보내는 주소(From)</label>
-          <input name="smtpFrom" type="email" value={email.from} maxlength={254} />
-          <label>받는 주소(운영자)</label>
-          <input name="smtpTo" type="email" value={email.to} maxlength={254} />
-          <label>TLS 방식</label>
-          <select name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select>
-          <label>키체인 참조</label>
-          <input name="smtpSecretRef" value={email.secretRef} placeholder="keychain:wisdom-smtp" maxlength={137} />
+          <label for="smtp-host">보내는 서버(Host)</label>
+          <input id="smtp-host" name="smtpHost" value={email.host} maxlength={253} />
+          <label for="smtp-port">포트</label>
+          <input id="smtp-port" name="smtpPort" inputmode="numeric" value={email.port} readonly />
+          <label for="smtp-from">보내는 주소(From)</label>
+          <input id="smtp-from" name="smtpFrom" type="email" value={email.from} maxlength={254} />
+          <label for="smtp-to">받는 주소(운영자)</label>
+          <input id="smtp-to" name="smtpTo" type="email" value={email.to} maxlength={254} />
+          <label for="smtp-tls">TLS 방식</label>
+          <select id="smtp-tls" name="smtpTlsMode"><option value="implicit-tls">Implicit TLS</option></select>
+          <label for="smtp-secret">키체인 참조</label>
+          <input id="smtp-secret" name="smtpSecretRef" value={email.secretRef} placeholder="keychain:wisdom-smtp" maxlength={137} />
           <small class="muted">비밀번호를 직접 입력하지 않습니다. macOS 키체인에 저장한 항목 이름(예: keychain:wisdom-smtp)만 참조합니다.</small>
         </fieldset>
         <label><input type="checkbox" name="fullInquiryApproved" value="yes" /> 전체 문의 내용 발송 승인</label>
@@ -579,7 +629,7 @@ export interface ArticleDetailProps {
 
 const ArticleHeadSection: FC<{ articleId: string; csrf: string; head: ArticleHeadView }> = ({ articleId, csrf, head }) => (
   <section>
-    <h3>{head.locale}{" / "}{articleStateLabel(head.state)}</h3>
+    <h3>{localeLabel(head.locale)}{" / "}{articleStateLabel(head.state)}</h3>
     <p>{head.title}</p>
     <p>{head.summary}</p>
     <h4>본문 (Markdown)</h4>
@@ -590,8 +640,8 @@ const ArticleHeadSection: FC<{ articleId: string; csrf: string; head: ArticleHea
       <form method="post" action={`/admin/articles/${encodeURIComponent(articleId)}/locales/${encodeURIComponent(head.locale)}/slug`}>
         <input type="hidden" name="csrf" value={csrf} />
         <input type="hidden" name="rowVersion" value={head.rowVersion} />
-        <label>공개 주소(slug)</label>
-        <input name="slug" value={head.slug} maxlength={96} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="소문자·숫자·하이픈만 사용하세요 (예: visa-guide)" required />
+        <label for={`slug-${head.locale}`}>공개 주소(slug)</label>
+        <input id={`slug-${head.locale}`} name="slug" value={head.slug} maxlength={96} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="소문자·숫자·하이픈만 사용하세요 (예: visa-guide)" required />
         <button type="submit">주소 저장</button>
       </form>
     )}
@@ -611,14 +661,14 @@ export function articleDetailBodyHtml(props: ArticleDetailProps): string {
     <>
       <h1>{props.heading}</h1>
       {props.banner ? raw(props.banner) : null}
-      <p>원문 언어: {props.sourceLocale}</p>
+      <p>원문 언어: {localeLabel(props.sourceLocale)}</p>
       {props.translate === undefined ? null : (
         <form method="post" action={`/admin/articles/${encodeURIComponent(props.articleId)}/translations`}>
           <input type="hidden" name="csrf" value={props.csrf} />
           <input type="hidden" name="rowVersion" value={props.translate.rowVersion} />
           <label for="translate-target">번역 언어</label>
           <select id="translate-target" name="targetLocale">
-            {props.translate.targetLocales.map((locale) => <option value={locale}>{locale}</option>)}
+            {props.translate.targetLocales.map((locale) => <option value={locale}>{localeLabel(locale)}</option>)}
           </select>
           <button type="submit">번역 요청</button>
         </form>
@@ -629,7 +679,7 @@ export function articleDetailBodyHtml(props: ArticleDetailProps): string {
       <ul>
         {props.revisions.map((rev) => (
           <li>
-            {rev.locale}{" #"}{rev.revisionNo}{" "}{rev.title}{" ("}{rev.createdByType}{") "}
+            {localeLabel(rev.locale)}{" #"}{rev.revisionNo}{" "}{rev.title}{" ("}{createdByTypeLabel(rev.createdByType)}{") "}
             <span class="muted">{rev.createdAt}</span>
             {rev.diff === undefined ? null : <>{" "}<a href={rev.diff.href}>{rev.diff.label}</a></>}
           </li>
@@ -656,7 +706,7 @@ export function releasesBodyHtml(rows: readonly ReleaseRow[], csrf: string, bann
         <ul>
           {rows.map((row) => (
             <li>
-              {row.version}{" / "}{row.state}{" "}
+              {row.version}{" / "}{releaseStateLabel(row.state)}{" "}
               <span class="muted">{row.createdAt}</span>{" "}
               <code>{row.manifestHex}</code>
               {row.retired ? (

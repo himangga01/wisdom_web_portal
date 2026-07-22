@@ -12,7 +12,7 @@ import {
   totpCode,
 } from "../index.js";
 import { activateConsentBundle, seedConsentDocuments } from "../consent/service.js";
-import { createStaticKeyProvider, encryptPii } from "../crypto/index.js";
+import { blindIndex, createStaticKeyProvider, encryptPii } from "../crypto/index.js";
 
 const PUBLIC_ORIGIN = "https://www.example.test";
 const ADMIN_ORIGIN = "https://admin.example.test";
@@ -239,7 +239,7 @@ describe("administrator article review and explicit translation routes", () => {
     expect(stalePreviewHtml.split("<h2>제외 대상</h2>")[0]).not.toContain(
       "Stale English translation",
     );
-    expect(stalePreviewHtml).toContain("Stale English translation / approved");
+    expect(stalePreviewHtml).toContain("Stale English translation / 승인");
     expect(stalePreviewHtml).toContain("정책만 발행");
     expect(stalePreviewHtml).not.toContain('<button type="submit" disabled');
     const releases = await current.app.request(`${ADMIN_ORIGIN}/admin/releases`, {
@@ -1091,5 +1091,268 @@ describe("administrator content security policy self-consistency", () => {
     // an upstream (Caddy) header replacing it.
     expect(csp).toContain(`style-src 'self' ${hash}`);
     expect(csp).not.toContain("'unsafe-inline'");
+  });
+});
+
+const INSERT_CONSULTATION = `
+  INSERT INTO consultations (
+    id, receipt_id, status, locale, category, preferred_contact,
+    pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+    blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+    retention_expires_at_ms, row_version
+  ) VALUES (?, ?, ?, 'ko', 'procurement', 'email', ?, 'pii-v1', ?, ?, 'pii-v1', ?, ?, ?, 10000000, 1)
+`;
+
+describe("administrator consultation list, search, and detail", () => {
+  it("filters the consultation list by status", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const env = encryptPii(keyProvider, "consultation-closed", {
+      name: "n", phone: "010-0000-0000", message: "a stored consultation message long enough",
+    });
+    current.database.db.sqlite.prepare(INSERT_CONSULTATION).run(
+      "consultation-closed", "receipt-closed", "closed", env, Buffer.alloc(32, 7), null, 0, 200, 200,
+    );
+
+    const received = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations?status=received`, { headers: { cookie: session.cookie } });
+    const receivedHtml = await received.text();
+    expect(received.status).toBe(200);
+    expect(receivedHtml).toContain("receipt-1");
+    expect(receivedHtml).not.toContain("receipt-closed");
+
+    const closed = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations?status=closed`, { headers: { cookie: session.cookie } });
+    const closedHtml = await closed.text();
+    expect(closedHtml).toContain("receipt-closed");
+    expect(closedHtml).not.toContain("receipt-1");
+  });
+
+  it("returns a format hint, not a 503, when a contact search value cannot be normalized", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    // A partial number or a name is a very common operator input; normalizePhone
+    // rejects both. The response must stay a friendly 200, not a storage 503.
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations/search`, {
+      method: "POST",
+      headers: { origin: ADMIN_ORIGIN, cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ searchKind: "phone", q: "홍길동", csrf: session.csrf }),
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("검색어 형식을 확인하세요");
+    expect(html).not.toContain("STORAGE_UNAVAILABLE");
+    expect(html).toContain("« 전체 목록 보기");
+  });
+
+  it("finds a consultation by exact email via the blind index and reports no match otherwise", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const env = encryptPii(keyProvider, "consultation-match", {
+      name: "n", phone: "010-9999-8888", email: "match@example.test",
+      message: "a stored consultation message long enough",
+    });
+    current.database.db.sqlite.prepare(INSERT_CONSULTATION).run(
+      "consultation-match", "receipt-match", "received", env,
+      blindIndex(keyProvider, "phone", "010-9999-8888"),
+      blindIndex(keyProvider, "email", "match@example.test"), 0, 300, 300,
+    );
+
+    const hit = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations/search`, {
+      method: "POST",
+      headers: { origin: ADMIN_ORIGIN, cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ searchKind: "email", q: "MATCH@Example.test", csrf: session.csrf }),
+    });
+    expect(hit.status).toBe(200);
+    const hitHtml = await hit.text();
+    expect(hitHtml).toContain("receipt-match");
+    expect(hitHtml).not.toContain("receipt-1");
+
+    const miss = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations/search`, {
+      method: "POST",
+      headers: { origin: ADMIN_ORIGIN, cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ searchKind: "email", q: "nobody@example.test", csrf: session.csrf }),
+    });
+    expect(await miss.text()).toContain("일치하는 상담이 없습니다");
+  });
+
+  it("surfaces setup-caused cancellations on the failures screen and hides lifecycle cancellations", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const insert = current.database.db.sqlite.prepare(`
+      INSERT INTO notification_outbox (
+        id, consultation_id, channel, event_type, payload_json, state,
+        attempt_count, last_error_code, available_at_ms, created_at_ms, updated_at_ms
+      ) VALUES (?, 'consultation-1', ?, ?, '{}', ?, 1, ?, 100, 100, ?)
+    `);
+    insert.run("outbox-disabled", "email", "consultation.received", "cancelled", "CHANNEL_DISABLED", 500);
+    insert.run("outbox-purged", "hermes-telegram", "consultation.received", "cancelled", "RETENTION_PURGED", 400);
+    insert.run("outbox-failed", "email", "marketing.confirmation", "failed", "PROVIDER_ERROR", 600);
+
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/failures`, { headers: { cookie: session.cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("채널 꺼짐");            // CHANNEL_DISABLED, localized and exposed
+    expect(html).toContain("채널 설정 확인");        // non-requeueable note links to settings
+    expect(html).toContain("발송 제공자 오류");       // a genuinely failed delivery
+    // The screen renders the localized label, never the raw code, so the real
+    // proof that the lifecycle cancellation is filtered out is its label's absence.
+    expect(html).not.toContain("보유기간 만료 파기");
+  });
+
+  it("derives the marketing consent state shown on the detail", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const accepted = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(await accepted.text()).toContain("<dt>마케팅 동의</dt><dd>동의</dd>");
+
+    current.database.db.sqlite.prepare(
+      "UPDATE consultations SET marketing_withdrawn_at_ms = 500 WHERE id = 'consultation-1'").run();
+    const withdrawn = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(await withdrawn.text()).toContain("<dt>마케팅 동의</dt><dd>철회됨 (");
+  });
+
+  it("renders populated notification and status-change history on the detail", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    current.database.db.sqlite.prepare(`
+      INSERT INTO notification_outbox (
+        id, consultation_id, channel, event_type, payload_json, state,
+        attempt_count, sent_at_ms, available_at_ms, created_at_ms, updated_at_ms
+      ) VALUES ('outbox-sent', 'consultation-1', 'email', 'consultation.received', '{}', 'sent', 1, 450, 100, 100, 450)
+    `).run();
+    current.database.db.sqlite.prepare(`
+      INSERT INTO audit_events (id, actor_type, action, target_type, target_id, request_id, metadata_json, created_at_ms)
+      VALUES ('audit-status-1', 'admin', 'consultation.status.changed', 'consultation', 'consultation-1', 'req-1', ?, 500)
+    `).run(JSON.stringify({ fromStatus: "received", toStatus: "acknowledged", rowVersion: 2 }));
+
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    const html = await response.text();
+    expect(html).toContain("<td>이메일</td>");     // channel label in the history row
+    expect(html).toContain("<td>발송됨</td>");      // notification-state label
+    expect(html).toContain("접수 → 확인");           // localized from → to transition
+  });
+
+  it("warns on the detail only when a delivery channel is disabled", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const setChannel = current.database.db.sqlite.prepare(`
+      INSERT INTO notification_settings (channel, enabled, updated_at_ms) VALUES (?, ?, 0)
+      ON CONFLICT(channel) DO UPDATE SET enabled = excluded.enabled
+    `);
+    setChannel.run("email", 1);
+    setChannel.run("hermes-telegram", 1);
+    const enabled = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(await enabled.text()).not.toContain("현재 채널이 꺼져 있어");
+
+    setChannel.run("email", 0);
+    const disabled = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(await disabled.text()).toContain("현재 채널이 꺼져 있어 발송되지 않습니다");
+  });
+
+  it("hides preference and retention fields once a consultation is purged", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    current.database.db.sqlite.prepare(`
+      UPDATE consultations SET pii_envelope = NULL, pii_key_id = NULL,
+        phone_blind_index = NULL, email_blind_index = NULL, blind_index_key_id = NULL,
+        purged_at_ms = 900 WHERE id = 'consultation-1'
+    `).run();
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("개인정보는 보유기간이 지나 파기되었습니다");
+    expect(html).not.toContain("희망 연락 방법");
+    expect(html).not.toContain("마케팅 동의");
+    expect(html).not.toContain("파기 예정일");
+    // The status form and processing-history tables are hidden on a purged record.
+    expect(html).toContain("파기된 상담은 상태 변경과 처리 이력을 표시하지 않습니다");
+    expect(html).not.toContain("<h2>알림 이력</h2>");
+    expect(html).not.toContain("<h2>상태 변경 이력</h2>");
+    expect(html).not.toContain('name="status"');
+  });
+
+  it("still surfaces a genuine storage failure as a 503 during search, not a friendly hint", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    // Break only the search path: auth reads admin_sessions (intact), so a storage
+    // error inside findConsultationIdsByContact must reach onError (503) rather than
+    // being masked as an invalid-input hint. A valid phone is used so normalization
+    // succeeds and the failure is genuinely at the storage layer.
+    current.database.db.sqlite.exec("ALTER TABLE consultations RENAME TO consultations_removed");
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations/search`, {
+      method: "POST",
+      headers: { origin: ADMIN_ORIGIN, cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ searchKind: "phone", q: "010-1234-5678", csrf: session.csrf }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("STORAGE_UNAVAILABLE");
+  });
+
+  it("caps contact-search results at 50 and says so", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const sharedPhoneIndex = blindIndex(keyProvider, "phone", "010-5555-1234");
+    const insert = current.database.db.sqlite.prepare(INSERT_CONSULTATION);
+    for (let i = 0; i < 51; i++) {
+      const env = encryptPii(keyProvider, `bulk-${i}`, {
+        name: "n", phone: "010-5555-1234", message: "a stored consultation message long enough",
+      });
+      insert.run(`bulk-${i}`, `receipt-bulk-${i}`, "received", env, sharedPhoneIndex, null, 0, 1000 + i, 1000 + i);
+    }
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/consultations/search`, {
+      method: "POST",
+      headers: { origin: ADMIN_ORIGIN, cookie: session.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ searchKind: "phone", q: "010-5555-1234", csrf: session.csrf }),
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("일치 항목이 많아 최근 50건만 표시합니다");
+    expect((html.match(/receipt-bulk-/g) ?? []).length).toBe(50);
+  });
+
+  it("keeps the status filter on the pagination links", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const insert = current.database.db.sqlite.prepare(INSERT_CONSULTATION);
+    for (let i = 0; i < 21; i++) {
+      const env = encryptPii(keyProvider, `closed-${i}`, {
+        name: "n", phone: "010-0000-0000", message: "a stored consultation message long enough",
+      });
+      insert.run(`closed-${i}`, `receipt-c-${i}`, "closed", env, Buffer.alloc(32, 20 + i), null, 0, 2000 + i, 2000 + i);
+    }
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations?status=closed`, { headers: { cookie: session.cookie } });
+    const html = await response.text();
+    expect(html).toContain('href="/admin/consultations?status=closed&amp;page=2"');
+  });
+
+  it("shows 미동의 for a consultation that declined marketing", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    current.database.db.sqlite.prepare(
+      "UPDATE consultations SET marketing_accepted = 0 WHERE id = 'consultation-1'").run();
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(await response.text()).toContain("<dt>마케팅 동의</dt><dd>미동의</dd>");
+  });
+
+  it("tolerates a corrupt status-history audit row without a 500", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    current.database.db.sqlite.prepare(`
+      INSERT INTO audit_events (id, actor_type, action, target_type, target_id, request_id, metadata_json, created_at_ms)
+      VALUES ('audit-broken', 'admin', 'consultation.status.changed', 'consultation', 'consultation-1', 'req-x', '{', 700)
+    `).run();
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("기록된 상태 변경이 없습니다");
   });
 });

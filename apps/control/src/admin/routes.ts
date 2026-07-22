@@ -389,6 +389,17 @@ async function protectedPost(
   return { session: resolved, form };
 }
 
+function mapConsultationRow(row: Record<string, string | number>): ConsultationListRow {
+  return {
+    id: String(row.id),
+    receiptId: String(row.receipt_id),
+    status: String(row.status),
+    locale: String(row.locale),
+    category: String(row.category),
+    receivedAt: formatSeoulTime(Number(row.received_at_ms)),
+  };
+}
+
 function consultationDetail(
   dependencies: Task4RouteDependencies,
   id: string,
@@ -397,7 +408,7 @@ function consultationDetail(
   const row = dependencies.db.sqlite.prepare(`
     SELECT id, receipt_id, status, locale, category, preferred_contact,
            marketing_accepted, marketing_withdrawn_at_ms, retention_expires_at_ms,
-           pii_envelope, received_at_ms, row_version
+           pii_envelope, purged_at_ms, received_at_ms, row_version
     FROM consultations WHERE id = ?
   `).get(id) as {
     id: string;
@@ -410,10 +421,12 @@ function consultationDetail(
     marketing_withdrawn_at_ms: number | null;
     retention_expires_at_ms: number;
     pii_envelope: string | null;
+    purged_at_ms: number | null;
     received_at_ms: number;
     row_version: number;
   } | undefined;
   if (!row) return undefined;
+  const purged = row.purged_at_ms !== null;
   const pii = row.pii_envelope === null
     ? undefined
     : decryptPii(dependencies.keyProvider, row.id, row.pii_envelope);
@@ -443,8 +456,13 @@ function consultationDetail(
     SELECT metadata_json, created_at_ms FROM audit_events
     WHERE target_type = 'consultation' AND target_id = ? AND action = 'consultation.status.changed'
     ORDER BY created_at_ms
-  `).all(row.id) as Array<{ metadata_json: string; created_at_ms: number }>).flatMap((entry) => {
-    const meta = JSON.parse(entry.metadata_json) as { fromStatus?: string; toStatus?: string };
+  `).all(row.id) as Array<{ metadata_json: string | null; created_at_ms: number }>).flatMap((entry) => {
+    let meta: { fromStatus?: unknown; toStatus?: unknown };
+    try {
+      meta = (JSON.parse(entry.metadata_json ?? "null") ?? {}) as typeof meta;
+    } catch {
+      return [];
+    }
     if (typeof meta.fromStatus !== "string" || typeof meta.toStatus !== "string") return [];
     return [{ fromStatus: meta.fromStatus, toStatus: meta.toStatus, at: formatSeoulTime(entry.created_at_ms) }];
   });
@@ -457,6 +475,7 @@ function consultationDetail(
     preferredContact: preferredContactLabel(row.preferred_contact),
     marketingState,
     retentionExpiresAt: formatSeoulTime(row.retention_expires_at_ms),
+    purged,
     emailChannelEnabled: channelEnabled("email"),
     hermesChannelEnabled: channelEnabled("hermes-telegram"),
     receivedAt: formatSeoulTime(row.received_at_ms),
@@ -926,55 +945,72 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     const statusFilter = consultationStatusSchema.safeParse(context.req.query("status")).success
       ? (context.req.query("status") as string)
       : "";
-    const searchKindRaw = context.req.query("searchKind");
-    const searchKind = searchKindRaw === "phone" || searchKindRaw === "email" ? searchKindRaw : "";
-    const searchValue = (context.req.query("q") ?? "").slice(0, 254);
 
-    const mapRow = (row: Record<string, string | number>): ConsultationListRow => ({
-      id: String(row.id),
-      receiptId: String(row.receipt_id),
-      status: String(row.status),
-      locale: String(row.locale),
-      category: String(row.category),
-      receivedAt: formatSeoulTime(Number(row.received_at_ms)),
-    });
+    // Fetch one extra row to detect whether a next page exists without a count query.
+    const fetched = (statusFilter
+      ? dependencies.db.sqlite.prepare(`
+          SELECT id, receipt_id, status, locale, category, received_at_ms
+          FROM consultations WHERE status = ? ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
+        `).all(statusFilter, (pageNumber - 1) * 20)
+      : dependencies.db.sqlite.prepare(`
+          SELECT id, receipt_id, status, locale, category, received_at_ms
+          FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
+        `).all((pageNumber - 1) * 20)) as Array<Record<string, string | number>>;
 
-    let rows: ConsultationListRow[];
-    let hasNext = false;
-    if (searchKind !== "" && searchValue !== "") {
-      // Exact-match contact lookup via the blind index; no pagination.
-      const ids = findConsultationIdsByContact(dependencies.db, dependencies.keyProvider, searchKind, searchValue).slice(0, 50);
-      rows = ids.flatMap((id) => {
+    return context.html(page("상담 목록", consultationsBodyHtml({
+      rows: fetched.slice(0, 20).map(mapConsultationRow),
+      pageNumber,
+      hasNext: fetched.length > 20,
+      statusFilter,
+      statuses: CONSULTATION_STATUSES,
+      csrfToken: auth.csrfToken,
+      banner: savedBanner(context),
+    }), "ko", auth.csrfToken));
+  });
+
+  // Contact search is POST so the raw phone/email never lands in a GET URL,
+  // browser history, or an upstream access log. A malformed value fails
+  // normalization inside findConsultationIdsByContact (a ZodError); that is
+  // reported as a format hint rather than surfacing as a 503.
+  app.post("/admin/consultations/search", async (context) => {
+    const auth = await protectedPost(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const kind = auth.form.searchKind === "email" ? "email" : "phone";
+    const value = String(auth.form.q ?? "").slice(0, 254).trim();
+
+    let rows: ConsultationListRow[] = [];
+    let capped = false;
+    let invalid = false;
+    if (value !== "") {
+      let ids: string[] = [];
+      try {
+        ids = findConsultationIdsByContact(dependencies.db, dependencies.keyProvider, kind, value);
+      } catch (error) {
+        if (error instanceof Error && error.name === "ZodError") {
+          invalid = true;
+        } else {
+          throw error;
+        }
+      }
+      capped = ids.length > 50;
+      rows = ids.slice(0, 50).flatMap((id) => {
         const row = dependencies.db.sqlite.prepare(`
           SELECT id, receipt_id, status, locale, category, received_at_ms FROM consultations WHERE id = ?
         `).get(id) as Record<string, string | number> | undefined;
-        return row ? [mapRow(row)] : [];
+        return row ? [mapConsultationRow(row)] : [];
       });
-    } else {
-      // Fetch one extra row to detect whether a next page exists without a count query.
-      const fetched = (statusFilter
-        ? dependencies.db.sqlite.prepare(`
-            SELECT id, receipt_id, status, locale, category, received_at_ms
-            FROM consultations WHERE status = ? ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
-          `).all(statusFilter, (pageNumber - 1) * 20)
-        : dependencies.db.sqlite.prepare(`
-            SELECT id, receipt_id, status, locale, category, received_at_ms
-            FROM consultations ORDER BY received_at_ms DESC, id LIMIT 21 OFFSET ?
-          `).all((pageNumber - 1) * 20)) as Array<Record<string, string | number>>;
-      hasNext = fetched.length > 20;
-      rows = fetched.slice(0, 20).map(mapRow);
     }
 
     return context.html(page("상담 목록", consultationsBodyHtml({
       rows,
-      pageNumber,
-      hasNext,
-      statusFilter,
-      searchKind,
-      searchValue,
+      pageNumber: 1,
+      hasNext: false,
+      statusFilter: "",
       statuses: CONSULTATION_STATUSES,
-      banner: savedBanner(context),
-    }), "ko", auth.csrfToken));
+      csrfToken: auth.session.csrfToken,
+      banner: "",
+      search: { kind, value, capped, invalid },
+    }), "ko", auth.session.csrfToken));
   });
 
   app.get("/admin/consultations/:id", (context) => {

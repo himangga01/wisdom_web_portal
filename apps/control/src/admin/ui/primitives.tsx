@@ -35,7 +35,7 @@ export function savedBannerHtml(flag: SavedBannerFlag): string {
   const banner = flag === "sent"
     ? (
       <Banner tone="ok">
-        테스트 알림을 대기열에 넣었습니다. 발송 결과는 <a href="/admin/failures">발송 실패</a> 화면에서 확인하세요.
+        테스트 알림을 대기열에 넣었습니다. 발송에 실패했거나 채널 설정 문제로 취소된 경우에만 <a href="/admin/failures">발송 실패</a> 화면에 표시됩니다.
       </Banner>
     )
     : (

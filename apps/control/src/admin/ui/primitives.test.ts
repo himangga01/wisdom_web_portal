@@ -12,7 +12,10 @@ describe("admin UI components", () => {
 
   it("renders success banners, including the test-send link", () => {
     expect(savedBannerHtml("saved")).toBe('<p class="banner banner-ok">저장되었습니다.</p>');
-    expect(savedBannerHtml("sent")).toContain('<a href="/admin/failures">발송 실패</a>');
+    const sent = savedBannerHtml("sent");
+    expect(sent).toContain('<a href="/admin/failures">발송 실패</a>');
+    // The wording must not imply successful sends appear on the failures screen.
+    expect(sent).toContain("발송에 실패했거나 채널 설정 문제로 취소된 경우에만");
   });
 
   it("renders an error body with heading, message, and back link", () => {
@@ -38,6 +41,7 @@ describe("admin UI components", () => {
       preferredContact: "전화",
       marketingState: "미동의",
       retentionExpiresAt: "2027-07-16 09:00 (KST)",
+      purged: false,
       emailChannelEnabled: false,
       hermesChannelEnabled: true,
       notifications: [],
