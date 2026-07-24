@@ -599,6 +599,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       ...(dependencies.articlePublication
         ? { articlePublication: dependencies.articlePublication }
         : {}),
+      ...(dependencies.analyticsDb ? { analyticsDb: dependencies.analyticsDb } : {}),
     });
   }
 

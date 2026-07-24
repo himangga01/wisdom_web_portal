@@ -13,6 +13,19 @@ import { Hono, type Context } from "hono";
 
 import { resolveClientIp } from "../abuse/rate-limit.js";
 import {
+  analyticsTotals,
+  autoGranularity,
+  bucketSeries,
+  daySpan,
+  localeSplit,
+  shiftDay,
+  siteSeries,
+  topPages,
+  topReferrers,
+  type Granularity,
+} from "../analytics/queries.js";
+import { seoulDay, type AnalyticsDatabase } from "../analytics/store.js";
+import {
   beginAdminLogin,
   completeAdminMfa,
   type AdminAuthContext,
@@ -64,6 +77,7 @@ import {
   consentsBodyHtml,
   consultationDetailBodyHtml,
   consultationsBodyHtml,
+  analyticsBodyHtml,
   dashboardBodyHtml,
   failuresBodyHtml,
   healthBodyHtml,
@@ -87,6 +101,7 @@ export interface Task4RouteDependencies extends AdminAuthContext {
   now: () => number;
   peerAddress: (context: Context<AdminEnvironment>) => string;
   articlePublication?: AdminArticlePublicationActions;
+  analyticsDb?: AnalyticsDatabase;
 }
 
 export interface AdminArticlePublicationActionInput {
@@ -568,6 +583,59 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       SELECT status, count(*) count FROM consultations GROUP BY status ORDER BY status
     `).all() as Array<{ status: string; count: number }>;
     return context.html(page("대시보드", dashboardBodyHtml(counts, savedBanner(context)), "ko", auth.csrfToken));
+  });
+
+  app.get("/admin/analytics", (context) => {
+    const auth = protectedSession(context, dependencies);
+    if (auth instanceof Response) return auth;
+    const analyticsDb = dependencies.analyticsDb;
+    if (!analyticsDb) {
+      return context.html(page(
+        "방문 통계",
+        "<h1>방문 통계</h1><p>통계 저장소가 구성되지 않았습니다.</p>",
+        "ko",
+        auth.csrfToken,
+      ), 503);
+    }
+    const today = seoulDay(dependencies.now());
+    const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
+    const requestedFrom = context.req.query("from");
+    const requestedTo = context.req.query("to");
+    const rangePreset = context.req.query("range");
+    let activePreset: "7d" | "30d" | "90d" | "custom";
+    let from: string;
+    let to: string;
+    if (requestedFrom && requestedTo
+      && dayPattern.test(requestedFrom) && dayPattern.test(requestedTo)
+      && requestedFrom <= requestedTo) {
+      activePreset = "custom";
+      to = requestedTo <= today ? requestedTo : today;
+      // Clamp unbounded custom ranges so one query cannot scan years of rows.
+      from = daySpan(requestedFrom, to) > 400 ? shiftDay(to, -399) : requestedFrom;
+    } else {
+      activePreset = rangePreset === "90d" ? "90d" : rangePreset === "30d" ? "30d" : "7d";
+      const days = activePreset === "90d" ? 90 : activePreset === "30d" ? 30 : 7;
+      to = today;
+      from = shiftDay(today, -(days - 1));
+    }
+    const requestedGranularity = context.req.query("g");
+    const granularity: Granularity =
+      requestedGranularity === "day" || requestedGranularity === "week" || requestedGranularity === "month"
+        ? requestedGranularity
+        : autoGranularity(daySpan(from, to));
+    const metric = context.req.query("metric") === "visitors" ? "visitors" as const : "views" as const;
+    return context.html(page("방문 통계", analyticsBodyHtml({
+      from,
+      to,
+      granularity,
+      metric,
+      activePreset,
+      totals: analyticsTotals(analyticsDb, from, to),
+      buckets: bucketSeries(siteSeries(analyticsDb, from, to), granularity),
+      topPages: topPages(analyticsDb, from, to),
+      referrers: topReferrers(analyticsDb, from, to),
+      locales: localeSplit(analyticsDb, from, to),
+    }), "ko", auth.csrfToken));
   });
 
   app.get("/admin/articles", (context) => {

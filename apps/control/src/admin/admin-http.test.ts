@@ -12,6 +12,11 @@ import {
   totpCode,
 } from "../index.js";
 import { activateConsentBundle, seedConsentDocuments } from "../consent/service.js";
+import {
+  closeAnalyticsDatabase,
+  openAnalyticsDatabase,
+  recordPageview,
+} from "../analytics/store.js";
 import { blindIndex, createStaticKeyProvider, encryptPii } from "../crypto/index.js";
 
 const PUBLIC_ORIGIN = "https://www.example.test";
@@ -308,6 +313,7 @@ describe("administrator publication failure recovery", () => {
 interface Fixture {
   app: ReturnType<typeof createControlApp>;
   database: TestDatabase;
+  analyticsDb: ReturnType<typeof openAnalyticsDatabase>;
   logs: RedactedLogEvent[];
   now: number;
   dummyPasswordHash: string;
@@ -372,8 +378,11 @@ async function fixture(
   `).run(marketingDocument.id, marketingDocument.version, marketingDocument.content_sha256);
   const logs: RedactedLogEvent[] = [];
   const state = { now: 30_000 };
+  const analyticsDb = openAnalyticsDatabase(":memory:");
+  cleanups.push(() => closeAnalyticsDatabase(analyticsDb));
   const dependencies = {
     db: database.db,
+    analyticsDb,
     keyProvider,
     allowedOrigins: [PUBLIC_ORIGIN],
     enforceOrigin: true,
@@ -390,6 +399,7 @@ async function fixture(
   return {
     app: createControlApp(dependencies),
     database,
+    analyticsDb,
     logs,
     get now() { return state.now; },
     set now(value: number) { state.now = value; },
@@ -1354,5 +1364,85 @@ describe("administrator consultation list, search, and detail", () => {
       `${ADMIN_ORIGIN}/admin/consultations/consultation-1`, { headers: { cookie: session.cookie } });
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("기록된 상태 변경이 없습니다");
+  });
+});
+
+describe("administrator analytics dashboard", () => {
+  // 2026-07-24 12:00 KST; recorded days land on 2026-07-24.
+  const ANALYTICS_NOW = Date.UTC(2026, 6, 24, 3, 0, 0);
+
+  function seedTraffic(current: Fixture): void {
+    for (const [address, agent, path, locale, referrer] of [
+      ["203.0.113.10", "Mozilla/5.0 A", "/insights", "ko", ""],
+      ["203.0.113.10", "Mozilla/5.0 A", "/consultation", "ko", ""],
+      ["198.51.100.7", "Mozilla/5.0 B", "/insights", "en", "https://www.google.com"],
+    ] as const) {
+      recordPageview(current.analyticsDb, {
+        nowMs: ANALYTICS_NOW,
+        address,
+        userAgent: agent,
+        path,
+        locale,
+        referrerOrigin: referrer,
+      });
+    }
+  }
+
+  it("requires a session like every other admin screen", async () => {
+    const current = await fixture();
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/analytics`);
+    expect(response.status).toBe(303);
+  });
+
+  it("renders totals, the trend chart, and the breakdown tables", async () => {
+    const current = await fixture();
+    current.now = ANALYTICS_NOW;
+    const session = await login(current);
+    seedTraffic(current);
+    const response = await current.app.request(`${ADMIN_ORIGIN}/admin/analytics`, {
+      headers: { cookie: session.cookie },
+    });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("<dt>총 조회수</dt><dd>3</dd>");
+    expect(html).toContain("<dt>총 순 방문자</dt><dd>2</dd>");
+    expect(html).toContain("<svg");
+    expect(html).toContain("role=\"img\"");
+    expect(html).toContain("표로 보기");
+    // Top pages, referrers (direct label), and locale split.
+    expect(html).toContain("<td>/insights</td>");
+    expect(html).toContain("직접 방문");
+    expect(html).toContain("https://www.google.com");
+    expect(html).toContain("<td>영어</td>");
+    // The uniques-semantics footnote is always present.
+    expect(html).toContain("순 방문자는 일 단위 고유 기준");
+  });
+
+  it("honours range, granularity, and metric parameters", async () => {
+    const current = await fixture();
+    current.now = ANALYTICS_NOW;
+    const session = await login(current);
+    seedTraffic(current);
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/analytics?from=2026-05-01&to=2026-07-24&g=month&metric=visitors`,
+      { headers: { cookie: session.cookie } },
+    );
+    const html = await response.text();
+    // Month buckets carry year-qualified labels and the visitors metric is active.
+    expect(html).toContain("2026.7");
+    expect(html).toContain('<option value="visitors" selected="">순 방문자</option>');
+    expect(html).toContain("순 방문자 추이");
+  });
+
+  it("shows an empty state for a period without data", async () => {
+    const current = await fixture();
+    current.now = ANALYTICS_NOW;
+    const session = await login(current);
+    const response = await current.app.request(
+      `${ADMIN_ORIGIN}/admin/analytics?from=2026-01-01&to=2026-01-07`,
+      { headers: { cookie: session.cookie } },
+    );
+    const html = await response.text();
+    expect(html).toContain("<dt>총 조회수</dt><dd>0</dd>");
   });
 });

@@ -19,6 +19,7 @@ const AdminDocument: FC<PropsWithChildren<{ title: string; lang: string }>> = ({
 const AdminNav: FC = () => (
   <nav>
     <a href="/admin/consultations">상담</a>{" "}
+    <a href="/admin/analytics">통계</a>{" "}
     <a href="/admin/articles">글</a>{" "}
     <a href="/admin/releases">릴리스</a>{" "}
     <a href="/admin/notifications">알림</a>{" "}

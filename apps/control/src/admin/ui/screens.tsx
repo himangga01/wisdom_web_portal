@@ -13,6 +13,7 @@ import {
   notificationStateLabel,
   releaseStateLabel,
 } from "./labels.js";
+import { LineChart } from "./charts.js";
 import { EmptyState } from "./primitives.js";
 import { renderToHtml } from "./render.js";
 
@@ -722,6 +723,156 @@ export function releasesBodyHtml(rows: readonly ReleaseRow[], csrf: string, bann
             </li>
           ))}
         </ul>
+      )}
+    </Screen>,
+  );
+}
+
+export interface AnalyticsBucketView {
+  startDay: string;
+  label: string;
+  views: number;
+  visitors: number;
+}
+
+export interface AnalyticsView {
+  from: string;
+  to: string;
+  granularity: "day" | "week" | "month";
+  metric: "views" | "visitors";
+  activePreset: "7d" | "30d" | "90d" | "custom";
+  totals: { views: number; visitors: number };
+  buckets: readonly AnalyticsBucketView[];
+  topPages: readonly { path: string; locale: string; views: number }[];
+  referrers: readonly { referrerOrigin: string; views: number }[];
+  locales: readonly { locale: string; views: number }[];
+}
+
+const GRANULARITY_LABELS = { day: "일", week: "주", month: "월" } as const;
+const METRIC_LABELS = { views: "조회수", visitors: "순 방문자" } as const;
+
+const PresetLink: FC<{ preset: "7d" | "30d" | "90d"; label: string; view: AnalyticsView }> = ({ preset, label, view }) => (
+  view.activePreset === preset
+    ? <strong>{label}</strong>
+    : <a href={`/admin/analytics?range=${preset}&metric=${view.metric}`}>{label}</a>
+);
+
+export function analyticsBodyHtml(view: AnalyticsView): string {
+  const metricLabel = METRIC_LABELS[view.metric];
+  const averageViews = view.buckets.length === 0
+    ? 0
+    : Math.round(view.totals.views / Math.max(1, view.buckets.length));
+  return renderToHtml(
+    <Screen heading="방문 통계">
+      <p>
+        <PresetLink preset="7d" label="최근 7일" view={view} />{" · "}
+        <PresetLink preset="30d" label="최근 30일" view={view} />{" · "}
+        <PresetLink preset="90d" label="최근 90일" view={view} />
+      </p>
+      <form method="get" action="/admin/analytics">
+        <label for="analytics-from">시작일</label>
+        <input id="analytics-from" type="date" name="from" value={view.from} />
+        <label for="analytics-to">종료일</label>
+        <input id="analytics-to" type="date" name="to" value={view.to} />
+        <label for="analytics-granularity">단위</label>
+        <select id="analytics-granularity" name="g">
+          {(["day", "week", "month"] as const).map((granularity) => (
+            <option value={granularity} selected={granularity === view.granularity}>
+              {GRANULARITY_LABELS[granularity]}
+            </option>
+          ))}
+        </select>
+        <label for="analytics-metric">지표</label>
+        <select id="analytics-metric" name="metric">
+          {(["views", "visitors"] as const).map((metric) => (
+            <option value={metric} selected={metric === view.metric}>{METRIC_LABELS[metric]}</option>
+          ))}
+        </select>
+        <button type="submit">조회</button>
+      </form>
+      <dl>
+        <dt>총 조회수</dt><dd>{view.totals.views}</dd>
+        <dt>총 순 방문자</dt><dd>{view.totals.visitors}</dd>
+        <dt>구간 평균 조회수</dt><dd>{averageViews}</dd>
+      </dl>
+      <p class="muted">순 방문자는 일 단위 고유 기준입니다. 식별값이 매일 파기되어 주·월 순 방문자는 일별 고유수의 합으로 집계됩니다.</p>
+      {view.buckets.length === 0 ? <EmptyState>선택한 기간에 데이터가 없습니다.</EmptyState> : (
+        <>
+          <LineChart
+            ariaLabel={`${view.from}부터 ${view.to}까지 ${GRANULARITY_LABELS[view.granularity]} 단위 ${metricLabel} 추이`}
+            points={view.buckets.map((bucket) => ({
+              label: bucket.label,
+              value: view.metric === "views" ? bucket.views : bucket.visitors,
+              tooltip: `${bucket.startDay} · ${metricLabel} ${view.metric === "views" ? bucket.views : bucket.visitors}`,
+            }))}
+          />
+          <details>
+            <summary>표로 보기</summary>
+            <table>
+              <thead>
+                <tr><th>구간</th><th>조회수</th><th>순 방문자</th></tr>
+              </thead>
+              <tbody>
+                {view.buckets.map((bucket) => (
+                  <tr>
+                    <td>{bucket.startDay}</td>
+                    <td>{bucket.views}</td>
+                    <td>{bucket.visitors}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </>
+      )}
+      <h2>인기 페이지</h2>
+      {view.topPages.length === 0 ? <EmptyState>기록된 조회가 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>경로</th><th>언어</th><th>조회수</th></tr>
+          </thead>
+          <tbody>
+            {view.topPages.map((row) => (
+              <tr>
+                <td>{row.path}</td>
+                <td>{localeLabel(row.locale)}</td>
+                <td>{row.views}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h2>유입 경로</h2>
+      {view.referrers.length === 0 ? <EmptyState>기록된 유입이 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>출처</th><th>조회수</th></tr>
+          </thead>
+          <tbody>
+            {view.referrers.map((row) => (
+              <tr>
+                <td>{row.referrerOrigin === "" ? "직접 방문" : row.referrerOrigin}</td>
+                <td>{row.views}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h2>언어별 조회</h2>
+      {view.locales.length === 0 ? <EmptyState>기록된 조회가 없습니다.</EmptyState> : (
+        <table>
+          <thead>
+            <tr><th>언어</th><th>조회수</th></tr>
+          </thead>
+          <tbody>
+            {view.locales.map((row) => (
+              <tr>
+                <td>{localeLabel(row.locale)}</td>
+                <td>{row.views}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </Screen>,
   );
