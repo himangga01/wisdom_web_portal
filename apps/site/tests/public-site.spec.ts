@@ -796,7 +796,7 @@ test("submits checked marketing consent and shows localized API failure", async 
   });
 });
 
-for (const path of ["/", "/consultation"]) {
+for (const path of ["/", "/consultation", "/missing-public-route"]) {
   test(`has no serious accessibility violations on ${path}`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(path);
@@ -805,6 +805,38 @@ for (const path of ["/", "/consultation"]) {
       .toEqual([]);
   });
 }
+
+test("has no serious accessibility violations with the mobile menu open", async ({ page, browserName }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize(physicalViewportSize(browserName, 390, 844));
+  await page.goto("/");
+  await page.locator("[data-mobile-menu] > summary").click();
+  await expect(page.locator("[data-mobile-menu]")).toHaveJSProperty("open", true);
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations.filter(({ impact }) => impact === "critical" || impact === "serious"))
+    .toEqual([]);
+});
+
+// The brand name and the top-bar language links share the header grid; below
+// ~420px the language links are hidden so the office name cannot overlap them.
+// overflow-x: clip hides such an overlap from scrollWidth, so assert geometry.
+test("keeps the header brand clear of the top-bar language links on mobile", async ({ page, browserName }) => {
+  for (const width of [320, 480]) {
+    await page.setViewportSize(physicalViewportSize(browserName, width, 900));
+    for (const path of ["/", "/en"]) {
+      await page.goto(path);
+      const overlaps = await page.evaluate(() => {
+        const brand = document.querySelector(".brand");
+        const langs = document.querySelector(".language-links");
+        if (!brand || !langs) return false;
+        const l = langs.getBoundingClientRect();
+        if (l.width === 0 || l.height === 0) return false; // hidden: nothing to overlap
+        return brand.getBoundingClientRect().right > l.left;
+      });
+      expect(overlaps, `${path} @ ${width}px`).toBe(false);
+    }
+  }
+});
 
 test("returns a real localized 404 document", async ({ page }) => {
   const response = await page.goto("/missing-public-route");

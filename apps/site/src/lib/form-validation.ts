@@ -214,7 +214,9 @@ export function initializeConsultationForms(documentRef: Document = document): v
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (submitting) return;
+      // The disabled attribute is the primary gate; re-check the same state here
+      // so a stray submit (implicit or synthetic) cannot bypass it.
+      if (submitting || completedSubmission || cooldownUntilMs - Date.now() > 0) return;
       if (!form.checkValidity()) {
         form.reportValidity();
         return;
@@ -292,6 +294,13 @@ export function initializeConsultationForms(documentRef: Document = document): v
           syncSubmitAvailability();
           if (terminalStatus) {
             showStatus(terminalStatus.state, terminalStatus.message);
+            // On success the submit button is disabled, which drops keyboard
+            // focus to <body>; move focus to the status message so the user
+            // keeps their place and hears the confirmation.
+            if (terminalStatus.state === "success" && status) {
+              status.setAttribute("tabindex", "-1");
+              status.focus();
+            }
           }
         }
       })();

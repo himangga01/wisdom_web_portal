@@ -11,6 +11,7 @@ import HomePage from "./HomePage.astro";
 import InsightsIndex from "./InsightsIndex.astro";
 import { OFFICE, siteContent, type ServiceCategorySlug } from "../content/site-content.js";
 import BaseLayout from "../layouts/BaseLayout.astro";
+import { formatDisplayDate } from "../lib/format-date.js";
 import { toLocalizedPath, type PublicRoute } from "../lib/routes.js";
 import type { SearchDocument } from "../search/types.js";
 
@@ -177,7 +178,7 @@ const policyDocument = route === "/privacy"
               <h2>{policyDocument!.title}</h2>
               <dl class="consent-document-meta policy-document-meta">
                 <div><dt>{content.forms.consultation.help.consentVersion}</dt><dd>{policyDocument!.version}</dd></div>
-                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{policyDocument!.effectiveAt}</time></dd></div>
+                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{formatDisplayDate(policyDocument!.effectiveAt, locale)}</time></dd></div>
                 <div><dt>{content.forms.consultation.help.consentRetention}</dt><dd>{policyDocument!.retentionMonths} {content.forms.consultation.help.consentMonths}</dd></div>
               </dl>
               <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>
@@ -197,7 +198,7 @@ const policyDocument = route === "/privacy"
               <h2>{policyDocument!.title}</h2>
               <dl class="consent-document-meta policy-document-meta">
                 <div><dt>{content.forms.consultation.help.consentVersion}</dt><dd>{policyDocument!.version}</dd></div>
-                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{policyDocument!.effectiveAt}</time></dd></div>
+                <div><dt>{content.forms.consultation.help.consentEffectiveAt}</dt><dd><time datetime={policyDocument!.effectiveAt}>{formatDisplayDate(policyDocument!.effectiveAt, locale)}</time></dd></div>
                 <div><dt>{content.forms.consultation.help.consentRetention}</dt><dd>{policyDocument!.retentionMonths} {content.forms.consultation.help.consentMonths}</dd></div>
               </dl>
               <pre class="policy-document-body">{policyDocument!.bodyMarkdown}</pre>

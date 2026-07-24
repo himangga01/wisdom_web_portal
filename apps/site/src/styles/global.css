@@ -1653,6 +1653,13 @@ p {
 }
 
 @media (max-width: 420px) {
+  /* The top-bar language links would collapse the brand track and visually
+     overlap the office name below ~400px; language switching stays available in
+     the hamburger menu's .mobile-languages, so hide the redundant top-bar copy. */
+  .language-links {
+    display: none;
+  }
+
   .brand-en {
     display: none;
   }

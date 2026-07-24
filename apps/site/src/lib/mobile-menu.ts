@@ -33,7 +33,12 @@ export function initializeMobileMenu(documentRef: Document = document): void {
       if (!menu.open) return;
       const target = event.target;
       if (target instanceof Node && !menu.contains(target)) {
+        // If focus was inside the menu we are closing, return it to the toggle
+        // (mirrors the Escape path) so keyboard focus is not lost to <body>.
+        const focusWasInside = documentRef.activeElement instanceof Node
+          && menu.contains(documentRef.activeElement);
         menu.open = false;
+        if (focusWasInside) summary?.focus();
       }
     });
 

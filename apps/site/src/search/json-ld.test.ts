@@ -54,6 +54,8 @@ describe("visible-content-derived JSON-LD", () => {
     expect(office).toMatchObject({
       "@id": `${origin}/#professional-service`,
       url: `${origin}/en`,
+      // Derived from the single OFFICE source; guards against drift/format skew.
+      telephone: "+82-10-8415-0023",
     });
     expect(person).toMatchObject({
       "@id": `${origin}/#representative`,
