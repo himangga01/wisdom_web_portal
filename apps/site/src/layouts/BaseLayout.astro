@@ -81,6 +81,7 @@ const tokenStyle = [
     </main>
     <SiteFooter locale={locale} />
     <script>
+      import { initializeAnalyticsBeacon } from "../lib/analytics-beacon";
       import { initializeConsultationForms } from "../lib/form-validation";
       import { initializeMobileMenu } from "../lib/mobile-menu";
       import { initializeRevealMotion } from "../motion/reveal-controller";
@@ -88,6 +89,7 @@ const tokenStyle = [
       initializeRevealMotion();
       initializeMobileMenu();
       initializeConsultationForms();
+      initializeAnalyticsBeacon();
     </script>
   </body>
 </html>

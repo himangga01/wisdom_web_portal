@@ -838,6 +838,39 @@ test("keeps the header brand clear of the top-bar language links on mobile", asy
   }
 });
 
+test("fires one pageview beacon carrying only the path and referrer", async ({ page }) => {
+  await page.route("**/api/v1/pageview", (route) => route.fulfill({ status: 204 }));
+  const beacon = page.waitForRequest(
+    (request) => request.url().endsWith("/api/v1/pageview") && request.method() === "POST",
+  );
+  await page.goto("/en/services");
+  const request = await beacon;
+  expect(request.postDataJSON()).toEqual({ p: "/en/services", r: "" });
+});
+
+test("suppresses the beacon when the operator opt-out flag is set", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem("wisdom_ignore", "true"));
+  let fired = false;
+  await page.route("**/api/v1/pageview", (route) => {
+    fired = true;
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/");
+  await page.waitForLoadState("networkidle");
+  expect(fired).toBe(false);
+});
+
+test("the analytics toggle hash flips the opt-out flag for this browser", async ({ page }) => {
+  await page.route("**/api/v1/pageview", (route) => route.fulfill({ status: 204 }));
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/#analytics-toggle");
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("wisdom_ignore"))).toBe("true");
+  // A hash-only navigation to the same URL would not re-run the module, so the
+  // second toggle happens on a different document.
+  await page.goto("/about#analytics-toggle");
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("wisdom_ignore"))).toBe("false");
+});
+
 test("returns a real localized 404 document", async ({ page }) => {
   const response = await page.goto("/missing-public-route");
   expect(response?.status()).toBe(404);
