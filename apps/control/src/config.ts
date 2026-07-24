@@ -38,7 +38,8 @@ export interface ControlConfig {
 
 const TEST_DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY";
 
-const PUBLIC_CONTENT_ROUTES = [
+// Canonical public content routes; keep in sync with apps/site/src/lib/routes.ts.
+export const PUBLIC_CONTENT_ROUTES = [
   "/",
   "/about",
   "/services",

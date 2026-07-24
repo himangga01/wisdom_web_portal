@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS analytics_referrer_days (
   views INTEGER NOT NULL CHECK (views > 0),
   PRIMARY KEY (day, referrer_origin)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS analytics_rate_buckets (
+  key BLOB NOT NULL CHECK (length(key) = 32),
+  window_kind TEXT NOT NULL CHECK (window_kind IN ('ten_minute','day')),
+  window_start_ms INTEGER NOT NULL,
+  count INTEGER NOT NULL CHECK (count > 0),
+  PRIMARY KEY (key, window_kind, window_start_ms)
+) WITHOUT ROWID;
 `;
 
 // Aggregates tolerate losing the last few commits on power failure, so NORMAL
@@ -140,6 +148,41 @@ export function recordPageview(db: AnalyticsDatabase, input: PageviewInput): voi
   record.immediate();
 }
 
+const TEN_MINUTES_MS = 10 * 60 * 1_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const RATE_LIMITS = [
+  ["ten_minute", TEN_MINUTES_MS, 60],
+  ["day", DAY_MS, 1_000],
+] as const;
+
+/**
+ * Per-IP-bucket flood guard for the unauthenticated beacon. The bucket key is
+ * salted with the daily salt so no IP-derived value outlives the day.
+ */
+export function pageviewRateLimited(
+  db: AnalyticsDatabase,
+  nowMs: number,
+  address: string,
+): boolean {
+  const salt = ensureDailySalt(db, seoulDay(nowMs));
+  const key = createHmac("sha256", salt)
+    .update(`wisdom:analytics-rate:v1\0${analyticsIpBucket(address)}`, "utf8")
+    .digest();
+  const upsert = db.sqlite.prepare(`
+    INSERT INTO analytics_rate_buckets (key, window_kind, window_start_ms, count)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT (key, window_kind, window_start_ms) DO UPDATE SET count = count + 1
+    RETURNING count
+  `);
+  let limited = false;
+  for (const [window, sizeMs, limit] of RATE_LIMITS) {
+    const start = nowMs - (nowMs % sizeMs);
+    const row = upsert.get(key, window, start) as { count: number };
+    if (row.count > limit) limited = true;
+  }
+  return limited;
+}
+
 export const ANALYTICS_ROLLUP_RETENTION_MONTHS = 25;
 
 // The rollover behaviour of Date.UTC keeps this correct across year
@@ -174,6 +217,9 @@ export function pruneAnalytics(db: AnalyticsDatabase, nowMs: number): AnalyticsP
     for (const table of ["analytics_site_days", "analytics_page_days", "analytics_referrer_days"]) {
       rollupRows += db.sqlite.prepare(`DELETE FROM ${table} WHERE day < ?`).run(cutoff).changes;
     }
+    db.sqlite.prepare(
+      "DELETE FROM analytics_rate_buckets WHERE window_start_ms < ?",
+    ).run(nowMs - 2 * DAY_MS);
     return { salts, visitorDays, rollupRows };
   });
   return run.immediate();

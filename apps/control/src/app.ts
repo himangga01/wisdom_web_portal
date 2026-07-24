@@ -13,6 +13,12 @@ import { z } from "zod";
 import { bucketAddress } from "./abuse/client-ip.js";
 import { issueFormToken } from "./abuse/form-token.js";
 import { resolveClientIp } from "./abuse/rate-limit.js";
+import { classifyPageviewPath, referrerOriginFrom } from "./analytics/paths.js";
+import {
+  pageviewRateLimited,
+  recordPageview,
+  type AnalyticsDatabase,
+} from "./analytics/store.js";
 import { registerHermesArticleRoutes } from "./articles/hermes-http.js";
 import {
   publicConsentDocumentsFromBundle,
@@ -31,6 +37,11 @@ import {
 } from "./admin/routes.js";
 
 const MAX_BODY_BYTES = 32_768;
+const PAGEVIEW_MAX_BODY_BYTES = 1_024;
+// Deliberately small UA screen: catches the overwhelming majority of declared
+// crawlers and automation without a parser dependency. Upgrade to `isbot` only
+// if junk traffic is actually observed.
+const BOT_UA_PATTERN = /bot|crawler|spider|scrap|headless|preview|monitor|lighthouse|python-requests|curl|wget|pingdom/i;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{16,128}$/;
 const CONSENT_READ_WINDOW_MS = 60_000;
 const CONSENT_READ_LIMIT = 60;
@@ -73,9 +84,15 @@ export interface ControlAppDependencies {
   indexNowKey?: string;
   indexNowKeyProvider?: () => string | undefined;
   consentAuthorityResolver?: ConsentAuthorityResolver;
+  analyticsDb?: AnalyticsDatabase;
 }
 
 class PayloadTooLargeError extends Error {}
+
+const pageviewSchema = z.object({
+  p: z.string().min(1).max(512),
+  r: z.string().max(2_048).optional().default(""),
+}).strict();
 
 const submissionSchema = z.object({
   consultation: consultationRequestSchema,
@@ -174,9 +191,9 @@ function apiError(
   return context.json(body, status);
 }
 
-async function readBodyWithLimit(request: Request): Promise<string> {
+async function readBodyWithLimit(request: Request, limitBytes = MAX_BODY_BYTES): Promise<string> {
   const contentLength = request.headers.get("content-length");
-  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_BODY_BYTES) {
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > limitBytes) {
     throw new PayloadTooLargeError();
   }
   if (!request.body) return "";
@@ -187,7 +204,7 @@ async function readBodyWithLimit(request: Request): Promise<string> {
     const chunk = await reader.read();
     if (chunk.done) break;
     total += chunk.value.byteLength;
-    if (total > MAX_BODY_BYTES) {
+    if (total > limitBytes) {
       await reader.cancel();
       throw new PayloadTooLargeError();
     }
@@ -388,6 +405,59 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       marketingVersion: documents.documents.marketing.version,
     }, issuedAtMs, randomUUID());
     return context.json({ ...documents, formToken }, 200);
+  });
+
+  // Unauthenticated pageview beacon. Every outcome — recorded, invalid,
+  // bot-filtered, opted out, rate limited — answers 204 so junk senders learn
+  // nothing about what was kept. Only allowlisted published paths are counted.
+  app.post("/api/v1/pageview", async (context) => {
+    const drop = () => context.body(null, 204);
+    const analyticsDb = dependencies.analyticsDb;
+    if (!analyticsDb) return drop();
+    if (dependencies.enforceOrigin) {
+      const origin = context.req.header("origin");
+      if (!origin || !dependencies.allowedOrigins.includes(origin)) return drop();
+    }
+    // An explicit opt-out signal is honoured even though neither carries legal
+    // force here: it is the cookie-free "objection means" the CNIL audience-
+    // measurement exemption asks for.
+    if (context.req.header("sec-gpc") === "1" || context.req.header("dnt") === "1") return drop();
+    const purpose = context.req.header("sec-purpose") ?? context.req.header("purpose") ?? "";
+    if (/prefetch|prerender/i.test(purpose)) return drop();
+    const userAgent = context.req.header("user-agent")?.trim() ?? "";
+    if (userAgent === "" || BOT_UA_PATTERN.test(userAgent)) return drop();
+    const contentType = context.req.header("content-type")?.toLowerCase();
+    if (!contentType || !/^application\/json(?:\s*;|$)/.test(contentType)) return drop();
+
+    let untrusted: unknown;
+    try {
+      untrusted = JSON.parse(await readBodyWithLimit(context.req.raw, PAGEVIEW_MAX_BODY_BYTES));
+    } catch {
+      return drop();
+    }
+    const parsed = pageviewSchema.safeParse(untrusted);
+    if (!parsed.success) return drop();
+    const classified = classifyPageviewPath(parsed.data.p);
+    if (!classified) return drop();
+
+    const nowMs = now();
+    const peer = dependencies.peerAddress?.(context) ?? "unknown";
+    const clientIp = resolveClientIp(peer, context.req.header("x-forwarded-for"));
+    if (pageviewRateLimited(analyticsDb, nowMs, clientIp)) return drop();
+    recordPageview(analyticsDb, {
+      nowMs,
+      address: clientIp,
+      userAgent,
+      path: classified.path,
+      locale: classified.locale,
+      // The beacon's Origin header IS the origin the page was served from, so
+      // it is the exact "self" to collapse into direct traffic.
+      referrerOrigin: referrerOriginFrom(
+        parsed.data.r,
+        context.req.header("origin") ?? dependencies.publicOrigin,
+      ),
+    });
+    return drop();
   });
 
   app.post("/api/v1/consultations", async (context) => {

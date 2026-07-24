@@ -40,6 +40,7 @@ const consentAuthorityResolver = runtime.config.publication
   : createDatabaseConsentAuthorityResolver(runtime.db);
 const app = createControlApp({
   db: runtime.db,
+  analyticsDb: runtime.analyticsDb,
   keyProvider: runtime.config.keyProvider,
   allowedOrigins: runtime.config.allowedOrigins,
   enforceOrigin: runtime.config.enforceOrigin,
