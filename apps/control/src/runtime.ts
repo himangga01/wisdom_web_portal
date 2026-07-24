@@ -1,12 +1,14 @@
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
+import { openAnalyticsDatabase, type AnalyticsDatabase } from "./analytics/store.js";
 import { parseControlConfig, type ControlConfig } from "./config.js";
 import { openDatabase, runMigrations, type ControlDatabase } from "./db/client.js";
 
 export interface ControlRuntime {
   config: ControlConfig;
   db: ControlDatabase;
+  analyticsDb: AnalyticsDatabase;
 }
 
 export function loadLocalEnvironment(path = ".env"): void {
@@ -19,5 +21,6 @@ export function createControlRuntime(
   const config = parseControlConfig(source);
   const db = openDatabase(config.databasePath);
   runMigrations(db);
-  return { config, db };
+  const analyticsDb = openAnalyticsDatabase(config.analyticsDatabasePath);
+  return { config, db, analyticsDb };
 }

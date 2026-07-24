@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import {
   parseEnvironment,
@@ -18,6 +18,7 @@ import {
 export interface ControlConfig {
   nodeEnv: "development" | "test" | "production";
   databasePath: string;
+  analyticsDatabasePath: string;
   host: "127.0.0.1";
   port: number;
   publicOrigin: string | undefined;
@@ -262,9 +263,16 @@ export function parseControlConfig(source: EnvironmentSource): ControlConfig {
   const indexNow = publication || indexNowConfigured
     ? parseIndexNowSenderConfig(source, publicOrigin ?? "")
     : undefined;
+  const analyticsOverride = source.ANALYTICS_DATABASE_PATH?.trim();
+  const analyticsDatabasePath = analyticsOverride && analyticsOverride.length > 0
+    ? analyticsOverride
+    : shared.databasePath === ":memory:"
+      ? ":memory:"
+      : join(dirname(shared.databasePath), "analytics.db");
   return {
     nodeEnv: shared.nodeEnv,
     databasePath: shared.databasePath,
+    analyticsDatabasePath,
     host: "127.0.0.1",
     port: parsePort(source.CONTROL_PORT),
     publicOrigin,

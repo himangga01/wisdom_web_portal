@@ -9,6 +9,7 @@ import {
 } from "./articles/publication-release.js";
 import { createIndexNowKeyCache } from "./articles/indexnow-sender.js";
 import { createDatabaseConsentAuthorityResolver } from "./consent/service.js";
+import { closeAnalyticsDatabase } from "./analytics/store.js";
 import { closeDatabase } from "./db/client.js";
 import { createControlRuntime, loadLocalEnvironment } from "./runtime.js";
 
@@ -77,6 +78,7 @@ function shutdown(): void {
   indexNowKeyCache?.stop();
   server.close(() => {
     closeDatabase(runtime.db);
+    closeAnalyticsDatabase(runtime.analyticsDb);
     process.exitCode = 0;
   });
 }
