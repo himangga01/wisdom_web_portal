@@ -35,6 +35,34 @@ describe("control environment", () => {
     expect(config.keyProvider.active().id).toBe("pii-v1");
   });
 
+  it("derives the analytics database beside the main one and rejects malformed overrides", () => {
+    expect(parseControlConfig({ NODE_ENV: "test" }).analyticsDatabasePath).toBe(":memory:");
+    expect(parseControlConfig({
+      NODE_ENV: "development",
+      DATABASE_PATH: "/srv/wisdom/data/portal.sqlite",
+      ...secrets,
+      ...origins,
+    }).analyticsDatabasePath).toBe("/srv/wisdom/data/analytics.db");
+    expect(parseControlConfig({
+      NODE_ENV: "development",
+      DATABASE_PATH: "/srv/wisdom/data/portal.sqlite",
+      ANALYTICS_DATABASE_PATH: "/srv/wisdom/stats/visits.db",
+      ...secrets,
+      ...origins,
+    }).analyticsDatabasePath).toBe("/srv/wisdom/stats/visits.db");
+    // Opening the path creates its parent directory, so relative and multi-line
+    // values must be rejected before they can write outside the data root.
+    for (const value of ["data/analytics.db", "/srv/wisdom\n/etc/passwd", "/srv/wisdom\0.db"]) {
+      expect(() => parseControlConfig({
+        NODE_ENV: "development",
+        DATABASE_PATH: "/srv/wisdom/data/portal.sqlite",
+        ANALYTICS_DATABASE_PATH: value,
+        ...secrets,
+        ...origins,
+      }), value).toThrow(/ANALYTICS_DATABASE_PATH/);
+    }
+  });
+
   it("requires distinct exact HTTPS production origins and never accepts a non-loopback bind host", () => {
     const base = {
       NODE_ENV: "production",

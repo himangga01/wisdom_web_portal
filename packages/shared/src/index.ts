@@ -7,4 +7,5 @@ export * from "./contracts.js";
 export * from "./design-tokens.js";
 export * from "./environment.js";
 export * from "./public-origin.js";
+export * from "./public-routes.js";
 export * from "./search-verification.js";

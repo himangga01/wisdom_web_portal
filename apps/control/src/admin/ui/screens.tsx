@@ -11,6 +11,7 @@ import {
   localeLabel,
   notificationErrorLabel,
   notificationStateLabel,
+  referrerOriginLabel,
   releaseStateLabel,
 } from "./labels.js";
 import { LineChart } from "./charts.js";
@@ -851,7 +852,7 @@ export function analyticsBodyHtml(view: AnalyticsView): string {
           <tbody>
             {view.referrers.map((row) => (
               <tr>
-                <td>{row.referrerOrigin === "" ? "직접 방문" : row.referrerOrigin}</td>
+                <td>{referrerOriginLabel(row.referrerOrigin)}</td>
                 <td>{row.views}</td>
               </tr>
             ))}

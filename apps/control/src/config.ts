@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 
 import {
+  PUBLIC_CONTENT_ROUTES,
   parseEnvironment,
   parseSearchVerificationConfig,
   type EnvironmentSource,
@@ -38,25 +39,6 @@ export interface ControlConfig {
 
 const TEST_DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY";
 
-// Canonical public content routes; keep in sync with apps/site/src/lib/routes.ts.
-export const PUBLIC_CONTENT_ROUTES = [
-  "/",
-  "/about",
-  "/services",
-  "/services/procurement",
-  "/services/credibility",
-  "/services/safety-esg",
-  "/services/business-certification",
-  "/services/licensing-entity",
-  "/services/immigration-visa",
-  "/process",
-  "/insights",
-  "/consultation",
-  "/location",
-  "/privacy",
-  "/marketing/withdraw",
-] as const;
-
 const REQUIRED_PUBLICATION_ROUTES = ["", "/en", "/zh-hans", "/zh-hant"].flatMap(
   (prefix) => PUBLIC_CONTENT_ROUTES.map((route) => route === "/" ? (prefix || "/") : `${prefix}${route}`),
 );
@@ -70,6 +52,21 @@ function publicationPath(
     throw new Error(`${name} must be an absolute single-line path`);
   }
   return value;
+}
+
+// Held to the same shape as the publication paths above: opening this path
+// creates its parent directory, so an unvalidated value would let a malformed
+// runtime entry write outside the data root.
+function parseAnalyticsDatabasePath(source: EnvironmentSource, databasePath: string): string {
+  const override = source.ANALYTICS_DATABASE_PATH?.trim();
+  if (override === undefined || override.length === 0) {
+    return databasePath === ":memory:" ? ":memory:" : join(dirname(databasePath), "analytics.db");
+  }
+  if (override === ":memory:") return override;
+  if (/[\0\r\n]/u.test(override) || !isAbsolute(override)) {
+    throw new Error("ANALYTICS_DATABASE_PATH must be an absolute single-line path");
+  }
+  return override;
 }
 
 function parsePublicationConfig(
@@ -264,12 +261,7 @@ export function parseControlConfig(source: EnvironmentSource): ControlConfig {
   const indexNow = publication || indexNowConfigured
     ? parseIndexNowSenderConfig(source, publicOrigin ?? "")
     : undefined;
-  const analyticsOverride = source.ANALYTICS_DATABASE_PATH?.trim();
-  const analyticsDatabasePath = analyticsOverride && analyticsOverride.length > 0
-    ? analyticsOverride
-    : shared.databasePath === ":memory:"
-      ? ":memory:"
-      : join(dirname(shared.databasePath), "analytics.db");
+  const analyticsDatabasePath = parseAnalyticsDatabasePath(source, shared.databasePath);
   return {
     nodeEnv: shared.nodeEnv,
     databasePath: shared.databasePath,

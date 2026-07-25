@@ -1,22 +1,8 @@
-import { LOCALES, type Locale } from "@wisdom/shared";
+import { LOCALES, PUBLIC_CONTENT_ROUTES, type Locale } from "@wisdom/shared";
 
-export const CONTENT_ROUTES = [
-  "/",
-  "/about",
-  "/services",
-  "/services/procurement",
-  "/services/credibility",
-  "/services/safety-esg",
-  "/services/business-certification",
-  "/services/licensing-entity",
-  "/services/immigration-visa",
-  "/process",
-  "/insights",
-  "/consultation",
-  "/location",
-  "/privacy",
-  "/marketing/withdraw",
-] as const;
+// Re-exported under Site's local name; the list itself is the shared
+// cross-workspace contract so Control counts exactly the pages Site publishes.
+export const CONTENT_ROUTES = PUBLIC_CONTENT_ROUTES;
 
 export type ContentRoute = (typeof CONTENT_ROUTES)[number];
 export type PublicRoute = ContentRoute | "/404";

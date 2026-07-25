@@ -1,8 +1,25 @@
+import { PUBLIC_CONTENT_ROUTES } from "@wisdom/shared";
 import { describe, expect, it } from "vitest";
 
 import { classifyPageviewPath, referrerOriginFrom } from "./paths.js";
 
 describe("classifyPageviewPath", () => {
+  // Every page Site publishes must be countable here. Without this the two
+  // workspaces can drift apart and a new page's visits are silently discarded.
+  it("classifies every published route in all four locales", () => {
+    for (const route of PUBLIC_CONTENT_ROUTES) {
+      for (const [prefix, locale] of [
+        ["", "ko"],
+        ["/en", "en"],
+        ["/zh-hans", "zh-Hans"],
+        ["/zh-hant", "zh-Hant"],
+      ] as const) {
+        const pathname = route === "/" ? (prefix || "/") : `${prefix}${route}`;
+        expect(classifyPageviewPath(pathname), pathname).toEqual({ path: route, locale });
+      }
+    }
+  });
+
   it("accepts canonical content routes in every locale prefix", () => {
     expect(classifyPageviewPath("/")).toEqual({ path: "/", locale: "ko" });
     expect(classifyPageviewPath("/en")).toEqual({ path: "/", locale: "en" });

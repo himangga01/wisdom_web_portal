@@ -1,4 +1,4 @@
-import { PUBLIC_CONTENT_ROUTES } from "../config.js";
+import { PUBLIC_CONTENT_ROUTES } from "@wisdom/shared";
 
 // Beacon payload validation. Only paths the site actually publishes are
 // counted, so junk submissions cannot pollute the statistics with arbitrary

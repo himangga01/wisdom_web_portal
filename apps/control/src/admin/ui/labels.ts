@@ -3,6 +3,8 @@
 // form; only the visible text is localized. Unknown values fall back to the raw
 // string so a future enum never renders blank.
 
+import { OVERFLOW_REFERRER_ORIGIN } from "../../analytics/store.js";
+
 const CONSULTATION_STATUS_LABELS: Record<string, string> = {
   received: "접수",
   acknowledged: "확인",
@@ -115,3 +117,8 @@ export const consentKindLabel = (value: string): string => label(CONSENT_KIND_LA
 export const localeLabel = (value: string): string => label(LOCALE_LABELS, value);
 export const createdByTypeLabel = (value: string): string => label(CREATED_BY_TYPE_LABELS, value);
 export const notificationErrorLabel = (value: string): string => label(NOTIFICATION_ERROR_LABELS, value);
+
+// Referrer origins are stored verbatim; only the two synthetic buckets — direct
+// traffic and the per-day cardinality overflow — get a Korean label.
+export const referrerOriginLabel = (value: string): string =>
+  value === "" ? "직접 방문" : value === OVERFLOW_REFERRER_ORIGIN ? "기타(집계 상한 초과)" : value;

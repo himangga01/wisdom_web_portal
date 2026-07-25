@@ -123,6 +123,34 @@ function visitorHash(salt: Buffer, address: string, userAgent: string): Buffer {
     .digest();
 }
 
+/**
+ * Referrer origins are attacker-supplied, so their row count is capped per day.
+ * Beyond the cap a new origin is folded into a single overflow bucket: totals
+ * stay correct and storage stays bounded, while referrer spam cannot displace
+ * genuine sources from the dashboard (each junk origin carries ~1 view).
+ * Parentheses cannot occur in a URL origin, so the label cannot be forged.
+ */
+export const OVERFLOW_REFERRER_ORIGIN = "(other)";
+const REFERRER_ORIGINS_PER_DAY_LIMIT = 200;
+
+function recordReferrer(db: AnalyticsDatabase, day: string, referrerOrigin: string): void {
+  const bumped = db.sqlite.prepare(
+    "UPDATE analytics_referrer_days SET views = views + 1 WHERE day = ? AND referrer_origin = ?",
+  ).run(day, referrerOrigin).changes;
+  if (bumped === 1) return;
+  const distinct = (db.sqlite.prepare(
+    "SELECT count(*) count FROM analytics_referrer_days WHERE day = ?",
+  ).get(day) as { count: number }).count;
+  // Direct traffic is never folded away — it is the baseline every report needs.
+  const origin = referrerOrigin === "" || distinct < REFERRER_ORIGINS_PER_DAY_LIMIT
+    ? referrerOrigin
+    : OVERFLOW_REFERRER_ORIGIN;
+  db.sqlite.prepare(`
+    INSERT INTO analytics_referrer_days (day, referrer_origin, views) VALUES (?, ?, 1)
+    ON CONFLICT (day, referrer_origin) DO UPDATE SET views = views + 1
+  `).run(day, origin);
+}
+
 export function recordPageview(db: AnalyticsDatabase, input: PageviewInput): void {
   const day = seoulDay(input.nowMs);
   const salt = ensureDailySalt(db, day);
@@ -140,10 +168,7 @@ export function recordPageview(db: AnalyticsDatabase, input: PageviewInput): voi
       INSERT INTO analytics_page_days (day, path, locale, views) VALUES (?, ?, ?, 1)
       ON CONFLICT (day, path, locale) DO UPDATE SET views = views + 1
     `).run(day, input.path, input.locale);
-    db.sqlite.prepare(`
-      INSERT INTO analytics_referrer_days (day, referrer_origin, views) VALUES (?, ?, 1)
-      ON CONFLICT (day, referrer_origin) DO UPDATE SET views = views + 1
-    `).run(day, input.referrerOrigin);
+    recordReferrer(db, day, input.referrerOrigin);
   });
   record.immediate();
 }

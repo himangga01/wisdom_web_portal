@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  OVERFLOW_REFERRER_ORIGIN,
   analyticsIpBucket,
   closeAnalyticsDatabase,
   openAnalyticsDatabase,
@@ -102,6 +103,39 @@ describe("recordPageview", () => {
       { referrer_origin: "", views: 1 },
       { referrer_origin: "https://www.google.com", views: 2 },
     ]);
+  });
+
+  it("caps distinct referrer origins per day and folds the rest into one bucket", () => {
+    const db = testDb();
+    // Referrer spam: far more distinct origins than the daily cap allows.
+    for (let index = 0; index < 400; index += 1) {
+      view(db, { referrerOrigin: `https://spam-${index}.example` });
+    }
+    view(db, { referrerOrigin: "https://www.google.com" });
+    view(db, { referrerOrigin: "" });
+
+    const rows = db.sqlite.prepare(
+      "SELECT referrer_origin, views FROM analytics_referrer_days WHERE day = '2026-07-24'",
+    ).all() as Array<{ referrer_origin: string; views: number }>;
+    // Bounded at 200 distinct origins + the overflow bucket + exempt direct.
+    expect(rows).toHaveLength(202);
+    // Folding never loses a view: every beacon is still counted somewhere.
+    expect(rows.reduce((total, row) => total + row.views, 0)).toBe(402);
+    // 200 spam origins past the cap, plus the genuine referrer that arrived late.
+    expect(rows.find((row) => row.referrer_origin === OVERFLOW_REFERRER_ORIGIN)?.views).toBe(201);
+    expect(rows.find((row) => row.referrer_origin === "")?.views).toBe(1);
+  });
+
+  it("keeps counting a referrer that was already stored before the cap was hit", () => {
+    const db = testDb();
+    view(db, { referrerOrigin: "https://www.google.com" });
+    for (let index = 0; index < 400; index += 1) {
+      view(db, { referrerOrigin: `https://spam-${index}.example` });
+    }
+    view(db, { referrerOrigin: "https://www.google.com" });
+    expect(db.sqlite.prepare(
+      "SELECT views FROM analytics_referrer_days WHERE day = '2026-07-24' AND referrer_origin = ?",
+    ).get("https://www.google.com")).toEqual({ views: 2 });
   });
 
   it("rotates the salt at KST midnight and destroys the previous salt", () => {
