@@ -6,6 +6,7 @@ import { loadKeychainEnvironment } from "./keychain.mjs";
 const RUNTIME_KEYS = new Set([
   "ADMIN_DUMMY_PASSWORD_HASH",
   "ADMIN_ORIGIN",
+  "ANALYTICS_DATABASE_PATH",
   "CODEX_BINARY",
   "CODEX_HOME",
   "CODEX_KEYCHAIN_SERVICE",

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import {
   computePublishedArticleContentSha256,
@@ -232,7 +232,7 @@ describe("isolated Astro publication build", () => {
         NODE_ENV: "production",
         NAVER_SITE_VERIFICATION_META: NAVER_META_TOKEN,
         NO_COLOR: "1",
-        PATH: dirname(resolve(root, "bin", "node")),
+        PATH: [dirname(resolve(root, "bin", "node")), "/usr/bin", "/bin"].join(delimiter),
         PUBLIC_ORIGIN: PRODUCTION_PUBLIC_ORIGIN,
         WISDOM_PUBLISHED_CONTENT_DIR: resolve(root, "snapshot"),
       },

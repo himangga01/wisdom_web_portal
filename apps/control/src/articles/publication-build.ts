@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import {
   parsePublicOrigin,
@@ -154,6 +154,16 @@ async function defaultRunProcess(request: PublicationProcessRequest): Promise<Pu
   });
 }
 
+// npm runs a workspace's `build` script through `sh`, so the isolated child
+// PATH needs the system utility directories in addition to the pinned Node
+// binary. With only the Node directory the build dies as `spawn sh ENOENT`
+// before Astro ever starts, which surfaces as PUBLICATION_BUILD_FAILED.
+const SYSTEM_PATH_DIRECTORIES = ["/usr/bin", "/bin"];
+
+function isolatedBuildPath(nodeBinary: string): string {
+  return [...new Set([dirname(nodeBinary), ...SYSTEM_PATH_DIRECTORIES])].join(delimiter);
+}
+
 export async function runPublicationBuild(
   input: {
     siteSourceRoot: string;
@@ -220,7 +230,7 @@ export async function runPublicationBuild(
         ? { NAVER_SITE_VERIFICATION_FILE: verification.naverFile.filename }
         : {}),
       NO_COLOR: "1",
-      PATH: dirname(input.nodeBinary),
+      PATH: isolatedBuildPath(input.nodeBinary),
       PUBLIC_ORIGIN: publicOrigin,
       WISDOM_PUBLISHED_CONTENT_DIR: snapshotDirectory,
     },
