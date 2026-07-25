@@ -16,6 +16,18 @@ export interface AnalyticsTotals {
   visitors: number;
 }
 
+/**
+ * Guards every day string entering the query helpers below. A bare
+ * `\d{4}-\d{2}-\d{2}` shape is not enough: "2026-00-00" parses to NaN and makes
+ * `shiftDay` throw a RangeError, while "2026-02-30" silently rolls over to
+ * March 2. Requiring the parsed date to round-trip rejects both.
+ */
+export function isCalendarDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
 export function shiftDay(day: string, byDays: number): string {
   const time = Date.parse(`${day}T00:00:00Z`);
   return new Date(time + byDays * 86_400_000).toISOString().slice(0, 10);

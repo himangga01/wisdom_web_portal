@@ -8,6 +8,12 @@ import type { HtmlEscapedString } from "hono/utils/html";
 type RenderedElement = HtmlEscapedString | Promise<HtmlEscapedString>;
 
 export function renderToHtml(node: RenderedElement): string {
+  // hono/jsx types every element as possibly-async, and `String(aPromise)` would
+  // quietly put "[object Promise]" on the operator's screen. Fail loudly instead
+  // so an accidentally async component is caught by the tests, not in production.
+  if (typeof (node as { then?: unknown }).then === "function") {
+    throw new Error("Admin UI components must render synchronously");
+  }
   return String(node);
 }
 

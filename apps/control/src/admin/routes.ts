@@ -17,6 +17,7 @@ import {
   autoGranularity,
   bucketSeries,
   daySpan,
+  isCalendarDay,
   localeSplit,
   shiftDay,
   siteSeries,
@@ -598,7 +599,6 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
       ), 503);
     }
     const today = seoulDay(dependencies.now());
-    const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
     const requestedFrom = context.req.query("from");
     const requestedTo = context.req.query("to");
     const rangePreset = context.req.query("range");
@@ -606,7 +606,7 @@ function registerAdminRoutes(app: Hono<AdminEnvironment>, dependencies: Task4Rou
     let from: string;
     let to: string;
     if (requestedFrom && requestedTo
-      && dayPattern.test(requestedFrom) && dayPattern.test(requestedTo)
+      && isCalendarDay(requestedFrom) && isCalendarDay(requestedTo)
       && requestedFrom <= requestedTo) {
       activePreset = "custom";
       to = requestedTo <= today ? requestedTo : today;

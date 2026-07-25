@@ -83,8 +83,8 @@ npm run verify
 - `HERMES_ENDPOINT`: literal loopback Hermes URL, 기본값 `http://127.0.0.1:8788/notify`
 - `PII_ACTIVE_KEY_ID`: 현재 PII 암호화 키 버전 ID
 - `PII_PREVIOUS_KEYS_JSON`: 이전 PII 키 ID와 값의 JSON 객체
-- `PUBLIC_ORIGINS`: 쉼표로 구분한 HTTPS 원본 허용 목록
 - `CONTROL_HOST=127.0.0.1`, `CONTROL_PORT=8787`
+- `ANALYTICS_DATABASE_PATH`: 선택 항목. 방문 통계 저장소 경로이며 생략하면 `DATABASE_PATH` 옆 `analytics.db`를 사용합니다. 지정할 때는 절대 경로여야 합니다.
 
 `CONTROL_HMAC_SECRET`을 교체하면 기존 폼 토큰, 멱등성 키, 요청 지문 및 블라인드 인덱스가 함께 바뀝니다. HMAC 루트 회전은 Task 7 운영 절차에서 점검·배치 재색인과 함께 수행하며 임의로 즉시 교체하지 않습니다.
 

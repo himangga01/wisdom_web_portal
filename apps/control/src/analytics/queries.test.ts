@@ -5,6 +5,7 @@ import {
   autoGranularity,
   bucketSeries,
   daySpan,
+  isCalendarDay,
   localeSplit,
   shiftDay,
   siteSeries,
@@ -46,6 +47,17 @@ describe("day helpers", () => {
   it("shifts and measures day strings across month boundaries", () => {
     expect(shiftDay("2026-08-01", -1)).toBe("2026-07-31");
     expect(daySpan("2026-07-01", "2026-07-31")).toBe(31);
+  });
+
+  it("accepts only real calendar days", () => {
+    for (const day of ["2026-07-25", "2024-02-29", "2026-12-31"]) {
+      expect(isCalendarDay(day), day).toBe(true);
+    }
+    // "2026-00-00" would make shiftDay throw; "2026-02-30" would silently roll
+    // over to March 2 and report a range the operator never asked for.
+    for (const day of ["2026-00-00", "2026-13-45", "2026-02-30", "2026-02-29", "26-07-25", "2026-7-25", ""]) {
+      expect(isCalendarDay(day), day).toBe(false);
+    }
   });
 
   it("chooses granularity from the span", () => {
