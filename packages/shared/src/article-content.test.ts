@@ -46,7 +46,7 @@ describe("published article semantic content authority", () => {
       locale: "en" as const,
       title: "Cafe\u0301 guide",
       summary: "Re\u0301sume\u0301",
-      bodyMarkdown: "Cafe\u0301\n",
+      bodyMarkdown: "## Cafe\u0301\n\nCafe\u0301\n",
       sources: [sourceA],
     };
     expect(computePublishedArticleContentSha256(base)).toBe(
@@ -54,7 +54,7 @@ describe("published article semantic content authority", () => {
         ...base,
         title: "Caf\u00e9 guide",
         summary: "R\u00e9sum\u00e9",
-        bodyMarkdown: "Caf\u00e9\n",
+        bodyMarkdown: "## Caf\u00e9\n\nCaf\u00e9\n",
       }),
     );
   });

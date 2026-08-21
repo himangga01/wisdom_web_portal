@@ -1,5 +1,6 @@
 import {
   computePublishedArticleContentSha256,
+  normalizeValidateAndRenderArticleMarkdown,
   type PublishedArticleDocument,
 } from "@wisdom/shared";
 import { describe, expect, it } from "vitest";
@@ -45,6 +46,21 @@ const article: PublishedArticleDocument = {
   }),
 };
 
+function articleWithMarkdown(bodyMarkdown: string): PublishedArticleDocument {
+  const rendered = normalizeValidateAndRenderArticleMarkdown(bodyMarkdown);
+  return {
+    ...article,
+    ...rendered,
+    contentSha256: computePublishedArticleContentSha256({
+      title: article.title,
+      summary: article.summary,
+      bodyMarkdown: rendered.bodyMarkdown,
+      sources: article.sources,
+      locale: article.locale,
+    }),
+  };
+}
+
 describe("search publication quality gate", () => {
   it("builds complete, deterministic localized service content without invented provenance", () => {
     const publication = buildServicePublication("en", "procurement");
@@ -88,6 +104,9 @@ describe("search publication quality gate", () => {
   it("requires reviewed article evidence and a visible answer section", () => {
     expect(ARTICLE_REQUIRED_ANSWER_SECTION_IDS).toEqual(["answer"]);
     expect(() => assertArticlePublicationQuality(article)).not.toThrow();
+    expect(() => assertArticlePublicationQuality(articleWithMarkdown(
+      "## **What to confirm**\n\nConfirm the current requirements before filing.",
+    ))).not.toThrow();
 
     for (const invalid of [
       { ...article, reviewer: { ...article.reviewer, name: "" } },

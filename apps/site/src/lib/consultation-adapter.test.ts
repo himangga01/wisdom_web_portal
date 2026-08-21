@@ -95,6 +95,25 @@ describe("consultation form adapter", () => {
     }
   });
 
+  it("maps post-trim schema failures back to the affected form field", async () => {
+    const {
+      buildConsultationSubmission,
+      consultationSubmissionFieldErrors,
+    } = await import("./consultation-adapter.js");
+
+    for (const [field, data] of [
+      ["name", formData({ name: "  A  " })],
+      ["message", formData({ message: "                    " })],
+    ] as const) {
+      try {
+        buildConsultationSubmission(data, consentConfiguration);
+        expect.fail(`expected ${field} validation failure`);
+      } catch (error) {
+        expect(consultationSubmissionFieldErrors(error)).toHaveProperty(field);
+      }
+    }
+  });
+
   it("loads and validates active consent versions with the signed form token", async () => {
     const { loadConsentConfiguration } = await import("./consultation-adapter.js");
     const fetchRef = vi.fn(async (

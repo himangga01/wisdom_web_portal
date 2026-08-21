@@ -78,6 +78,10 @@ describe("public search document graph", () => {
       { locale: "en", url: `${origin}/en/insights/visa-extension-checklist` },
     ]);
     expect(englishOnly?.xDefaultUrl).toBeUndefined();
+    expect(index.byRoute.get("/en/insights")?.lastModified)
+      .toBe("2026-07-03T00:00:00.000Z");
+    expect(index.byRoute.get("/zh-hans/insights")?.lastModified)
+      .toBe("2026-07-16T00:00:00.000Z");
   });
 
   it("has unique localized metadata and reproduces a previous release SEO set exactly", () => {

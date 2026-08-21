@@ -22,7 +22,7 @@ describe("article Markdown authority", () => {
 
   it("supports a small article-safe Markdown surface and credential-free HTTPS links", () => {
     const result = normalizeValidateAndRenderArticleMarkdown(`
-# Guide
+## Guide
 
 > Reviewed guidance.
 
@@ -43,6 +43,21 @@ safe <literal>
     expect(result.bodyHtml).toContain('href="https://example.com/path?q=1#section"');
     expect(result.bodyHtml).toContain("safe &#x3C;literal>");
     expect(result.bodyHtml).not.toMatch(/<script|<img|javascript:/i);
+  });
+
+  it("uses the Markdown AST to require H2 sections and reject body H1 headings", () => {
+    expect(() => normalizeValidateAndRenderArticleMarkdown(
+      "# Page title\n\n## Answer\n\nReviewed guidance.",
+    )).toThrowError(expect.objectContaining({ code: "malformed-structure" }));
+    expect(() => normalizeValidateAndRenderArticleMarkdown(
+      "Reviewed guidance without a section heading.",
+    )).toThrowError(expect.objectContaining({ code: "malformed-structure" }));
+
+    const emphasized = normalizeValidateAndRenderArticleMarkdown(
+      "## **Important answer**\n\nReviewed guidance.",
+    );
+    expect(emphasized.bodyHtml).toContain("<h2><strong>Important answer</strong></h2>");
+    expect(emphasized.bodyHtml).not.toContain("<h1");
   });
 
   it.each([
@@ -99,7 +114,7 @@ safe <literal>
 
   it("accepts closed fences and resolved HTTPS references", () => {
     expect(normalizeValidateAndRenderArticleMarkdown(
-      "```text\nclosed\n```\n\n[reference][source]\n\n[source]: https://example.com/source\n",
+      "## References\n\n```text\nclosed\n```\n\n[reference][source]\n\n[source]: https://example.com/source\n",
     ).bodyHtml).toContain('href="https://example.com/source"');
   });
 
@@ -110,7 +125,9 @@ safe <literal>
     expect(() => normalizeValidateAndRenderArticleMarkdown("\uAC00".repeat(80 * 1_024 + 1))).toThrowError(
       expect.objectContaining({ code: "source-too-large" }),
     );
-    expect(() => normalizeValidateAndRenderArticleMarkdown("&".repeat(200_000))).toThrowError(
+    expect(() => normalizeValidateAndRenderArticleMarkdown(
+      `## Expanded\n\n${"&".repeat(200_000)}`,
+    )).toThrowError(
       expect.objectContaining({ code: "rendered-too-large" }),
     );
   });

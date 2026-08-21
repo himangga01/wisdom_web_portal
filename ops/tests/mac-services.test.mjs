@@ -135,6 +135,23 @@ test("post-restart service verification requires every launch agent to remain ru
   await assert.rejects(adapter.assertRunning(), { code: "SERVICE_NOT_RUNNING" });
 });
 
+test("readiness checks use the explicitly supplied loopback URL", async () => {
+  const urls = [];
+  const adapter = createMacServiceAdapter({
+    labels: ["com.example.control"],
+    userId: 501,
+    readyUrl: "http://127.0.0.1:19876/health/ready",
+    execute: async () => ({ stdout: "state = running\n", stderr: "" }),
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { status: 200 };
+    },
+  });
+
+  await adapter.checkReady();
+  assert.deepEqual(urls, ["http://127.0.0.1:19876/health/ready"]);
+});
+
 test("service stop waits until every launch agent is confirmed stopped", async () => {
   let inspections = 0;
   let delays = 0;
@@ -186,6 +203,39 @@ test("service start bootstraps an unloaded launch agent before kickstart", async
     ["print", "gui/501/com.example.control"],
     ["bootstrap", "gui/501", path.join(root, "com.example.control.plist")],
     ["kickstart", "-k", "gui/501/com.example.control"],
+  ]);
+});
+
+test("scheduled database writers are unloaded and bootstrapped without being kickstarted", async () => {
+  const calls = [];
+  const root = path.join(path.parse(process.cwd()).root, "Users", "fixture", "Library", "LaunchAgents");
+  const adapter = createMacServiceAdapter({
+    labels: ["com.example.control", "com.example.retention"],
+    scheduledLabels: ["com.example.retention"],
+    launchAgentRoot: root,
+    userId: 501,
+    execute: async (_file, args) => {
+      calls.push(args);
+      if (args[0] === "print") {
+        const label = args[1].split("/").at(-1);
+        throw Object.assign(new Error("missing"), {
+          stderr: `Could not find service "${label}" in domain for user gui: 501\n`,
+        });
+      }
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  await adapter.assertUnloaded();
+  await adapter.start();
+  assert.deepEqual(calls, [
+    ["print", "gui/501/com.example.control"],
+    ["print", "gui/501/com.example.retention"],
+    ["print", "gui/501/com.example.control"],
+    ["bootstrap", "gui/501", path.join(root, "com.example.control.plist")],
+    ["kickstart", "-k", "gui/501/com.example.control"],
+    ["print", "gui/501/com.example.retention"],
+    ["bootstrap", "gui/501", path.join(root, "com.example.retention.plist")],
   ]);
 });
 

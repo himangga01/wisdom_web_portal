@@ -3,6 +3,9 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>com.jihye.portal.retention</string>
   <key>ProgramArguments</key><array>
+    <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/retention.mjs</string>
+    <string>--database</string><string>{{DATA_ROOT}}/portal.sqlite</string>
+    <string>--</string>
     <string>{{NODE_BINARY}}</string><string>{{CURRENT_RELEASE}}/ops/scripts/keychain-exec.mjs</string>
     <string>--account</string><string>{{USER_NAME}}</string>
     <string>--config</string><string>{{APP_ROOT}}/shared/runtime.env</string>
@@ -16,6 +19,7 @@
     <string>--max-batches</string><string>10</string>
   </array>
   <key>WorkingDirectory</key><string>{{CURRENT_RELEASE}}</string>
+  <key>Umask</key><integer>63</integer>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>3600</integer>
   <key>ThrottleInterval</key><integer>60</integer>

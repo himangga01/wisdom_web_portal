@@ -214,6 +214,7 @@ describe("isolated Astro publication build", () => {
       nodeBinary: resolve(root, "bin", "node"),
       timeoutMs: 120_000,
       publicOrigin: PRODUCTION_PUBLIC_ORIGIN,
+      kakaoChatUrl: "https://pf.kakao.com/_unit_test/chat",
       naverSiteVerificationMeta: NAVER_META_TOKEN,
     }, {
       runProcess(request) {
@@ -230,6 +231,7 @@ describe("isolated Astro publication build", () => {
         CI: "1",
         HOME: resolve(root, "home"),
         NODE_ENV: "production",
+        PUBLIC_KAKAO_CHAT_URL: "https://pf.kakao.com/_unit_test/chat",
         NAVER_SITE_VERIFICATION_META: NAVER_META_TOKEN,
         NO_COLOR: "1",
         PATH: process.platform === "win32"

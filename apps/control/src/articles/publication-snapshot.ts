@@ -106,6 +106,12 @@ function compareRows(left: SnapshotRow, right: SnapshotRow): number {
     || left.head_revision_id.localeCompare(right.head_revision_id);
 }
 
+function reviewerRole(locale: Locale): string {
+  if (locale === "ko") return "대표행정사";
+  if (locale === "en") return "Representative Administrative Attorney";
+  return "代表行政士";
+}
+
 function selectSnapshotRow(
   db: ControlDatabase,
   articleId: string,
@@ -198,6 +204,8 @@ function rowToDocument(
     row.title,
     row.summary,
     rendered.bodyMarkdown,
+    row.slug,
+    publishedArticleRoute(row.locale, row.slug),
     ...sources.flatMap((source) => [source.id, source.url]),
   ]);
   if (!pii.safe) throw new Error("PUBLICATION_PII_REJECTED");
@@ -224,7 +232,7 @@ function rowToDocument(
     modifiedAt: utcInstant(Math.max(modifiedAtMs, row.approved_at_ms, firstPublishedAtMs)),
     reviewer: {
       name: row.reviewer_name,
-      role: "Administrative content reviewer",
+      role: reviewerRole(row.locale),
     },
     sources,
   });

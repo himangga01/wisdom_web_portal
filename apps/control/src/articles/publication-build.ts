@@ -13,10 +13,12 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   parsePublicOrigin,
   parseSearchVerificationConfig,
+  publishedArticleDocumentSchema,
   publishedConsentBundleSchema,
   publishedManifestSchema,
   type Locale,
   type PublishedConsentBundle,
+  type PublishedArticleDocument,
 } from "@wisdom/shared";
 
 import {
@@ -84,6 +86,8 @@ export interface SealedPublicationRelease {
   manifest: PublicationReleaseManifest;
   manifestSha256: string;
   consentBundle: PublishedConsentBundle;
+  documents: PublishedArticleDocument[];
+  publicTextSegments: string[];
   sitemapUrls: string[];
   urlSetSha256: string;
 }
@@ -178,6 +182,7 @@ export async function runPublicationBuild(
     nodeBinary: string;
     timeoutMs: number;
     publicOrigin: string;
+    kakaoChatUrl?: string;
     naverSiteVerificationMeta?: string;
     naverSiteVerificationFile?: string;
   },
@@ -227,6 +232,7 @@ export async function runPublicationBuild(
       CI: "1",
       HOME: buildHome,
       NODE_ENV: "production",
+      ...(input.kakaoChatUrl ? { PUBLIC_KAKAO_CHAT_URL: input.kakaoChatUrl } : {}),
       ...(verification.naverMetaToken
         ? { NAVER_SITE_VERIFICATION_META: verification.naverMetaToken }
         : {}),
@@ -701,11 +707,27 @@ export function verifySealedPublicationRelease(
   if (consentBundle.bundleId !== manifest.consentBundle.bundleId) {
     throw new Error("PUBLICATION_RELEASE_CONSENT_METADATA_MISMATCH");
   }
+  const documents = actualFiles
+    .filter(({ path }) => /^articles\/[^/]+\.json$/u.test(path))
+    .map(({ bytes }) => {
+      try {
+        const parsed = JSON.parse(bytes.toString("utf8"));
+        if (bytes.toString("utf8") !== canonicalJson(parsed)) throw new Error("non-canonical");
+        return publishedArticleDocumentSchema.parse(parsed);
+      } catch {
+        throw new Error("PUBLICATION_RELEASE_ARTICLE_INVALID");
+      }
+    });
   const sitemapPayload = publicationSitemapPayload(actualFiles, expectedOrigin);
+  const publicTextSegments = actualFiles
+    .filter(({ path }) => /\.(?:html|json|txt|xml)$/u.test(path))
+    .map(({ bytes }) => bytes.toString("utf8"));
   return {
     manifest,
     manifestSha256: sha256Hex(manifestFile.bytes),
     consentBundle,
+    documents,
+    publicTextSegments,
     sitemapUrls: sitemapPayload.urls,
     urlSetSha256: sitemapPayload.urlSetSha256,
   };

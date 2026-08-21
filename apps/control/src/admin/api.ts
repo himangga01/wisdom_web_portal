@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import {
   consultationStatusSchema,
@@ -19,6 +19,10 @@ import {
   enqueueArticleTranslation,
   type ArticleReviewState,
 } from "../articles/workflow.js";
+import {
+  createPublicationBatchPlan,
+  PublicationActivationSettlementError,
+} from "../articles/publication-release.js";
 import { beginAdminLogin, completeAdminMfa } from "../auth/service.js";
 import {
   clearAdminPreAuthCookie,
@@ -66,6 +70,35 @@ function noStore(context: ApiContext): void {
 function success<T>(context: ApiContext, data: T, status: ContentfulStatusCode = 200): Response {
   noStore(context);
   return context.json({ data }, status);
+}
+
+function publicationFailure(
+  context: ApiContext,
+  error: unknown,
+  action: "게시" | "롤백",
+): Response {
+  if (error instanceof PublicationActivationSettlementError) {
+    if (error.outcome.kind === "reverted") {
+      return failure(
+        context,
+        503,
+        "OPERATION_UNAVAILABLE",
+        `${action} 작업은 완료되지 않았고 이전 공개 릴리스로 복구되었습니다.`,
+      );
+    }
+    return failure(
+      context,
+      503,
+      "OPERATION_UNAVAILABLE",
+      `${action} 작업이 중단되었습니다. 운영 복구가 필요합니다. activation: ${error.outcome.activationId}`,
+    );
+  }
+  return failure(
+    context,
+    503,
+    "OPERATION_UNAVAILABLE",
+    `${action}하지 못했습니다. 발행 상태를 다시 확인하세요.`,
+  );
 }
 
 function failure(
@@ -277,16 +310,22 @@ function workflowFailure(context: ApiContext, result: { kind: string; httpStatus
   return failure(context, 422, "INVALID_REQUEST", `요청을 처리할 수 없습니다: ${result.kind}`);
 }
 
-function publicationScope(dependencies: AdminRouteDependencies): {
+function publicationScope(
+  dependencies: AdminRouteDependencies,
+  mode: "next-batch" | "policy-only" = "next-batch",
+): {
   fingerprint: string;
   total: number;
   eligibleTotal: number;
   blockedTotal: number;
+  batchCount: number;
+  remainingAfterBatch: number;
+  mode: "next-batch" | "policy-only";
+  selectedKeys: ReadonlySet<string>;
 } {
-  const hash = createHash("sha256");
-  hash.update("wisdom:admin-publication-preview:v1\0", "utf8");
+  const plan = createPublicationBatchPlan(dependencies.db, mode);
   let total = 0;
-  let eligibleTotal = 0;
+  let blockedTotal = 0;
   const rows = dependencies.db.sqlite.prepare(`
     SELECT head.article_id, head.locale, head.slug, head.state, head.head_revision_id,
       head.approved_revision_id, head.row_version,
@@ -314,48 +353,19 @@ function publicationScope(dependencies: AdminRouteDependencies): {
     total += 1;
     const eligible = (row.state === "approved" || row.state === "published") &&
       row.source_binding_valid === 1;
-    if (eligible) eligibleTotal += 1;
-    hash.update(JSON.stringify([
-      row.article_id,
-      row.locale,
-      row.slug,
-      row.state,
-      row.head_revision_id,
-      row.approved_revision_id,
-      row.row_version,
-      row.content_sha256.toString("hex"),
-      row.source_revision_id,
-      row.source_binding_valid,
-    ]), "utf8").update("\0", "utf8");
+    if (!eligible) blockedTotal += 1;
   }
-  const bundle = getActiveConsentBundle(dependencies.db);
-  hash.update(bundle?.bundleId ?? "no-active-consent", "utf8").update("\0", "utf8");
-  for (const document of bundle?.documents ?? []) {
-    hash.update(JSON.stringify([
-      document.id,
-      document.kind,
-      document.locale,
-      document.version,
-      document.contentSha256.toString("hex"),
-      document.effectiveAtMs ?? null,
-    ]), "utf8").update("\0", "utf8");
-  }
-  const activeRelease = dependencies.db.sqlite.prepare(`
-    SELECT id, activation_generation, manifest_sha256
-    FROM releases WHERE state = 'active'
-  `).get() as {
-    id: string; activation_generation: number; manifest_sha256: Buffer;
-  } | undefined;
-  hash.update(JSON.stringify(activeRelease ? [
-    activeRelease.id,
-    activeRelease.activation_generation,
-    activeRelease.manifest_sha256.toString("hex"),
-  ] : null), "utf8");
   return {
-    fingerprint: hash.digest("hex"),
+    fingerprint: plan.fingerprint,
     total,
-    eligibleTotal,
-    blockedTotal: total - eligibleTotal,
+    eligibleTotal: plan.eligibleTotal,
+    blockedTotal,
+    batchCount: plan.batchCount,
+    remainingAfterBatch: plan.remainingAfterBatch,
+    mode: plan.mode,
+    selectedKeys: new Set(plan.promotions.map(
+      (promotion) => `${promotion.articleId}\0${promotion.locale}`,
+    )),
   };
 }
 
@@ -572,15 +582,22 @@ export function registerAdminApiRoutes(
     if (session instanceof Response) return session;
     const row = dependencies.db.sqlite.prepare(`
       SELECT id, receipt_id, status, locale, category, preferred_contact,
-        pii_envelope, received_at_ms, row_version
+        pii_envelope, received_at_ms, retention_expires_at_ms, purged_at_ms,
+        row_version
       FROM consultations WHERE id = ?
     `).get(context.req.param("id")) as {
       id: string; receipt_id: string; status: ConsultationStatus; locale: string;
       category: string; preferred_contact: string; pii_envelope: string | null;
-      received_at_ms: number; row_version: number;
+      received_at_ms: number; retention_expires_at_ms: number;
+      purged_at_ms: number | null; row_version: number;
     } | undefined;
     if (!row) return failure(context, 404, "NOT_FOUND", "상담을 찾을 수 없습니다.");
-    const pii = row.pii_envelope === null
+    const piiAvailability = row.purged_at_ms !== null
+      ? "purged"
+      : row.retention_expires_at_ms <= dependencies.now()
+        ? "expired"
+        : "available";
+    const pii = piiAvailability !== "available" || row.pii_envelope === null
       ? null
       : decryptPii(dependencies.keyProvider, row.id, row.pii_envelope);
     return success(context, {
@@ -593,6 +610,7 @@ export function registerAdminApiRoutes(
       receivedAtMs: row.received_at_ms,
       rowVersion: row.row_version,
       pii,
+      piiAvailability,
       nextStatuses: allowedNextConsultationStatuses(row.status),
     });
   });
@@ -843,7 +861,14 @@ export function registerAdminApiRoutes(
   app.get("/admin/api/v1/publish/preview", (context) => {
     const session = requireSession(context, dependencies);
     if (session instanceof Response) return session;
-    const scope = publicationScope(dependencies);
+    const rawMode = context.req.query("mode");
+    const mode = rawMode === undefined || rawMode === "next-batch"
+      ? "next-batch"
+      : rawMode === "policy-only"
+        ? "policy-only"
+        : undefined;
+    if (!mode) return failure(context, 422, "INVALID_REQUEST", "게시 모드를 확인하세요.");
+    const scope = publicationScope(dependencies, mode);
     const pageNumber = requestedPage(
       context.req.query("page"),
       PUBLISH_PREVIEW_PAGE_SIZE,
@@ -884,11 +909,15 @@ export function registerAdminApiRoutes(
     }));
     return success(context, {
       eligible: items.filter((item) =>
-        (item.state === "approved" || item.state === "published") && item.sourceBindingValid),
+        scope.selectedKeys.has(`${item.articleId}\0${item.locale}`) &&
+        item.sourceBindingValid),
       blocked: items.filter((item) =>
         (item.state !== "approved" && item.state !== "published") || !item.sourceBindingValid),
       eligibleTotal: scope.eligibleTotal,
       blockedTotal: scope.blockedTotal,
+      batchCount: scope.batchCount,
+      remainingAfterBatch: scope.remainingAfterBatch,
+      mode: scope.mode,
       fingerprint: scope.fingerprint,
       page: page(pageNumber, PUBLISH_PREVIEW_PAGE_SIZE, scope.total),
     });
@@ -897,13 +926,18 @@ export function registerAdminApiRoutes(
   app.post("/admin/api/v1/publish/confirm", async (context) => {
     const auth = await requireMutation(context, dependencies);
     if (auth instanceof Response) return auth;
+    const mode = auth.body.mode === "next-batch" || auth.body.mode === "policy-only"
+      ? auth.body.mode
+      : undefined;
     const fingerprint = stringValue(auth.body.fingerprint, 64);
-    const currentFingerprint = publicationScope(dependencies).fingerprint;
-    if (!fingerprint || !/^[a-f0-9]{64}$/u.test(fingerprint) || fingerprint !== currentFingerprint) {
+    const currentFingerprint = mode
+      ? publicationScope(dependencies, mode).fingerprint
+      : undefined;
+    if (!mode || !fingerprint || !/^[a-f0-9]{64}$/u.test(fingerprint) || fingerprint !== currentFingerprint) {
       return failure(context, 409, "ROW_VERSION_CONFLICT", "게시 미리보기가 변경되었습니다. 다시 확인하세요.");
     }
     return success(context, {
-      confirmationToken: issueConfirmation(auth.session, "publish", fingerprint),
+      confirmationToken: issueConfirmation(auth.session, "publish", `${mode}:${fingerprint}`),
       expiresInMs: 120_000,
     });
   });
@@ -911,17 +945,20 @@ export function registerAdminApiRoutes(
   app.post("/admin/api/v1/publish", async (context) => {
     const auth = await requireMutation(context, dependencies);
     if (auth instanceof Response) return auth;
+    const mode = auth.body.mode === "next-batch" || auth.body.mode === "policy-only"
+      ? auth.body.mode
+      : undefined;
     const fingerprint = stringValue(auth.body.fingerprint, 64);
-    if (!fingerprint || !/^[a-f0-9]{64}$/u.test(fingerprint)) {
+    if (!mode || !fingerprint || !/^[a-f0-9]{64}$/u.test(fingerprint)) {
       return failure(context, 422, "INVALID_REQUEST", "게시 미리보기 식별자를 확인하세요.");
     }
     if (!consumeConfirmation(
       auth.body.confirmationToken,
       auth.session,
       "publish",
-      fingerprint,
+      `${mode}:${fingerprint}`,
     )) return failure(context, 422, "CONFIRMATION_REQUIRED", "게시 확인이 만료되었거나 유효하지 않습니다.");
-    if (publicationScope(dependencies).fingerprint !== fingerprint) {
+    if (publicationScope(dependencies, mode).fingerprint !== fingerprint) {
       return failure(context, 409, "ROW_VERSION_CONFLICT", "게시 대상이 변경되었습니다. 다시 확인하세요.");
     }
     if (!dependencies.articlePublication) {
@@ -932,9 +969,11 @@ export function registerAdminApiRoutes(
         actorAdminId: auth.session.adminId,
         requestId: context.get("requestId"),
         nowMs: dependencies.now(),
+        mode,
+        expectedFingerprint: fingerprint,
       }));
-    } catch {
-      return failure(context, 503, "OPERATION_UNAVAILABLE", "게시하지 못했습니다. 현재 릴리스는 유지됩니다.");
+    } catch (error) {
+      return publicationFailure(context, error, "게시");
     }
   });
 
@@ -1003,8 +1042,8 @@ export function registerAdminApiRoutes(
         requestId: context.get("requestId"),
         nowMs: dependencies.now(),
       }));
-    } catch {
-      return failure(context, 503, "OPERATION_UNAVAILABLE", "롤백하지 못했습니다. 현재 릴리스는 유지됩니다.");
+    } catch (error) {
+      return publicationFailure(context, error, "롤백");
     }
   });
 
@@ -1139,6 +1178,17 @@ export function registerAdminApiRoutes(
     const channel = auth.body.channel === "hermes-telegram" ? "hermes-telegram" :
       auth.body.channel === "email" ? "email" : undefined;
     if (!channel) return failure(context, 422, "INVALID_REQUEST", "알림 채널을 확인하세요.");
+    const setting = dependencies.db.sqlite.prepare(
+      "SELECT enabled FROM notification_settings WHERE channel = ?",
+    ).get(channel) as { enabled: 0 | 1 } | undefined;
+    if (setting?.enabled !== 1) {
+      return failure(
+        context,
+        409,
+        "NOTIFICATION_CHANNEL_DISABLED",
+        "비활성 알림 채널은 테스트할 수 없습니다.",
+      );
+    }
     const consultation = dependencies.db.sqlite.prepare(
       "SELECT id FROM consultations ORDER BY received_at_ms DESC LIMIT 1",
     ).get() as { id: string } | undefined;
@@ -1188,14 +1238,28 @@ export function registerAdminApiRoutes(
     const session = requireSession(context, dependencies);
     if (session instanceof Response) return session;
     const bundle = getActiveConsentBundle(dependencies.db);
-    return success(context, bundle ? {
+    const databaseCandidate = bundle ? {
       bundleId: bundle.bundleId,
       documents: bundle.documents.map((document) => ({
         kind: document.kind,
         locale: document.locale,
         version: document.version,
       })),
-    } : null);
+    } : null;
+    const authority = dependencies.consentAuthorityResolver?.();
+    const publicAuthority = authority?.source === "release"
+      ? {
+          releaseId: authority.releaseId,
+          bundleId: authority.bundle.bundleId,
+        }
+      : null;
+    return success(context, {
+      databaseCandidate,
+      publicAuthority,
+      inSync: databaseCandidate !== null &&
+        publicAuthority !== null &&
+        databaseCandidate.bundleId === publicAuthority.bundleId,
+    });
   });
 
   app.get("/admin/api/v1/failures", (context) => {

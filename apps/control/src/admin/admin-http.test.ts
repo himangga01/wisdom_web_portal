@@ -10,7 +10,10 @@ import {
   totpCode,
 } from "../index.js";
 import { activateConsentBundle, seedConsentDocuments } from "../consent/service.js";
+import type { ConsentAuthorityResolver } from "../consent/service.js";
 import { createStaticKeyProvider, encryptPii } from "../crypto/index.js";
+import { PublicationActivationSettlementError } from "../articles/publication-release.js";
+import { WITHDRAWAL_STYLES, WITHDRAWAL_STYLES_PATH } from "../withdrawal/styles.js";
 
 const PUBLIC_ORIGIN = "https://www.example.test";
 const ADMIN_ORIGIN = "https://admin.example.test";
@@ -251,7 +254,7 @@ describe("administrator article review and explicit translation routes", () => {
     const publishConfirmation = await current.app.request(`${ADMIN_API}/publish/confirm`, {
       method: "POST",
       headers: apiHeaders(session),
-      body: JSON.stringify({ fingerprint: stalePreviewBody.fingerprint }),
+      body: JSON.stringify({ mode: "next-batch", fingerprint: stalePreviewBody.fingerprint }),
     });
     expect(publishConfirmation.status).toBe(200);
     const publishToken = (await responseData<{ confirmationToken: string }>(publishConfirmation)).confirmationToken;
@@ -260,6 +263,7 @@ describe("administrator article review and explicit translation routes", () => {
       headers: apiHeaders(session),
       body: JSON.stringify({
         confirmationToken: publishToken,
+        mode: "next-batch",
         fingerprint: stalePreviewBody.fingerprint,
       }),
     });
@@ -270,8 +274,20 @@ describe("administrator article review and explicit translation routes", () => {
 describe("administrator publication failure recovery", () => {
   it("returns sanitized HTML and preserves the public pointer when publish or rollback fails", async () => {
     const publication = {
-      publish: vi.fn(async () => { throw new Error("secret /Users/wisdom/private-release"); }),
-      rollback: vi.fn(async () => { throw new Error("secret rollback storage path"); }),
+      publish: vi.fn(async () => {
+        throw new PublicationActivationSettlementError({
+          kind: "reverted",
+          activationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          previousReleaseId: "previous-release",
+        });
+      }),
+      rollback: vi.fn(async () => {
+        throw new PublicationActivationSettlementError({
+          kind: "manual-recovery-required",
+          activationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          errorCode: "PUBLICATION_RECOVERY_FAILED",
+        });
+      }),
     };
     const current = await fixture("127.0.0.1", { articlePublication: publication });
     current.database.db.sqlite.prepare(`
@@ -294,18 +310,22 @@ describe("administrator publication failure recovery", () => {
     });
     const fingerprint = (await responseData<{ fingerprint: string }>(preview)).fingerprint;
     const publishConfirmation = await current.app.request(`${ADMIN_API}/publish/confirm`, {
-      method: "POST", headers, body: JSON.stringify({ fingerprint }),
+      method: "POST", headers, body: JSON.stringify({ mode: "next-batch", fingerprint }),
     });
     const publishToken = (await responseData<{ confirmationToken: string }>(publishConfirmation)).confirmationToken;
     const publish = await current.app.request(`${ADMIN_API}/publish`, {
       method: "POST", headers,
-      body: JSON.stringify({ confirmationToken: publishToken, fingerprint }),
+      body: JSON.stringify({
+        confirmationToken: publishToken,
+        mode: "next-batch",
+        fingerprint,
+      }),
     });
     expect(publish.status).toBe(503);
     expect(publish.headers.get("content-type")).toContain("application/json");
     const publishBody = await publish.text();
-    expect(publishBody).toContain("현재 릴리스는 유지됩니다");
-    expect(publishBody).not.toContain("private-release");
+    expect(publishBody).toContain("이전 공개 릴리스로 복구되었습니다");
+    expect(publishBody).not.toContain("previous-release");
 
     const rollbackConfirmation = await current.app.request(`${ADMIN_API}/releases/release-1/rollback/confirm`, {
       method: "POST",
@@ -320,8 +340,9 @@ describe("administrator publication failure recovery", () => {
     expect(rollback.status).toBe(503);
     expect(rollback.headers.get("content-type")).toContain("application/json");
     const rollbackBody = await rollback.text();
-    expect(rollbackBody).toContain("현재 릴리스는 유지됩니다");
-    expect(rollbackBody).not.toContain("storage path");
+    expect(rollbackBody).toContain("운영 복구가 필요합니다");
+    expect(rollbackBody).toContain("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    expect(rollbackBody).not.toContain("PUBLICATION_RECOVERY_FAILED");
     expect((await current.app.request(`${ADMIN_API}/releases/release-1/rollback`, {
       method: "POST", headers,
       body: JSON.stringify({ confirmationToken: rollbackToken }),
@@ -342,7 +363,7 @@ async function fixture(
   overrides: { articlePublication?: {
     publish: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
     rollback: (input: unknown) => Promise<{ releaseId: string; version: string; manifestSha256: string }>;
-  } } = {},
+  }; consentAuthorityResolver?: ConsentAuthorityResolver } = {},
 ): Promise<Fixture> {
   const database = createTestDatabase();
   cleanups.push(() => database.close());
@@ -711,6 +732,7 @@ describe("separate host and administrator browser boundary", () => {
     expect(detail.headers.get("content-type")).toContain("application/json");
     const detailBody = await responseData<{
       pii: { name: string; company: string };
+      piiAvailability: string;
       nextStatuses: string[];
       rowVersion: number;
     }>(detail);
@@ -718,6 +740,7 @@ describe("separate host and administrator browser boundary", () => {
       name: "<script>stored-name</script>",
       company: "<img src=x onerror=stored-company>",
     }));
+    expect(detailBody.piiAvailability).toBe("available");
     expect(detailBody.nextStatuses).not.toContain("received");
     expect(detailBody.nextStatuses).toContain("acknowledged");
     expect(detailBody.rowVersion).toBe(1);
@@ -798,6 +821,45 @@ describe("separate host and administrator browser boundary", () => {
     })).status).toBe(401);
   });
 
+  it("does not decrypt consultation PII after retention expiry or purge", async () => {
+    const current = await fixture();
+    const session = await login(current);
+    const readDetail = async () => {
+      const response = await current.app.request(
+        `${ADMIN_API}/consultations/consultation-1`,
+        { headers: { cookie: session.cookie } },
+      );
+      expect(response.status).toBe(200);
+      return responseData<{ pii: null; piiAvailability: "expired" | "purged" }>(response);
+    };
+
+    current.database.db.sqlite.prepare(`
+      UPDATE consultations
+      SET pii_envelope = 'invalid-envelope',
+          retention_expires_at_ms = ?
+      WHERE id = 'consultation-1'
+    `).run(current.now);
+    expect(await readDetail()).toEqual(expect.objectContaining({
+      pii: null,
+      piiAvailability: "expired",
+    }));
+
+    current.database.db.sqlite.prepare(`
+      UPDATE consultations
+      SET purged_at_ms = ?,
+          pii_envelope = NULL,
+          pii_key_id = NULL,
+          phone_blind_index = NULL,
+          email_blind_index = NULL,
+          blind_index_key_id = NULL
+      WHERE id = 'consultation-1'
+    `).run(current.now + 1);
+    expect(await readDetail()).toEqual(expect.objectContaining({
+      pii: null,
+      piiAvailability: "purged",
+    }));
+  });
+
   it("persists gated notification settings/tests, paginates consultations, requeues failed history, and reports degraded health", async () => {
     const current = await fixture();
     const session = await login(current);
@@ -835,7 +897,17 @@ describe("separate host and administrator browser boundary", () => {
     const consents = await current.app.request(`${ADMIN_API}/consents`, {
       headers: { cookie: session.cookie },
     });
-    expect((await responseData<{ bundleId: string }>(consents)).bundleId).toBe("bundle-2026-07-16");
+    expect(await responseData(consents)).toEqual({
+      databaseCandidate: {
+        bundleId: "bundle-2026-07-16",
+        documents: expect.arrayContaining([
+          expect.objectContaining({ kind: "privacy", locale: "ko" }),
+          expect.objectContaining({ kind: "marketing", locale: "ko" }),
+        ]),
+      },
+      publicAuthority: null,
+      inSync: false,
+    });
 
     const notificationPage = await current.app.request(`${ADMIN_API}/notifications`, {
       headers: { cookie: session.cookie },
@@ -1132,14 +1204,16 @@ describe("separate host and administrator browser boundary", () => {
     const confirmation = await current.app.request(`${ADMIN_API}/publish/confirm`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ fingerprint }),
+      body: JSON.stringify({ mode: "next-batch", fingerprint }),
     });
     const token = (await responseData<{ confirmationToken: string }>(confirmation)).confirmationToken;
 
     current.database.db.sqlite.prepare(`
       INSERT INTO articles (
-        id, slug, state, source_locale, created_by_type, created_at_ms, updated_at_ms
-      ) VALUES ('scope-change-article', 'scope-change', 'draft', 'ko', 'hermes', 1, 1)
+        id, slug, state, source_locale, current_revision_id,
+        created_by_type, created_at_ms, updated_at_ms
+      ) VALUES ('scope-change-article', 'scope-change', 'approved', 'ko',
+        'scope-change-revision', 'hermes', 1, 1)
     `).run();
     current.database.db.sqlite.prepare(`
       INSERT INTO article_revisions (
@@ -1147,19 +1221,25 @@ describe("separate host and administrator browser boundary", () => {
         content_sha256, sources_json, source_sha256, initial_review_state,
         created_at_ms, created_by_type, created_by_id
       ) VALUES ('scope-change-revision', 'scope-change-article', 'ko', 1,
-        'New scope', 'summary', 'body', ?, '[]', ?, 'draft', 1, 'hermes', 'fixture')
+        'New scope', 'summary', 'body', ?, '[]', ?, 'approved',
+        1, 'hermes', 'fixture')
     `).run(Buffer.alloc(32, 8), Buffer.alloc(32, 9));
     current.database.db.sqlite.prepare(`
       INSERT INTO article_locale_heads (
-        article_id, locale, slug, state, head_revision_id, row_version, updated_at_ms
-      ) VALUES ('scope-change-article', 'ko', 'scope-change', 'draft',
-        'scope-change-revision', 1, 1)
+        article_id, locale, slug, state, head_revision_id, approved_revision_id,
+        approved_by_admin_id, approved_at_ms, row_version, updated_at_ms
+      ) VALUES ('scope-change-article', 'ko', 'scope-change', 'approved',
+        'scope-change-revision', 'scope-change-revision', 'admin-1', 1, 1, 1)
     `).run();
 
     const publish = await current.app.request(`${ADMIN_API}/publish`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ confirmationToken: token, fingerprint }),
+      body: JSON.stringify({
+        confirmationToken: token,
+        mode: "next-batch",
+        fingerprint,
+      }),
     });
     expect(publish.status).toBe(409);
     expect(publication.publish).not.toHaveBeenCalled();
@@ -1249,6 +1329,26 @@ describe("separate host and administrator browser boundary", () => {
     );
 
     expect((await postSettings({
+      enabled: false,
+      payloadMode: "receipt-only",
+    })).status).toBe(200);
+    const disabledTest = await current.app.request(`${ADMIN_API}/notifications/test`, {
+      method: "POST",
+      headers: apiHeaders(session),
+      body: JSON.stringify({ channel: "email" }),
+    });
+    expect(disabledTest.status).toBe(409);
+    expect(await disabledTest.json()).toEqual({
+      error: {
+        code: "NOTIFICATION_CHANNEL_DISABLED",
+        message: "비활성 알림 채널은 테스트할 수 없습니다.",
+      },
+    });
+    expect(current.database.db.sqlite.prepare(`
+      SELECT count(*) count FROM notification_outbox WHERE purpose = 'test'
+    `).get()).toEqual({ count: 0 });
+
+    expect((await postSettings({
       enabled: true,
       payloadMode: "full-inquiry",
       fullInquiryApproved: true,
@@ -1262,6 +1362,11 @@ describe("separate host and administrator browser boundary", () => {
     expect(current.database.db.sqlite.prepare(`
       SELECT enabled, payload_mode FROM notification_settings WHERE channel = 'email'
     `).get()).toEqual({ enabled: 0, payload_mode: "full-inquiry" });
+    expect((await current.app.request(`${ADMIN_API}/notifications/test`, {
+      method: "POST",
+      headers: apiHeaders(session),
+      body: JSON.stringify({ channel: "email" }),
+    })).status).toBe(409);
   });
 });
 
@@ -1295,6 +1400,16 @@ describe("marketing withdrawal HTTP ceremony", () => {
     const html = await confirmation.text();
     expect(html).not.toContain(minted.token);
     expect(html).toContain('action="/marketing/withdraw/confirm"');
+    expect(html).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
+    expect(html).not.toContain("/admin/");
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("<nav");
+    const stylesheet = await current.app.request(`${PUBLIC_ORIGIN}${WITHDRAWAL_STYLES_PATH}`);
+    expect(stylesheet.status).toBe(200);
+    sensitiveHeaders(stylesheet);
+    expect(stylesheet.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(await stylesheet.text()).toBe(WITHDRAWAL_STYLES);
+    expect((await current.app.request(`${ADMIN_ORIGIN}${WITHDRAWAL_STYLES_PATH}`)).status).toBe(404);
     expect(current.database.db.sqlite.serialize()).toEqual(beforeConfirmation);
     const confirmationValue = /name="confirmation" value="([^"]+)"/.exec(html)?.[1];
     expect(confirmationValue).toBeTruthy();
@@ -1330,7 +1445,10 @@ describe("marketing withdrawal HTTP ceremony", () => {
       body: new URLSearchParams({ confirmation: confirmationValue! }),
     });
     expect(withdrawn.status).toBe(200);
-    expect(await withdrawn.text()).not.toContain(minted.token);
+    const successHtml = await withdrawn.text();
+    expect(successHtml).not.toContain(minted.token);
+    expect(successHtml).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
+    expect(successHtml).not.toContain("/admin/");
     expect(JSON.stringify(current.logs)).not.toContain(minted.token);
     expect((await current.app.request(`${ADMIN_ORIGIN}/marketing/withdraw/${minted.token}`)).status).toBe(404);
   });
@@ -1344,6 +1462,23 @@ describe("marketing withdrawal HTTP ceremony", () => {
     sensitiveHeaders(response);
     expect(JSON.stringify(current.logs)).not.toContain(token);
     expect(current.logs.at(-1)?.route).toBe("/marketing/withdraw/:token");
+  });
+
+  it("uses the public stylesheet for invalid confirmation and capability pages", async () => {
+    const current = await fixture();
+    const confirmation = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/confirm`);
+    expect(confirmation.status).toBe(410);
+    const confirmationHtml = await confirmation.text();
+    expect(confirmationHtml).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
+    expect(confirmationHtml).toContain("withdrawal-card--error");
+    expect(confirmationHtml).not.toContain("/admin/");
+
+    const capability = await current.app.request(`${PUBLIC_ORIGIN}/marketing/withdraw/not-a-capability`);
+    expect(capability.status).toBe(404);
+    const capabilityHtml = await capability.text();
+    expect(capabilityHtml).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
+    expect(capabilityHtml).toContain("withdrawal-card--error");
+    expect(capabilityHtml).not.toContain("/admin/");
   });
 
   it.each([
@@ -1377,6 +1512,7 @@ describe("marketing withdrawal HTTP ceremony", () => {
     const confirmationHtml = await confirmation.text();
     expect(confirmationHtml).toContain(`lang="${locale}"`);
     expect(confirmationHtml).toContain(confirmationCopy);
+    expect(confirmationHtml).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
     const confirmationValue = /name="confirmation" value="([^"]+)"/.exec(confirmationHtml)?.[1];
     const success = await current.app.request(`${PUBLIC_ORIGIN}${route}`, {
       method: "POST",
@@ -1390,5 +1526,7 @@ describe("marketing withdrawal HTTP ceremony", () => {
     const successHtml = await success.text();
     expect(successHtml).toContain(`lang="${locale}"`);
     expect(successHtml).toContain(successCopy);
+    expect(successHtml).toContain(`href="${WITHDRAWAL_STYLES_PATH}"`);
+    expect(successHtml).toContain("withdrawal-card--success");
   });
 });

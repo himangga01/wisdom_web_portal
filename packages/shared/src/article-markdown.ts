@@ -35,6 +35,7 @@ export interface NormalizedArticleMarkdown {
 
 interface MarkdownSyntaxNode {
   type: string;
+  depth?: unknown;
   url?: unknown;
   identifier?: unknown;
   value?: unknown;
@@ -49,7 +50,6 @@ const ARTICLE_SANITIZE_SCHEMA: NonNullable<Parameters<typeof rehypeSanitize>[0]>
     "br",
     "code",
     "em",
-    "h1",
     "h2",
     "h3",
     "h4",
@@ -185,6 +185,23 @@ function validateSyntaxTree(node: MarkdownSyntaxNode, definitions: ReadonlySet<s
   for (const child of node.children ?? []) validateSyntaxTree(child, definitions);
 }
 
+function validateHeadingStructure(node: MarkdownSyntaxNode): void {
+  let h2Count = 0;
+  const visit = (candidate: MarkdownSyntaxNode): void => {
+    if (candidate.type === "heading") {
+      if (candidate.depth === 1) {
+        fail("malformed-structure", "Article Markdown body must not contain an H1");
+      }
+      if (candidate.depth === 2) h2Count += 1;
+    }
+    for (const child of candidate.children ?? []) visit(child);
+  };
+  visit(node);
+  if (h2Count === 0) {
+    fail("malformed-structure", "Article Markdown body must contain an H2");
+  }
+}
+
 export function normalizeValidateAndRenderArticleMarkdown(input: string): NormalizedArticleMarkdown {
   const bodyMarkdown = normalizeMarkdown(input);
   validateCharacters(bodyMarkdown);
@@ -193,6 +210,7 @@ export function normalizeValidateAndRenderArticleMarkdown(input: string): Normal
   const definitions = new Set<string>();
   collectDefinitions(markdownTree as MarkdownSyntaxNode, definitions);
   validateSyntaxTree(markdownTree as MarkdownSyntaxNode, definitions);
+  validateHeadingStructure(markdownTree as MarkdownSyntaxNode);
   const htmlTree = articleProcessor.runSync(markdownTree);
   const bodyHtml = String(articleProcessor.stringify(htmlTree));
   if (utf8ByteLength(bodyHtml) > MAX_RENDERED_BYTES) {

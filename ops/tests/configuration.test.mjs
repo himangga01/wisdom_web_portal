@@ -306,6 +306,7 @@ test("control processes receive only the common runtime contract and independent
     assert.match(plist, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/keychain-exec\.mjs/);
     assert.doesNotMatch(plist, /\/Users\/wisdom\/portal\/ops\/scripts/);
     assert.doesNotMatch(plist, /(?:SMTP_PASSWORD|DATA_ENCRYPTION_KEY)/);
+    assert.match(plist, /<key>Umask<\/key><integer>63<\/integer>/);
   }
 });
 
@@ -344,6 +345,8 @@ test("retention enforcement runs on a fixed bounded cadence in apply mode", asyn
   const retention = await render("launchd/com.jihye.portal.retention.plist.template");
 
   assert.match(retention, /<key>StartInterval<\/key><integer>3600<\/integer>/);
+  assert.match(retention, /ops\/scripts\/retention\.mjs/);
+  assert.match(retention, /<string>--database<\/string><string>\/Users\/wisdom\/Library\/Application Support\/WisdomPortal\/portal\.sqlite<\/string>/);
   assert.match(retention, /apps\/control\/dist\/cli\/purge\.js/);
   assert.match(retention, /<string>--apply<\/string>/);
   assert.match(retention, /<string>--batch-size<\/string><string>1000<\/string>/);

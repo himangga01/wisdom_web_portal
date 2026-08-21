@@ -1,7 +1,7 @@
 # ChatGPT Sites 의사결정과 위험 등록부
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.6
 
 ## 확정 결정
 
@@ -28,15 +28,11 @@
 | D-019 | 기존 `www` withdrawal link가 남아 있으면 cutover 중단 | capability와 철회 권리 보호 |
 | D-020 | 테스트·외부 변경·commit·push는 사용자 승인 단위로 실행 | 글로벌 작업 지침 준수 |
 | D-021 | Sites 내장 Analytics는 외부 baseline으로 사용 | connector/API 없이도 수동 비교 기준 유지 |
-| D-022 | Control first-party aggregate Analytics와 React 관리자 화면 구현 | 인기 페이지와 상담 참고값을 우리 서비스에서 제공 |
-| D-023 | 외부 analytics/차트 package, cookie와 browser visitor ID를 추가하지 않음 | 의존성과 추적 범위 최소화 |
-| D-024 | raw event·IP·UA·장기 visitor hash 대신 aggregate register sketch 저장 | 개별 visitor data 보관 방지 |
-| D-025 | 자체 순 방문자는 `추정 순 방문자`로 표시 | cookie-less 근사값의 한계 명시 |
-| D-026 | Analytics 구현은 React 관리자 branch 또는 descendant에서 수행 | master에 없는 `apps/admin` 경로 오판 방지 |
-| D-027 | validated Origin을 aggregate source 차원으로 저장 | owner-only Sites와 기존 Astro traffic 격리 |
-| D-028 | client rate는 bounded in-memory counter sketch, DB rate는 global aggregate만 사용 | pseudonymous subject row와 무제한 DB 증가 방지 |
-| D-029 | collection interval과 estimate quality를 관리자 응답에 포함 | 실제 0, 미수집, key reset과 saturation 구분 |
-| D-030 | schema v7은 전용 maintenance ceremony로만 적용 | 일반 rollback compatibility gate 유지 |
+| D-022 | Control first-party Analytics는 현재 서비스 독립 계획으로 관리 | Sites migration의 선행·완료 조건과 분리 |
+| D-023 | Base migration에 제3자 analytics package, cookie와 browser visitor ID를 추가하지 않음 | Sites 콘텐츠 이전 범위와 추적 경계 유지 |
+| D-024 | Sites 화면과 Control 동의 권위를 release ID로 결합 | old/new/rollback 화면이 자신의 정책과 token을 사용 |
+| D-025 | pending/default/retiring 상태와 exact opaque deployment identity를 DB·audit에 기록 | 수동 handoff 중단 시 재개와 rollback 근거 확보 |
+| D-026 | release ledger를 cross-system atomic transaction으로 표현하지 않음 | Sites와 SQLite 사이 원자성 오해 방지 |
 
 ## 실행 전 결정 gate
 
@@ -123,20 +119,15 @@ cutover 전에 다음을 만족해야 합니다.
 Astro release, legacy route와 DNS rollback target을 언제 제거할지는 cutover 후
 별도 결정합니다.
 
-### G-010 Analytics와 KPI 운영
+### G-010 Sites 내장 Analytics baseline
 
-- React 관리자 구현 branch 확인
-- 자체 수집 목적·항목·180일 보존에 대한 개인정보 처리방침 검토
-- exact public client Origin과 `추정 순 방문자` 문구 승인
-- Control aggregate collector와 React 성과 화면의 별도 구현 승인
-- Control과 public client analytics flag=false 배포 후 별도 production
-  활성화 승인
-- Sites Analytics UI의 제공 범위는 외부 baseline으로 별도 확인
-- 첫 7일 baseline과 동일 기간 Control 상담 aggregate 비교
-- 개인 단위 visitor-to-consultation 연결 금지
+- Sites Analytics UI의 실제 account 제공 범위를 확인
+- 첫 비교 가능한 기간의 Sites 지표를 외부 baseline으로 기록
+- Analytics가 제공되지 않아도 migration 실패로 처리하지 않음
+- 공식 지원이 확인되지 않은 API, export와 scraping을 사용하지 않음
+- 현재 서비스 성과지표와의 비교·통합을 이 gate에 포함하지 않음
 
-구현, test, production 활성화, Sites Analytics UI 조회와 baseline 기록은
-각각 별도 승인을 받습니다.
+Sites Analytics UI 조회와 baseline 기록은 각각 별도 승인을 받습니다.
 
 ## 위험과 대응
 
@@ -175,31 +166,21 @@ Astro release, legacy route와 DNS rollback target을 언제 제거할지는 cut
 | R-031 | Sites 전환 후 기존 health monitor가 잘못된 host 감시 | 장애 탐지 실패 | Sites URL과 API health monitor 분리 | G-003 |
 | R-032 | sitemap/RSS/robots/ownership route 누락 | 검색 발견성 저하 | Sites machine route에 포함 | G-007 |
 | R-033 | generated social card의 한글 텍스트 오류 | 브랜드 품질 저하 | 한 번 생성·검수, unusable일 때 한 번 재생성 | G-007 |
-| R-034 | Enterprise 소유 Site에 Analytics 미제공 | 외부 baseline 부재 | 최초 entitlement에서 기록하고 자체 Analytics 사용 | G-001, G-010 |
-| R-035 | Sites 인기 페이지를 확인 없이 지원한다고 약속 | 외부 기능 오해 | Sites UI 제공 여부와 자체 인기 페이지를 구분 | G-010 |
+| R-034 | Enterprise 소유 Site에 Analytics 미제공 | 외부 baseline 부재 | 최초 entitlement에서 미제공으로 기록하고 migration 계속 | G-001, G-010 |
+| R-035 | Sites 인기 페이지를 확인 없이 지원한다고 약속 | 외부 기능 오해 | 실제 account UI에서 제공 여부 확인 | G-010 |
 | R-036 | CLI/connector Analytics API를 가정 | 자동 KPI 수집 구현 실패 | web/desktop UI 기반 수동 review | G-010 |
-| R-037 | Sites와 자체 unique 정의를 동일시 | 잘못된 성과 판단 | source와 방법론을 함께 표시 | G-010 |
-| R-038 | 방문자와 상담 PII를 개인 단위 연결 | 개인정보·추적 위험 | 기간 aggregate만 비교 | G-006, G-010 |
-| R-039 | 제3자 SDK를 중복 추가 | cookie/consent와 데이터 흐름 확대 | 자체 collector와 Sites baseline만 사용 | G-006, G-010 |
-| R-040 | traffic 감소를 장애로 단정 | 잘못된 운영 대응 | health monitor의 보조 신호로만 사용 | G-010 |
-| R-041 | aggregate sketch를 정확한 사람 수로 표시 | 과장된 지표 | 모든 UI에 `추정 순 방문자`와 방법론 표시 | G-010 |
-| R-042 | master에서 React Analytics를 구현 | 잘못된 파일·중복 관리자 UI | React branch 또는 descendant를 hard gate로 확인 | G-010 |
-| R-043 | bot이 collector를 직접 호출 | traffic 지표 오염 | exact Origin, route allowlist, bot filter와 bounded rate-limit | G-010 |
-| R-044 | path에 query·token·임의 문자열 저장 | 개인정보·capability 노출 | strict path grammar와 active route allowlist | G-006, G-010 |
-| R-045 | 저장하지 않더라도 IP·UA 기반 추정 처리가 정책상 부적합 | 공개 후 개인정보 문제 | 처리방침 검토 전 client/server flag=false, 필요 시 opt-in 별도 재설계 | G-006, G-010 |
-| R-046 | owner-only 검증 traffic이 Astro 공개 traffic과 혼합 | 검증·baseline 왜곡 | server-derived source_origin과 origin별 enable 목록 | G-010 |
-| R-047 | client rate subject row가 공격 입력만큼 증가 | DB 고갈 | bounded in-memory counter sketch와 global fixed-row rate cap | G-010 |
-| R-048 | v7 migration이 일반 rollback gate에서 차단 | production 배포 실패 | v6 release retirement를 포함한 별도 maintenance ceremony | G-009, G-010 |
-| R-049 | 비활성 기간의 row 없음이 방문 0으로 표시 | 잘못된 운영 판단 | collection interval과 partial/none 상태 표시 | G-010 |
-| R-050 | HMAC root rotation 또는 sketch 품질 저하가 unique를 왜곡 | 추정치 불연속·역행 | key fingerprint fail-closed, 승인된 reset, quality flag | G-009, G-010 |
+| R-037 | 제3자 SDK를 중복 추가 | cookie/consent와 데이터 흐름 확대 | Base migration은 Sites 내장 Analytics만 사용 | G-006, G-010 |
+| R-038 | traffic 감소를 장애로 단정 | 잘못된 운영 대응 | health monitor의 보조 신호로만 사용 | G-010 |
+| R-039 | 이전 Sites 화면이 새 기본 정책을 받아 split-brain 발생 | 동의 증거와 화면 불일치 | embedded release ID, exact consent GET과 signed token | G-004 |
+| R-040 | rollback 대상 release 호환 시간이 이미 만료 | 오래된 화면 제출 실패 | bounded retiring window 안에서만 rollback, 만료 시 별도 복구 승인 | G-004 |
+| R-041 | ledger 존재를 cross-system 원자성으로 오인 | 중간 상태에서 잘못된 후속 작업 | expected state/identity CLI와 단계별 재개 절차 | G-004 |
 
 ## 현재 준비 상태
 
 | 항목 | 상태 |
 |---|---|
 | 현재 Sites 기능과 공식 정책 재확인 | 완료 |
-| Sites 내장 Analytics 기능과 현재 서비스 공백 검토 | 완료 |
-| first-party aggregate Analytics 구현 계획 | 완료 |
+| Sites 내장 Analytics 기능 검토 | 완료 |
 | 공개 route/content/design inventory | 완료 |
 | 상담 form/API/withdrawal boundary 검토 | 완료 |
 | 기존 migration 문서 전면 수정 | 완료 |
@@ -210,9 +191,9 @@ Astro release, legacy route와 DNS rollback target을 언제 제거할지는 cut
 | source push/saved version | 실행하지 않음 |
 | owner-only production deployment | 실행하지 않음 |
 | public access/custom domain/DNS | 변경하지 않음 |
-| Analytics UI/baseline/KPI review | 실행하지 않음 |
-| 자체 collector/schema/React 성과 화면 | 구현하지 않음 |
-| 코드 구현 | 실행하지 않음 |
+| Sites Analytics UI/baseline 기록 | 실행하지 않음 |
+| current Control release-ID consent protocol | 구현, 승인된 집중 테스트 대기 |
+| standalone Sites source 코드 | 실행하지 않음 |
 | 테스트·브라우저 검증 | 실행하지 않음 |
 | commit·push | 실행하지 않음 |
 

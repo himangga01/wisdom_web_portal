@@ -15,7 +15,11 @@ import path from "node:path";
 
 import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
 import { hashSecureRegularFile, readSecureRegularFile } from "./monitor-files.mjs";
-import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
+import {
+  assertCanonicalDirectoryIsolation,
+  assertNoSymlinkPath,
+  ensureRealDirectory,
+} from "./safe-paths.mjs";
 
 const MAX_BACKUP_STATUS_BYTES = 16 * 1024;
 const MAX_BACKUP_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024;
@@ -208,6 +212,11 @@ export async function createOnlineBackup(config, adapters) {
   if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) fail("BACKUP_PATH_UNSAFE", "Source database must be a regular non-symlink file");
   await ensureRealDirectory(config.backupRoot, "BACKUP_PATH_UNSAFE");
   await ensureRealDirectory(config.tempRoot, "BACKUP_PATH_UNSAFE");
+  await assertCanonicalDirectoryIsolation([
+    path.dirname(config.sourceDb),
+    config.backupRoot,
+    config.tempRoot,
+  ], "BACKUP_PATH_UNSAFE");
   await chmod(config.backupRoot, 0o700);
   await chmod(config.tempRoot, 0o700);
 

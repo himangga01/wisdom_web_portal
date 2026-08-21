@@ -57,8 +57,14 @@ const baseByRoute = new Map<PublicRoute, BaseSurface>(
   BASE_SURFACE_REGISTRY.map((surface) => [surface.route, surface]),
 );
 
-export function getBaseSurface(route: PublicRoute): BaseSurface {
+export function getBaseSurface(
+  route: PublicRoute,
+  options: { insightsLastModified?: string } = {},
+): BaseSurface {
   const surface = baseByRoute.get(route);
   if (!surface) throw new Error("PUBLIC_SURFACE_UNREGISTERED");
+  if (route === "/insights" && options.insightsLastModified) {
+    return { ...surface, lastModified: options.insightsLastModified };
+  }
   return surface;
 }

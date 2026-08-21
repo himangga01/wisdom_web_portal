@@ -2,6 +2,7 @@ import { LOCALES, type Locale } from "@wisdom/shared";
 
 import {
   buildConsultationSubmission,
+  consultationSubmissionFieldErrors,
   createConsultationIdempotencyKeyCache,
   loadConsentConfiguration,
   postConsultation,
@@ -63,8 +64,14 @@ export function initializeConsultationForms(documentRef: Document = document): v
     let activeConsent: ConsentConfiguration | undefined;
     let consentLoadGeneration = 0;
     let submitting = false;
+    let receiptStatusVisible = false;
 
-    const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
+    const showStatus = (
+      state: "submitting" | "success" | "error",
+      message: string,
+      receipt = false,
+    ): void => {
+      receiptStatusVisible = receipt;
       if (!status) return;
       status.hidden = false;
       status.dataset.state = state;
@@ -73,6 +80,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     };
 
     const hideStatus = (): void => {
+      receiptStatusVisible = false;
       if (!status) return;
       status.hidden = true;
       status.dataset.state = "";
@@ -83,10 +91,13 @@ export function initializeConsultationForms(documentRef: Document = document): v
     const applyServerFieldErrors = (errors: Record<string, string[]> | undefined): boolean => {
       if (!errors) return false;
       let first: FormControl | undefined;
-      const localizedMessage = form.dataset.errorServer ?? form.dataset.statusInvalid ?? "";
       for (const name of Object.keys(errors)) {
         const controls = controlsForField(form, name);
         if (controls.length === 0) continue;
+        const localizedMessage = controls[0]?.dataset.errorSchema
+          ?? form.dataset.errorServer
+          ?? form.dataset.statusInvalid
+          ?? "";
         controls[0]?.setCustomValidity(localizedMessage);
         for (const control of controls) {
           control.setAttribute("aria-invalid", "true");
@@ -205,6 +216,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
     }, true);
 
     form.addEventListener("input", (event) => {
+      if (receiptStatusVisible) hideStatus();
       const control = event.target;
       if (control instanceof Element && isFormControl(control)) {
         const relatedControls = control.name === ""
@@ -219,6 +231,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
       updateEmailConstraint();
     });
     form.addEventListener("change", (event) => {
+      if (receiptStatusVisible) hideStatus();
       updateEmailConstraint();
       if (event.target === localeControl) void refreshConsent();
     });
@@ -242,7 +255,11 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
       void (async () => {
         const originalSubmitLabel = submit?.textContent ?? "";
-        let terminalStatus: { state: "success" | "error"; message: string } | undefined;
+        let terminalStatus: {
+          state: "success" | "error";
+          message: string;
+          receipt?: boolean;
+        } | undefined;
         submitting = true;
         form.setAttribute("aria-busy", "true");
         if (submit) {
@@ -255,7 +272,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
           let submission;
           try {
             submission = buildConsultationSubmission(submissionData, consentAtSubmit);
-          } catch {
+          } catch (error) {
+            applyServerFieldErrors(consultationSubmissionFieldErrors(error));
             terminalStatus = { state: "error", message: form.dataset.statusInvalid ?? "" };
             return;
           }
@@ -267,13 +285,15 @@ export function initializeConsultationForms(documentRef: Document = document): v
             });
             if (!result.ok) {
               if (result.status === 409 && result.error?.code === "CONSENT_VERSION_STALE") {
-                if (selectedLocale() === submissionLocale) {
-                  await refreshConsent(submissionLocale);
-                }
-                terminalStatus = {
-                  state: "error",
-                  message: form.dataset.statusConsentUpdated ?? "",
-                };
+                const refreshed = selectedLocale() === submissionLocale
+                  ? await refreshConsent(submissionLocale)
+                  : undefined;
+                terminalStatus = refreshed
+                  ? {
+                      state: "error",
+                      message: form.dataset.statusConsentUpdated ?? "",
+                    }
+                  : undefined;
                 return;
               }
               if (result.status === 422 && applyServerFieldErrors(result.error?.fieldErrors)) {
@@ -297,7 +317,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
               "{receiptId}",
               result.receipt.receiptId,
             );
-            terminalStatus = { state: "success", message };
+            terminalStatus = { state: "success", message, receipt: true };
           } catch {
             terminalStatus = { state: "error", message: form.dataset.statusFailure ?? "" };
           }
@@ -309,7 +329,11 @@ export function initializeConsultationForms(documentRef: Document = document): v
           }
           syncSubmitAvailability();
           if (terminalStatus) {
-            showStatus(terminalStatus.state, terminalStatus.message);
+            showStatus(
+              terminalStatus.state,
+              terminalStatus.message,
+              terminalStatus.receipt === true,
+            );
           }
         }
       })();

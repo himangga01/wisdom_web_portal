@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readlink, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { verifyPublicCurrent, verifyPublicReleaseDirectory, writePublicReleaseManifest } from "../lib/public-release.mjs";
+import {
+  assertBootstrapSeedAllowed,
+  verifyPublicCurrent,
+  verifyPublicReleaseDirectory,
+  writePublicReleaseManifest,
+} from "../lib/public-release.mjs";
+import { seedPublicRelease } from "../scripts/seed-public.mjs";
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -134,6 +140,102 @@ test("bootstrap current is refused after any normal Wisdom publication exists", 
   await assert.rejects(verifyPublicCurrent({ publicReleaseRoot, publicCurrentLink: current }), {
     code: "PUBLIC_CURRENT_NOT_READY",
   });
+});
+
+test("bootstrap seed eligibility is permanently revoked by any Wisdom manifest marker", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-seed-eligibility-")));
+  const publicReleaseRoot = path.join(root, "public-releases");
+  const bootstrap = path.join(publicReleaseRoot, "20260716T010203Z-abcdef1");
+  const current = path.join(root, "public-current");
+  await mkdir(bootstrap, { recursive: true });
+  await writeFile(path.join(bootstrap, "index.html"), "bootstrap");
+  await writePublicReleaseManifest(bootstrap, "20260716T010203Z-abcdef1");
+  await symlink(bootstrap, current, process.platform === "win32" ? "junction" : "dir");
+
+  await assertBootstrapSeedAllowed({
+    publicReleaseRoot,
+    publicCurrentLink: current,
+  });
+
+  const retired = path.join(publicReleaseRoot, "20260716T020304Z-bbbbbbb");
+  await mkdir(retired);
+  await writeFile(path.join(retired, ".wisdom-release-manifest.json"), "tampered");
+  await assert.rejects(assertBootstrapSeedAllowed({
+    publicReleaseRoot,
+    publicCurrentLink: current,
+  }), { code: "PUBLIC_BOOTSTRAP_DOWNGRADE_FORBIDDEN" });
+});
+
+test("seed apply holds the public release lock, proves Tunnel unloaded, and rechecks before switching", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-seed-apply-")));
+  const publicReleaseRoot = path.join(root, "public-releases");
+  const sourceDist = path.join(root, "source");
+  const publicCurrentLink = path.join(root, "public-current");
+  const releaseId = "20260716T010203Z-abcdef1";
+  const destination = path.join(publicReleaseRoot, releaseId);
+  await mkdir(publicReleaseRoot);
+  await mkdir(sourceDist);
+  await writeFile(path.join(sourceDist, "index.html"), "bootstrap");
+  const calls = [];
+
+  const result = await seedPublicRelease({
+    sourceDist,
+    publicReleaseRoot,
+    publicCurrentLink,
+    releaseId,
+    destination,
+  }, {
+    acquireOperationLock: async () => {
+      calls.push("lock");
+      return async () => calls.push("unlock");
+    },
+    assertTunnelUnloaded: async () => calls.push("tunnel-unloaded"),
+    beforeFinalBootstrapCheck: async () => calls.push("final-recheck"),
+    switchRelease: async (target, current) => {
+      calls.push("switch");
+      await symlink(target, current, process.platform === "win32" ? "junction" : "dir");
+    },
+  });
+
+  assert.equal(result.verified, true);
+  assert.equal(path.resolve(publicReleaseRoot, await readlink(publicCurrentLink)), destination);
+  assert.deepEqual(calls, ["lock", "tunnel-unloaded", "final-recheck", "switch", "unlock"]);
+});
+
+test("seed recheck removes the candidate and keeps the pointer when a Wisdom release appears", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-seed-race-")));
+  const publicReleaseRoot = path.join(root, "public-releases");
+  const sourceDist = path.join(root, "source");
+  const publicCurrentLink = path.join(root, "public-current");
+  const releaseId = "20260716T010203Z-abcdef1";
+  const destination = path.join(publicReleaseRoot, releaseId);
+  await mkdir(publicReleaseRoot);
+  await mkdir(sourceDist);
+  await writeFile(path.join(sourceDist, "index.html"), "bootstrap");
+  let unlocked = false;
+
+  await assert.rejects(seedPublicRelease({
+    sourceDist,
+    publicReleaseRoot,
+    publicCurrentLink,
+    releaseId,
+    destination,
+  }, {
+    acquireOperationLock: async () => async () => {
+      unlocked = true;
+    },
+    assertTunnelUnloaded: async () => undefined,
+    beforeFinalBootstrapCheck: async () => {
+      const concurrent = path.join(publicReleaseRoot, "20260716T020304Z-bbbbbbb");
+      await mkdir(concurrent);
+      await writeFile(path.join(concurrent, ".wisdom-release-manifest.json"), "tampered");
+    },
+    switchRelease: async () => assert.fail("ineligible seed must not switch"),
+  }), { code: "PUBLIC_BOOTSTRAP_DOWNGRADE_FORBIDDEN" });
+
+  await assert.rejects(lstat(destination), { code: "ENOENT" });
+  await assert.rejects(lstat(publicCurrentLink), { code: "ENOENT" });
+  assert.equal(unlocked, true);
 });
 
 test("public release refuses symlinked content", async (t) => {

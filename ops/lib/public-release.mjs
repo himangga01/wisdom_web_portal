@@ -207,6 +207,49 @@ async function rootContainsWisdomRelease(publicReleaseRoot) {
   return false;
 }
 
+export async function assertBootstrapSeedAllowed({ publicReleaseRoot, publicCurrentLink }) {
+  await assertNoSymlinkPath(publicReleaseRoot, "PUBLIC_RELEASE_INVALID");
+  await assertNoSymlinkPath(path.dirname(publicCurrentLink), "PUBLIC_RELEASE_INVALID");
+  const rootMetadata = await lstat(publicReleaseRoot);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    fail("PUBLIC_RELEASE_INVALID", "Public release root must be a real directory");
+  }
+  const root = await realpath(publicReleaseRoot);
+  if (path.resolve(await realpath(path.dirname(publicCurrentLink))) !== path.resolve(path.dirname(root))) {
+    fail("PUBLIC_RELEASE_INVALID", "Public current pointer must be a sibling of its release root");
+  }
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    const metadata = await lstat(candidate);
+    if (metadata.isSymbolicLink()) {
+      fail("PUBLIC_BOOTSTRAP_DOWNGRADE_FORBIDDEN", "Public release root contains an unsafe entry");
+    }
+    if (!metadata.isDirectory()) continue;
+    const wisdomManifest = path.join(candidate, WISDOM_MANIFEST);
+    if (await exists(wisdomManifest)) {
+      fail("PUBLIC_BOOTSTRAP_DOWNGRADE_FORBIDDEN", "A Wisdom release already exists");
+    }
+  }
+  if (await exists(publicCurrentLink)) {
+    const pointer = await lstat(publicCurrentLink);
+    if (!pointer.isSymbolicLink()) {
+      fail("PUBLIC_RELEASE_INVALID", "Public current pointer must be a symlink");
+    }
+    const target = await realpath(publicCurrentLink);
+    const relative = path.relative(root, target);
+    if (
+      relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ||
+      path.resolve(path.dirname(target)) !== path.resolve(root)
+    ) {
+      fail("PUBLIC_RELEASE_INVALID", "Public current pointer escapes its release root");
+    }
+    if (await exists(path.join(target, WISDOM_MANIFEST))) {
+      fail("PUBLIC_BOOTSTRAP_DOWNGRADE_FORBIDDEN", "Current public release is a Wisdom release");
+    }
+  }
+  return { allowed: true };
+}
+
 export async function verifyPublicCurrent({ publicReleaseRoot, publicCurrentLink, requireWisdom = false }) {
   await assertNoSymlinkPath(publicReleaseRoot, "PUBLIC_CURRENT_NOT_READY");
   await assertNoSymlinkPath(path.dirname(publicCurrentLink), "PUBLIC_CURRENT_NOT_READY");

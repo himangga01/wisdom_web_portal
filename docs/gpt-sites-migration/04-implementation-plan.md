@@ -1,7 +1,7 @@
 # ChatGPT Sites 공개 포털 마이그레이션 구현 계획
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.6
 
 **목표:** 현재 공개 포털의 디자인, 네 언어 콘텐츠, 실무 안내, 정책 화면과
 상담 신청 UI를 독립 ChatGPT Sites source로 구현하고, 실제 상담·동의·철회는
@@ -17,16 +17,18 @@ cloudflared입니다.
 
 ## 실행 원칙
 
-- 이 문서는 계획이며 현재 어떤 task도 실행하지 않았습니다.
+- 이 문서의 외부 Sites task는 아직 실행하지 않았습니다. 현재 main service의
+  release-ID consent protocol만 별도 remediation 승인으로 구현 중이며 검증
+  결과는 실행 후 운영 근거에 기록합니다.
 - 각 승인 gate는 다음 gate의 권한을 포함하지 않습니다.
 - 사용자에게 승인받지 않은 테스트, 브라우저 검증, 외부 Site 변경, DNS 변경,
   commit 또는 push를 실행하지 않습니다.
 - 모든 Sites deployment는 production입니다.
 - owner-only access는 production URL의 접근 제한이며 staging이 아닙니다.
 - D1, R2와 SIWC를 추가하지 않습니다.
-- 제3자 analytics SDK, chart package, custom visitor cookie와 browser visitor
-  ID를 추가하지 않습니다. 자체 page-view는 Control aggregate rollup으로만
-  저장합니다.
+- Base migration에 제3자 analytics SDK, chart package, custom visitor
+  cookie와 browser visitor ID를 추가하지 않습니다. 선택적 first-party
+  adapter는 별도 승인 전 source와 deployment에 포함하지 않습니다.
 - 상담 body를 Sites route handler나 server action으로 proxy하지 않습니다.
 - fixture article·policy를 source, archive, version과 deployment에 넣지 않습니다.
 - 현재 Astro와 Control을 삭제하거나 덮어쓰지 않습니다.
@@ -39,6 +41,28 @@ cloudflared입니다.
 | `<SITES_ROOT>` | `/Users/wisdom/wisdom_project/gpt/wisdom_sites_portal` | 독립 Sites source |
 
 다른 worktree의 상대경로로 두 root를 다시 해석하지 않습니다.
+
+---
+
+## 현재 main service 선행 작업: release-ID consent protocol
+
+이 작업은 standalone Sites source 생성이나 deployment와 무관하게 현재
+Control 저장소에서 수행합니다.
+
+- [x] `sites_release_handoffs` migration과 exact state/identity invariant
+- [x] release ID별 consent GET과 release-bound form token
+- [x] pending/default/bounded retiring intake authority
+- [x] `sites-release prepare`, `record-deployment`, `activate`, `abort`
+- [x] rollback state transition과 immutable audit history
+- [x] 운영 절차 문서
+- [x] 승인된 집중 테스트: 2026-07-25 Control 7 files, 80 tests 통과
+- [x] 승인된 전체 검증: 2026-07-25 `npm run verify` exit 0
+- [ ] 실제 Sites old/new/rollback drill
+
+Sites source의 `consultation-adapter.ts`에 embedded release ID를 전달하는 변경,
+source push, saved version과 deployment는 아래 task의 별도 승인을 받은
+뒤에만 실행합니다. Control ledger 구현이 외부 Sites 변경 권한을 포함하지
+않습니다.
 
 ---
 
@@ -70,7 +94,8 @@ cloudflared입니다.
 
 이 task는 entitlement 확인만 수행하며 Site 생성이나 access 변경을 하지
 않습니다. Enterprise 소유 Site에서 내장 Analytics가 제공되지 않으면 외부
-baseline이 없는 것으로 기록하되 자체 Analytics 구현은 계속할 수 있습니다.
+baseline이 없는 것으로 기록하고 migration은 계속할 수 있습니다. 현재 서비스
+Analytics 계획의 상태에는 영향을 주지 않습니다.
 
 ---
 
@@ -540,7 +565,7 @@ release ceremony가 준비되지 않은 기간에는 article·policy publish를
 - [ ] owner-only가 아니면 별도 access-update 승인을 받은 뒤 `custom`
   owner-only로 설정합니다.
 - [ ] production env에 `PUBLIC_SITE_ORIGIN`과
-  `PUBLIC_CONSULTATION_API_ORIGIN`, `ANALYTICS_ENABLED=false`를 설정합니다.
+  `PUBLIC_CONSULTATION_API_ORIGIN`을 설정합니다.
 - [ ] runtime env를 source 또는 hosting file에 복사하지 않습니다.
 - [ ] environment revision을 기록합니다.
 
@@ -598,7 +623,10 @@ saved version은 배포하지 않은 상태입니다. 이 task 완료를 product
 - [ ] environment revision이 적용된 deployment인지 기록합니다.
 - [ ] 사용자가 별도 승인한 경우에만 production URL을 브라우저로 엽니다.
 - [ ] generated Sites origin을 기록하되 Control CORS 변경은 이 deployment
-  task에 포함하지 않고 07 Task 10D에서 별도 운영 승인을 받습니다.
+  task에 포함하지 않고 Task 14의 consultation/API 운영 승인에서
+  처리합니다.
+- [ ] 별도 승인되지 않은 first-party Analytics client가 source와 deployment에
+  포함되지 않았는지 확인합니다.
 
 이 URL은 private preview가 아니라 access-restricted production입니다.
 
@@ -658,42 +686,26 @@ SIWC 또는 ChatGPT login을 요구하지 않습니다.
 
 ---
 
-## Task 16. 자체 Analytics 구현과 KPI 운영 시작
+## Task 16. Sites 내장 Analytics baseline과 선택적 adapter
 
-**목적:** 현재 서비스에 없는 방문 성과지표를 Control aggregate와 React
-관리자에서 제공하고 Sites 내장 Analytics는 외부 baseline으로 사용합니다.
+**목적:** 공개된 Site의 내장 Analytics 제공 범위를 기록합니다. 현재 서비스
+collector 연동은 필요할 때만 별도 승인으로 수행합니다.
+
+Control schema, aggregate collector, KPI와 React 관리자 화면은 이 task의
+범위가 아니며
+[`2026-07-24-first-party-analytics.md`](../superpowers/plans/2026-07-24-first-party-analytics.md)의
+독립된 현재 서비스 작업입니다. 구현 여부가 Sites migration을 차단하지
+않습니다.
 
 **생성 예정**
 
 ```text
-<CURRENT_ROOT>/docs/gpt-sites-migration/08-kpi-review-log.md
+<CURRENT_ROOT>/docs/gpt-sites-migration/07-sites-analytics-review-log.md
 ```
 
-**사전 조건**
+**A. Sites 내장 Analytics baseline**
 
-- React 관리자 구현 branch
-- Task 6의 API origin/exact CORS 설계
-- 개인정보 처리방침 검토
-- 자체 Analytics 구현과 targeted test 별도 승인
-
-**구현**
-
-- [ ] 상세 계획
-  [`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)의
-  Task 0~9를 순서대로 수행합니다.
-- [ ] 외부 analytics/차트 package, cookie와 browser visitor ID를 추가하지
-  않습니다.
-- [ ] raw event와 장기 visitor identifier를 저장하지 않습니다.
-- [ ] React 관리자에서 추정 순 방문자, page views, trend, popular pages,
-  기간·granularity와 aggregate 상담 참고값을 제공합니다.
-- [ ] Control과 public client analytics flag를 모두 `false`로 먼저 배포하고
-  별도 승인 후 활성화합니다.
-- [ ] implementation, v7 maintenance, false-flag Control deployment,
-  owner-only CORS/env/version/deployment, synthetic check와 public activation을
-  07 Task 10A~10F의 별도 gate로 분리합니다.
-
-**public 공개 후 baseline**
-
+- [ ] Task 15의 public cutover 이후에만 baseline 기록을 시작합니다.
 - [ ] ChatGPT web 또는 desktop에서 Site의 `More actions → Analytics`를
   엽니다.
 - [ ] total unique visitors와 page views가 표시되는지 확인합니다.
@@ -701,22 +713,40 @@ SIWC 또는 ChatGPT login을 요구하지 않습니다.
 - [ ] date range와 granularity 변경이 가능한지 확인합니다.
 - [ ] 인기 페이지가 실제 화면에 제공되는지 별도로 기록합니다.
 - [ ] 첫 비교 가능한 7일 구간을 baseline으로 기록합니다.
-- [ ] 같은 기간 자체 Analytics와 Control consultation count를 확인합니다.
-- [ ] 자체 page views per visitor와 대략적 consultation conversion을
-  확인합니다.
-- [ ] period, granularity, 측정 시각과 제한사항을 운영 문서에 기록합니다.
+- [ ] period, granularity, 측정 시각과 제한사항을
+  `07-sites-analytics-review-log.md`에 기록합니다.
 
-**운영 경계**
+현재 account에 Analytics가 없으면 미제공 사실만 기록하며 migration 실패로
+처리하지 않습니다.
+
+**B. 선택적 first-party adapter**
+
+다음 조건을 모두 충족한 경우에만 별도 승인으로 진행합니다.
+
+- 현재 서비스 first-party Analytics가 별도 계획으로 구현·검증·배포됨
+- Task 15 public cutover가 완료되고 기존 Astro public traffic이 종료됨
+- final public Sites origin과 개인정보 처리방침 검토 완료
+- Sites client adapter, Control host/CORS와 활성화 범위 별도 승인
+
+승인된 작업은 다음 경계만 사용합니다.
+
+- [ ] existing collector wire contract와 동일한 최소 payload를 사용합니다.
+- [ ] cookie, browser visitor ID, query, hash, referrer와 retry를 추가하지
+  않습니다.
+- [ ] final public Sites origin만 Control exact CORS에 추가합니다.
+- [ ] 선택적 client flag와 API origin을 Sites runtime env에 추가합니다.
+- [ ] 새 saved version을 만든 뒤 별도 승인으로 production에 배포합니다.
+- [ ] 선택 route의 page-view before→after delta만 확인합니다.
+- [ ] owner-only generated origin의 traffic은 수집하지 않습니다.
+
+**공통 운영 경계**
 
 - CLI, IDE와 connector에서 Sites Analytics 자동 조회를 시도하지 않습니다.
 - 공식 지원이 확인되지 않은 Sites API, export와 scraping을 사용하지
   않습니다.
-- 자체 또는 Sites visitor와 consultation PII를 개인 단위로 연결하지
-  않습니다.
 - 지표를 근거로 콘텐츠나 UX를 자동 수정하지 않고 별도 승인을 받습니다.
-- 자세한 정의는
-  [`06-analytics-and-kpi-plan.md`](06-analytics-and-kpi-plan.md)와
-  [`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)를
+- Sites baseline 정의는
+  [`06-sites-analytics-baseline.md`](06-sites-analytics-baseline.md)를
   따릅니다.
 
 ---
@@ -756,15 +786,17 @@ Task 0 entitlement
   → Task 1 standalone source
   → Task 2~5 Sites content/UI
   → Task 6~9 Control integration and release compatibility
-      └─→ Task 16A first-party analytics implementation
   → Task 10 approved verification
   → Task 11 Site binding/env/access
   → Task 12 source push/saved version
   → Task 13 owner-only production deployment
   → Task 14 custom domain
   → Task 15 public access/cutover
-      ├─→ Task 16B analytics/KPI baseline
+      ├─→ Task 16 Sites built-in Analytics baseline
       └─→ Task 17 stabilization/rollback
+
+Task 15 + independently active current-service Analytics
+  └─→ Task 16 optional adapter (separate approval)
 ```
 
 Task 17의 rollback 절차는 장애가 발생하면 Task 13 이후 어느 시점에서든
@@ -772,12 +804,9 @@ Task 17의 rollback 절차는 장애가 발생하면 Task 13 이후 어느 시�
 
 ## 즉시 다음 승인 단위
 
-다음 실행 요청은 서로 독립된 두 최소 단위 중 하나입니다.
+Sites migration의 다음 최소 실행 요청은 **Task 0의 entitlement 확인**입니다.
+그 결과를 확인한 뒤에만 독립 source root 생성을 요청합니다.
 
-1. Sites migration: **Task 0의 entitlement 확인**
-2. 자체 Analytics:
-   [`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)
-   **Task 0의 React branch와 승인 gate 확인**
-
-Sites Task 0 결과를 확인한 뒤에만 독립 source root 생성을 요청합니다. 자체
-Analytics Task 0 승인은 Sites 생성·배포 권한을 포함하지 않습니다.
+현재 서비스 성과지표 구현은 이 migration의 다음 task가 아니며 별도
+[`2026-07-24-first-party-analytics.md`](../superpowers/plans/2026-07-24-first-party-analytics.md)에서
+독립적으로 승인합니다.

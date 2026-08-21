@@ -1,7 +1,7 @@
 # ChatGPT Sites 공개 포털 마이그레이션
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3  
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.5  
 로컬 Sites 패키지 기준: `0.1.31`  
 대상: 지혜행정사사무소 공개 포털
 
@@ -34,8 +34,9 @@
    monorepo 하위 workspace가 아니라 **독립 Sites source root**에 구축합니다.
 7. `www`를 Sites에 연결하면 현재 Caddy의 같은 host 경로 분기를 사용할 수
    없으므로 API와 마케팅 철회 origin을 분리합니다.
-8. Sites 내장 Analytics는 외부 baseline으로 사용하고, 외부 SDK 없는
-   first-party aggregate Analytics를 Control과 React 관리자에 구현합니다.
+8. Sites 내장 Analytics는 외부 baseline으로 사용합니다. Control과 React
+   관리자의 first-party Analytics는 현재 서비스 기능으로 별도
+   구현·운영하며 Sites migration의 선행 구현 task로 취급하지 않습니다.
 
 ## 문서 읽는 순서
 
@@ -51,11 +52,13 @@
    - 승인 후 수행할 작업을 순서와 결과물 단위로 나눕니다.
 6. [`05-decision-and-risk-register.md`](05-decision-and-risk-register.md)
    - 확정 결정, 실행 전 게이트와 위험을 기록합니다.
-7. [`06-analytics-and-kpi-plan.md`](06-analytics-and-kpi-plan.md)
-   - 자체 Analytics의 지표·privacy 기준과 Sites 외부 baseline을 정의합니다.
-8. [`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)
-   - 외부 분석 package 없이 수집 API, aggregate schema와 React 성과 화면을
-     구현하는 파일별 계획입니다.
+7. [`06-sites-analytics-baseline.md`](06-sites-analytics-baseline.md)
+   - Sites 내장 Analytics에서 확인할 기능과 공개 후 기록 범위를 정의합니다.
+
+현재 서비스의 성과지표 구현은 이 migration 폴더 밖의
+[`2026-07-24-first-party-analytics.md`](../superpowers/plans/2026-07-24-first-party-analytics.md)를
+따릅니다. 이 문서는 Astro·Control·React 관리자 기능이며 Sites migration과
+독립된 승인 단위입니다.
 
 ## 현재 결론
 
@@ -71,11 +74,10 @@
   public API origin으로 직접 보냅니다.
 - 콘텐츠 승인은 계속 Control에서 수행하고, 승인된 immutable public snapshot을
   Sites source version에 포함하는 운영자 주도 release handoff를 사용합니다.
-- 외부 analytics SDK와 chart package를 추가하지 않고 Control에 aggregate
-  page-view 수집을 구현합니다. React 관리자는 추정 순 방문자, 페이지 조회,
-  traffic 추이, 인기 페이지, 기간·단위와 상담 전환 참고값을 제공합니다.
-- cookie, browser visitor ID, raw event, raw IP·UA와 장기 visitor hash를
-  저장하지 않습니다.
+- 현재 서비스의 aggregate page-view 수집과 React 성과 화면은 별도
+  현재 서비스 계획에서 구현합니다. Sites migration은 기능을 다시 구현하지
+  않고, 공개 전환 시 승인된 collector wire contract만 선택적으로
+  재사용합니다.
 - Sites 내장 Analytics는 독립된 외부 baseline으로 사용합니다. Sites의 인기
   페이지는 현재 공식 문서와 connector에서 확인되지 않으므로 실제 account의
   제공 여부만 별도로 기록합니다.
@@ -89,13 +91,13 @@
 - Sites 프로젝트나 `.openai/hosting.json`은 생성하지 않았습니다.
 - Sites access, runtime 환경변수, custom domain과 deployment를 변경하지
   않았습니다.
-- Analytics 화면 조회와 KPI baseline 수집을 실행하지 않았습니다.
-- 자체 Analytics 코드와 React 성과 화면을 구현하지 않았습니다.
+- Sites Analytics 화면 조회와 baseline 기록을 실행하지 않았습니다.
 - 코드 수정, 테스트, 브라우저 검증, 커밋과 푸시는 실행하지 않았습니다.
 
 ## 문서 변경 규칙
 
-- Sites 마이그레이션 Markdown은 이 폴더에서 관리합니다.
+- Sites 마이그레이션 Markdown만 이 폴더에서 관리합니다. 현재 서비스 기능
+  구현계획은 `docs/superpowers/plans`에서 관리합니다.
 - 공개 콘텐츠의 사실은 현재 실행 코드와 승인된 production public release를
   기준으로 합니다.
 - fixture, placeholder 법률 문구와 예시 게시글을 운영 입력으로 확정하지

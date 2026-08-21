@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiRequest } from "./client";
+import { apiRequest, type RuntimeSchema } from "./client";
 
-export function useResource<T>(path: string) {
+export function useResource<T>(path: string, schema: RuntimeSchema<T>) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<unknown>();
   const [loading, setLoading] = useState(true);
@@ -17,14 +17,14 @@ export function useResource<T>(path: string) {
     setError(undefined);
     setData(undefined);
     try {
-      const nextData = await apiRequest<T>(path, { signal: controller.signal });
+      const nextData = await apiRequest(path, schema, { signal: controller.signal });
       if (!controller.signal.aborted) setData(nextData);
     } catch (nextError) {
       if (!controller.signal.aborted) setError(nextError);
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [path]);
+  }, [path, schema]);
   useEffect(() => {
     void load();
     return () => activeRequest.current?.abort();

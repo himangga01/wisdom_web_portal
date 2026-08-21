@@ -1,4 +1,4 @@
-import type { AdminDashboardDto } from "@wisdom/shared";
+import { adminDashboardSchema } from "@wisdom/shared";
 import { Link } from "react-router-dom";
 
 import { useResource } from "../../api/use-resource";
@@ -7,7 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 
 export function DashboardPage() {
-  const { data, error, loading } = useResource<AdminDashboardDto>("/dashboard");
+  const { data, error, loading } = useResource("/dashboard", adminDashboardSchema);
   return (
     <>
       <PageHeader eyebrow="OVERVIEW" title="대시보드" description="상담 접수와 운영 상태를 빠르게 확인합니다." />

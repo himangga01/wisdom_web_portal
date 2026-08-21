@@ -1,4 +1,8 @@
-import type { AdminConsultationDetailDto, ConsultationStatus } from "@wisdom/shared";
+import {
+  adminConsultationDetailSchema,
+  adminConsultationMutationResultSchema,
+  type ConsultationStatus,
+} from "@wisdom/shared";
 import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 
@@ -10,7 +14,10 @@ import { StatusBadge } from "../../components/StatusBadge";
 
 export function ConsultationDetailPage() {
   const { id = "" } = useParams();
-  const resource = useResource<AdminConsultationDetailDto>(`/consultations/${encodeURIComponent(id)}`);
+  const resource = useResource(
+    `/consultations/${encodeURIComponent(id)}`,
+    adminConsultationDetailSchema,
+  );
   const [mutationError, setMutationError] = useState<unknown>();
   const [pending, setPending] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -20,15 +27,19 @@ export function ConsultationDetailPage() {
     setPending(true);
     setMutationError(undefined);
     try {
-      await apiRequest(`/consultations/${encodeURIComponent(id)}/status`, {
-        method: "POST",
-        body: {
-          status: String(form.get("status")) as ConsultationStatus,
-          rowVersion: resource.data.rowVersion,
-          email: form.get("email") === "on",
-          hermes: form.get("hermes") === "on",
+      await apiRequest(
+        `/consultations/${encodeURIComponent(id)}/status`,
+        adminConsultationMutationResultSchema,
+        {
+          method: "POST",
+          body: {
+            status: String(form.get("status")) as ConsultationStatus,
+            rowVersion: resource.data.rowVersion,
+            email: form.get("email") === "on",
+            hermes: form.get("hermes") === "on",
+          },
         },
-      });
+      );
       await resource.reload();
     } catch (error) {
       setMutationError(error);
@@ -68,7 +79,11 @@ export function ConsultationDetailPage() {
               <div><dt>회사</dt><dd>{item.pii.company || "-"}</dd></div>
               <div className="full"><dt>문의 내용</dt><dd className="message-body">{item.pii.message}</dd></div>
             </dl>
-          ) : <p className="muted">보유기간 만료로 개인정보가 파기되었습니다.</p>}
+          ) : (
+            <p className="muted">
+              {item.piiAvailability === "purged" ? "파기 완료" : "보존기한 만료"}
+            </p>
+          )}
         </section>
       </div>
       <section className="panel form-panel">

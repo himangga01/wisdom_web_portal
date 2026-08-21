@@ -3,6 +3,12 @@ import type { AdminApiErrorBody, AdminApiSuccess } from "@wisdom/shared";
 let csrfToken: string | undefined;
 let authRequiredHandler: (() => void) | undefined;
 
+export interface RuntimeSchema<T> {
+  safeParse(value: unknown):
+    | { success: true; data: T }
+    | { success: false; error: unknown };
+}
+
 export class AdminApiError extends Error {
   readonly status: number;
   readonly code: AdminApiErrorBody["error"]["code"];
@@ -40,6 +46,7 @@ function isAdminApiErrorBody(value: unknown): value is AdminApiErrorBody {
 
 export async function apiRequest<T>(
   path: string,
+  schema: RuntimeSchema<T>,
   options: { method?: "GET" | "POST"; body?: unknown; csrf?: string; signal?: AbortSignal } = {},
 ): Promise<T> {
   const method = options.method ?? "GET";
@@ -54,7 +61,16 @@ export async function apiRequest<T>(
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   });
-  if (response.status === 204) return undefined as T;
+  if (response.status === 204) {
+    const result = schema.safeParse(undefined);
+    if (result.success) return result.data;
+    throw new AdminApiError(502, {
+      error: {
+        code: "ADMIN_API_RESPONSE_INVALID",
+        message: "서버 성공 응답 형식이 올바르지 않습니다.",
+      },
+    });
+  }
   let parsed: unknown;
   try {
     parsed = await response.json();
@@ -75,5 +91,18 @@ export async function apiRequest<T>(
     }
     throw new AdminApiError(response.status, body);
   }
-  return (parsed as AdminApiSuccess<T>).data;
+  const envelope = parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+    Object.keys(parsed).length === 1 && Object.hasOwn(parsed, "data")
+    ? parsed as AdminApiSuccess<unknown>
+    : undefined;
+  const result = envelope ? schema.safeParse(envelope.data) : undefined;
+  if (!result?.success) {
+    throw new AdminApiError(502, {
+      error: {
+        code: "ADMIN_API_RESPONSE_INVALID",
+        message: "서버 성공 응답 형식이 올바르지 않습니다.",
+      },
+    });
+  }
+  return result.data;
 }

@@ -19,8 +19,8 @@ const articleWithoutHash: Omit<PublishedArticleDocument, "contentSha256"> = {
   route: "/en/insights/procurement-guide",
   title: "Reviewed procurement guide",
   summary: "A practical starting point for entering Korean public procurement.",
-  bodyMarkdown: "## Start MARKDOWN_ONLY\n\nReviewed guidance.",
-  bodyHtml: "<h2>Start</h2>\n<p>Reviewed guidance.</p>\n",
+  bodyMarkdown: "## Start\n\nReviewed guidance.\n",
+  bodyHtml: "<h2>Start</h2>\n<p>Reviewed guidance.</p>",
   revisionCreatedAt: "2026-07-01T00:00:00.000Z",
   approvedAt: "2026-07-02T00:00:00.000Z",
   firstPublishedAt: "2026-07-03T00:00:00.000Z",
@@ -110,11 +110,11 @@ describe("published article DOM", () => {
     expect(articleNode).toMatchObject({
       headline: article.title,
       reviewedBy: {
-        "@id": "https://www.jihye-office.kr/#representative",
         name: "Jihye Kang",
         jobTitle: "Administrative Attorney",
       },
     });
+    expect((articleNode?.reviewedBy as Record<string, unknown>)).not.toHaveProperty("@id");
     expect(articleNode).not.toHaveProperty("author");
     expect(html).toMatch(/href="\/en\/insights"[^>]+aria-current="page"/);
     expect(html).not.toMatch(/hreflang="zh-(?:Hans|Hant)"/);

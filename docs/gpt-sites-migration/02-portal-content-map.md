@@ -1,7 +1,7 @@
 # 공개 포털 콘텐츠와 정보 단위
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.5
 
 ## 정보 공급 유형
 
@@ -13,8 +13,6 @@ Sites 화면에 나타나는 정보는 네 종류로 분리합니다.
 | 승인된 public snapshot | 게시글, 개인정보·마케팅 정책 | Sites version 생성 전 import | Control release manifest |
 | runtime 공개 설정 | canonical, API origin | Sites production env | 승인된 운영값 |
 | runtime 응답 | 동의문, form token, receipt | browser가 Control API 직접 호출 | Control |
-| 자체 운영 성과지표 | 추정 순 방문자, 페이지 조회, 추이, 인기 페이지 | Control aggregate API → React 관리자 | Control first-party aggregate |
-| 외부 성과 기준값 | Sites가 제공하는 방문·조회 지표 | Sites Analytics UI | Sites 자동 집계값 |
 
 상담 입력값과 withdrawal token은 Sites content가 아닙니다. source, version,
 storage, analytics와 browser storage에 포함하지 않습니다.
@@ -350,36 +348,6 @@ body를 받지 않습니다.
 
 상담, 개인정보, 마케팅 철회 안내와 404는 `noindex`입니다.
 
-## 운영 Analytics 정보 단위
-
-자체 Analytics는 React 관리자에서 다음 운영 정보를 제공합니다.
-
-- 추정 순 방문자
-- 페이지 조회
-- 두 지표의 시간 추이
-- date range와 granularity
-- normalized public path 기준 인기 페이지
-- 같은 기간 상담 접수와 대략적 aggregate 전환율
-
-Sites 내장 Analytics는 ChatGPT web·desktop에서 별도 외부 baseline으로
-확인합니다. 현재 CLI, IDE와 connector에서 직접 조회하거나 자체 관리자로
-자동 import하지 않습니다.
-
-다음은 분석 정보로 만들지 않습니다.
-
-- 상담자 이름, 전화, 이메일과 문의 내용
-- withdrawal token
-- 개별 visitor와 consultation의 연결
-- visitor cookie, browser visitor ID와 fingerprint SDK
-- raw IP, raw User-Agent, referrer, query와 raw page-view event
-
-자체 page-view payload는 schema version과 normalized path만 포함합니다. 같은
-기간의 자체 traffic aggregate와 Control 상담 접수 총계는 운영 참고용으로만
-비교합니다. 자세한 KPI 정의와 구현 순서는
-[`06-analytics-and-kpi-plan.md`](06-analytics-and-kpi-plan.md)와
-[`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)를
-따릅니다.
-
 ## 디자인 정보 단위
 
 | 항목 | 값 |
@@ -423,7 +391,6 @@ production deployment에 포함하지 않습니다.
 - 승인된 production article/consent snapshot과 manifest SHA
 - `PUBLIC_SITE_ORIGIN`
 - `PUBLIC_CONSULTATION_API_ORIGIN`
-- `ANALYTICS_ENABLED=false` 기본값과 별도 활성화 승인
 - API와 withdrawal host 이름
 - workspace의 public publishing과 custom-domain 사용 가능 여부
 - DNS 수정 권한
@@ -435,6 +402,3 @@ production deployment에 포함하지 않습니다.
 Sites public runtime env에 노출하는 값은 origin과 verification 같은 공개값으로
 한정합니다. SMTP, notification, database와 API secret은 기존 Control 운영
 범위에만 둡니다.
-Consultation과 first-party Analytics는 같은
-`PUBLIC_CONSULTATION_API_ORIGIN`을 사용하며 별도 analytics API origin은
-추가하지 않습니다.

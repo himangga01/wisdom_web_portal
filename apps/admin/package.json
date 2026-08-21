@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5173",
     "test": "vitest run src",
-    "test:e2e": "npm run build && playwright test",
+    "test:e2e": "npm run build && playwright test && playwright test --config playwright.control.config.ts",
+    "test:e2e:control": "npm run build && playwright test --config playwright.control.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

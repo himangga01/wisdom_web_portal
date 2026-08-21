@@ -6,6 +6,9 @@ import { issueFormToken, verifyFormToken } from "./form-token.js";
 const provider = createStaticKeyProvider({ id: "pii-v1", secret: Buffer.alloc(32, 7) });
 const binding = {
   locale: "en" as const,
+  releaseId: "release-2026-07-25",
+  bundleId: "bundle-2026-07-25",
+  manifestSha256: "a".repeat(64),
   privacyVersion: "privacy-v1",
   marketingVersion: "marketing-v1",
 };
@@ -26,6 +29,12 @@ describe("signed consultation form token", () => {
     const token = issueFormToken(provider, binding, 10_000, "nonce-1");
     expect(() => verifyFormToken(provider, `${token}x`, binding, 12_000)).toThrow();
     expect(() => verifyFormToken(provider, token, { ...binding, privacyVersion: "privacy-v2" }, 12_000)).toThrow();
+    expect(() => verifyFormToken(provider, token, { ...binding, releaseId: "release-other" }, 12_000)).toThrow();
+    expect(() => verifyFormToken(provider, token, { ...binding, bundleId: "bundle-other" }, 12_000)).toThrow();
+    expect(() => verifyFormToken(provider, token, {
+      ...binding,
+      manifestSha256: "b".repeat(64),
+    }, 12_000)).toThrow();
     expect(() => verifyFormToken(
       createStaticKeyProvider({ id: "pii-v2", secret: Buffer.alloc(32, 8) }),
       token,

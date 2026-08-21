@@ -2,7 +2,12 @@ import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
 import { parseControlConfig, type ControlConfig } from "./config.js";
-import { openDatabase, runMigrations, type ControlDatabase } from "./db/client.js";
+import {
+  assertDatabaseSchemaCurrent,
+  closeDatabase,
+  openDatabase,
+  type ControlDatabase,
+} from "./db/client.js";
 
 export interface ControlRuntime {
   config: ControlConfig;
@@ -18,6 +23,11 @@ export function createControlRuntime(
 ): ControlRuntime {
   const config = parseControlConfig(source);
   const db = openDatabase(config.databasePath);
-  runMigrations(db);
-  return { config, db };
+  try {
+    assertDatabaseSchemaCurrent(db);
+    return { config, db };
+  } catch (error) {
+    closeDatabase(db);
+    throw error;
+  }
 }

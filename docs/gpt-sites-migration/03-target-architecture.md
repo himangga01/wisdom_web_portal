@@ -1,7 +1,7 @@
 # ChatGPT Sites 목표 구조
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.6
 
 ## 구조 원칙
 
@@ -33,8 +33,7 @@ Anonymous browser
   │
   ├─ https://api.<domain> ───────────────→ Cloudflare Tunnel → Caddy → Control
   │                                         ├─ GET /api/v1/consent-documents
-  │                                         ├─ POST /api/v1/consultations
-  │                                         └─ POST /api/v1/analytics/page-views
+  │                                         └─ POST /api/v1/consultations
   │
   └─ https://consent.<domain> ───────────→ Cloudflare Tunnel → Caddy → Control
                                             ├─ GET /marketing/withdraw/:token
@@ -43,7 +42,6 @@ Anonymous browser
 
 Administrator
   └─ https://admin.<domain> ─────────────→ existing Control admin
-                                             └─ GET /admin/api/v1/analytics/overview
 
 Site operator
   └─ ChatGPT web/desktop Sites Analytics
@@ -178,10 +176,31 @@ release ledger에는 최소한 다음을 1:1로 연결합니다.
 - deployment ID와 environment revision
 - custom domain 확인 시각
 
-전환 기간에는 콘텐츠 발행 freeze를 걸거나 위 ceremony만 사용합니다. Sites
-배포 전 Control consent authority나 IndexNow가 먼저 활성화되는 순서를
-허용하지 않습니다. 무인 자동 Sites deployment는 현재 범위에 포함하지
-않습니다.
+현재 main service에는 다음 release-ID 동의 권위 protocol을 구현합니다.
+
+- `sites_release_handoffs`가 Control release, consent bundle, manifest,
+  Sites source commit, saved version, deployment와 environment revision을
+  연결합니다.
+- 상태는 `pending`, `default`, `retiring`이며 pending/default는 각각 하나만
+  존재할 수 있습니다.
+- `GET /api/v1/consent-documents`는 선택적 `releaseId`를 받고 응답에도 exact
+  `releaseId`와 `bundleId`를 반환합니다.
+- form token은 release ID, bundle ID, manifest SHA-256과 두 정책 version을
+  함께 서명합니다.
+- pending과 default, 아직 만료되지 않은 retiring release만 상담 제출을
+  허용합니다.
+- Sites rollback은 이전 retiring release의 bounded window 안에서만
+  수행합니다.
+
+운영 명령과 중단 복구는
+[`../operations/sites-publication.md`](../operations/sites-publication.md)에
+정리합니다. ledger는 Sites와 SQLite를 원자 transaction으로 묶지 않으며,
+정확한 state와 identity를 보존해 재개·rollback 판단 근거를 제공합니다.
+
+전환 기간에는 콘텐츠 발행 freeze를 걸거나 위 ceremony만 사용합니다. 새
+binding은 Sites 배포 전에 pending으로 조회 가능하지만 default로 전환하지
+않습니다. deployed identity 확인 전 activation이나 IndexNow를 허용하지
+않습니다. 무인 자동 Sites deployment는 현재 범위에 포함하지 않습니다.
 
 ## route 처리
 
@@ -217,8 +236,6 @@ allowlist와 withdrawal URL의 역할을 동시에 합니다. 목표 설정은 �
 
 - `GET /api/v1/consent-documents`
 - `POST /api/v1/consultations`
-- `POST /api/v1/analytics/page-views`
-- `OPTIONS /api/v1/analytics/page-views`
 - 승인된 health endpoint
 - consent/consultation 요청에 필요한 나머지 `OPTIONS`
 
@@ -284,11 +301,8 @@ cutover 전에 반드시 다음을 확인합니다.
 
 - `project_id`는 Site 생성 후 반환값으로 교체합니다.
 - runtime env와 secret은 이 파일에 쓰지 않습니다.
-- `PUBLIC_SITE_ORIGIN`, `PUBLIC_CONSULTATION_API_ORIGIN`과
-  `ANALYTICS_ENABLED=false`는 Sites production environment에서 관리합니다.
-- consultation과 first-party Analytics는 같은
-  `PUBLIC_CONSULTATION_API_ORIGIN`을 사용하며 별도 analytics API origin을
-  만들지 않습니다.
+- `PUBLIC_SITE_ORIGIN`과 `PUBLIC_CONSULTATION_API_ORIGIN`은 Sites
+  production environment에서 관리합니다.
 - server-render 단계가 client에 공개 API origin만 전달합니다.
 - 환경 revision은 이후 saved version deployment에서 적용합니다.
 
@@ -301,44 +315,26 @@ cutover 전에 반드시 다음을 확인합니다.
 - SIWC는 사용하지 않습니다.
 - 관리자 로그인은 Control admin host에만 있습니다.
 
-## 자체 Analytics와 Sites 외부 baseline
+## Sites Analytics와 선택적 first-party adapter
 
-외부 analytics SDK를 추가하지 않고 Astro와 Sites browser가 Control의
-first-party 수집 API를 직접 호출합니다.
+Base migration은 Sites가 자동 제공하는 내장 Analytics만 사용합니다. 제공
+범위와 공개 후 기록 방법은
+[`06-sites-analytics-baseline.md`](06-sites-analytics-baseline.md)를
+따르며 Control 관리자 화면으로 가져오거나 자동 동기화하지 않습니다.
 
-```text
-Astro / Sites browser
-  → minimal page-view payload
-  → Control exact Origin/CORS
-  → source별 page-view rollup + aggregate unique register sketch
-  → React administrator performance view
-```
+현재 서비스의 collector, aggregate schema와 React 관리자 구현은
+[`2026-07-24-first-party-analytics.md`](../superpowers/plans/2026-07-24-first-party-analytics.md)의
+독립 작업입니다. Sites migration은 이를 선행 조건으로 요구하거나 다시
+구현하지 않습니다.
 
-자체 수집기:
+공개 전환 후 현재 서비스 collector를 계속 사용할 필요가 생기면 별도 승인
+작업으로 Sites client adapter를 추가할 수 있습니다. 그때만 다음 경계를
+적용합니다.
 
-- `schemaVersion`과 normalized pathname만 받습니다.
-- raw event, raw IP, raw User-Agent와 장기 visitor identifier를 저장하지
-  않습니다.
-- client rate subject digest는 요청 처리 중 폐기하고 DB에는 bounded global
-  rate aggregate만 저장합니다.
-- cookie와 browser visitor ID를 사용하지 않습니다.
-- `추정 순 방문자`, page views, time series, popular pages, 기간·단위와
-  aggregate consultation reference를 제공합니다.
-- 자세한 설계는
-  [`07-first-party-analytics-implementation-plan.md`](07-first-party-analytics-implementation-plan.md)를
-  따릅니다.
-
-Sites는 배포된 Site traffic을 별도로 자동 기록합니다. 공식 확인 범위는 total
-unique visitors, total page views, 두 지표의 time series, date range와
-granularity입니다.
-
-현재 Analytics는 Enterprise workspace 소유 Site에서 제공되지 않습니다.
-CLI·IDE와 현재 connector에는 analytics 조회 기능이 없으므로 Control admin으로
-자동 import하거나 dashboard를 복제하지 않습니다.
-
-Sites의 인기 페이지는 실제 account에서 제공될 때만 외부 baseline에
-기록합니다. 자체 Analytics와 Sites 수치는 집계 방법이 다르므로 일치를
-강제하지 않으며 개인 단위 attribution을 만들지 않습니다.
+- final public Sites origin에 대한 Control host/CORS 계약을 추가합니다.
+- payload는 기존 collector의 최소 wire contract만 재사용합니다.
+- cookie, browser visitor ID, query, hash와 referrer를 추가하지 않습니다.
+- adapter 구현·활성화·검증은 base migration 완료와 별개의 승인 단위입니다.
 
 ## SEO와 machine route
 
@@ -357,11 +353,9 @@ Sites의 인기 페이지는 실제 account에서 제공될 때만 외부 baseli
 - 상담 body는 browser에서 Control API로 직접 보냅니다.
 - Sites source, runtime log, D1, R2, analytics와 browser storage에 상담 PII를
   저장하지 않습니다.
-- third-party analytics SDK, visitor cookie, browser visitor ID와 fingerprint
-  SDK를 추가하지 않습니다.
-- custom page-view는 normalized public path만 전송하며 raw event 대신
-  aggregate rollup과 fixed register sketch로 저장합니다.
-- query, hash, referrer, page title, raw IP와 raw User-Agent를 저장하지
+- Base migration에 third-party analytics SDK, visitor cookie, browser visitor
+  ID와 fingerprint SDK를 추가하지 않습니다.
+- 선택적 first-party adapter는 별도 승인 전 source와 deployment에 포함하지
   않습니다.
 - API response는 schema validation 후 표시합니다.
 - 동의문 조회 실패 시 submit을 차단합니다.
@@ -398,10 +392,9 @@ Sites regression이면 version 목록에서 이전 승인 saved version을 선�
 production에 다시 배포합니다.
 
 해당 version이 다른 article manifest를 포함하면 먼저 대응 Control release를
-active authority로 정렬합니다. equality와 exact article route를 확인하기
-전에는 그 Sites source의 first-party Analytics client를 `false`로 둡니다.
-그렇지 않으면 공개 article view가 Control route validation에서 422로
-누락됩니다.
+active authority로 정렬합니다. 선택적 first-party adapter가 별도로 운영
+중이면 version과 collector route 계약을 정렬하기 전 adapter를 먼저
+비활성화합니다.
 
 ### host rollback
 

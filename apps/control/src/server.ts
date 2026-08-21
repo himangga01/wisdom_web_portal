@@ -9,6 +9,7 @@ import {
 } from "./articles/publication-release.js";
 import { createIndexNowKeyCache } from "./articles/indexnow-sender.js";
 import { createDatabaseConsentAuthorityResolver } from "./consent/service.js";
+import { createReleaseBoundConsentAuthorityResolver } from "./consent/release-authority.js";
 import { closeDatabase } from "./db/client.js";
 import { createControlRuntime, loadLocalEnvironment } from "./runtime.js";
 
@@ -21,22 +22,29 @@ const indexNowKeyCache = runtime.config.indexNow
     })
   : undefined;
 indexNowKeyCache?.start();
+const releaseConsentAuthorityResolver = runtime.config.publication
+  ? createReleaseConsentAuthorityResolver(runtime.db, runtime.config.publication)
+  : undefined;
+const consentAuthorityResolver = createReleaseBoundConsentAuthorityResolver(
+  runtime.db,
+  releaseConsentAuthorityResolver ?? createDatabaseConsentAuthorityResolver(runtime.db),
+);
 const articlePublication = runtime.config.publication
   ? (() => {
       reconcilePublicationActivation(runtime.db, {
         requestId: "startup-publication-reconcile",
         nowMs: Date.now(),
-      }, runtime.config.publication);
+      }, runtime.config.publication, {
+        activateAuthority: releaseConsentAuthorityResolver!.activate,
+      });
       return createArticlePublicationActions(
         runtime.db,
         runtime.config.keyProvider,
         runtime.config.publication,
+        { activateAuthority: releaseConsentAuthorityResolver!.activate },
       );
     })()
   : undefined;
-const consentAuthorityResolver = runtime.config.publication
-  ? createReleaseConsentAuthorityResolver(runtime.db, runtime.config.publication)
-  : createDatabaseConsentAuthorityResolver(runtime.db);
 const app = createControlApp({
   db: runtime.db,
   keyProvider: runtime.config.keyProvider,

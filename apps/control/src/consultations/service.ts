@@ -16,6 +16,7 @@ import type {
   ConsentAuthority,
   ConsentAuthorityResolver,
 } from "../consent/service.js";
+import { consentAuthorityIdentity } from "../consent/release-authority.js";
 
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -229,19 +230,9 @@ export function acceptConsultation(
         : { kind: "conflict" };
     }
 
-    let authority: ConsentAuthority | undefined;
+    let tokenBinding: ReturnType<typeof verifyFormToken>;
     try {
-      authority = options.resolveConsentAuthority();
-    } catch {
-      authority = undefined;
-    }
-    if (!authority) {
-      db.sqlite.exec("ROLLBACK");
-      return { kind: "consent-unavailable" };
-    }
-
-    try {
-      verifyFormToken(provider, input.formToken, {
+      tokenBinding = verifyFormToken(provider, input.formToken, {
         locale: input.consultation.locale,
         privacyVersion: input.consultation.privacyConsent.version,
         marketingVersion: input.consultation.marketingConsent.version,
@@ -249,6 +240,37 @@ export function acceptConsultation(
     } catch {
       db.sqlite.exec("ROLLBACK");
       return { kind: "invalid-submission" };
+    }
+
+    let authority: ConsentAuthority | undefined;
+    try {
+      authority = options.resolveConsentAuthority({
+        releaseId: tokenBinding.releaseId,
+        nowMs: input.nowMs,
+      });
+    } catch {
+      db.sqlite.exec("ROLLBACK");
+      return { kind: "consent-unavailable" };
+    }
+    if (!authority) {
+      db.sqlite.exec("ROLLBACK");
+      return { kind: "stale-consent" };
+    }
+
+    let authorityIdentity: ReturnType<typeof consentAuthorityIdentity>;
+    try {
+      authorityIdentity = consentAuthorityIdentity(db, authority);
+    } catch {
+      db.sqlite.exec("ROLLBACK");
+      return { kind: "consent-unavailable" };
+    }
+    if (
+      authorityIdentity.releaseId !== tokenBinding.releaseId ||
+      authorityIdentity.bundleId !== tokenBinding.bundleId ||
+      authorityIdentity.manifestSha256 !== tokenBinding.manifestSha256
+    ) {
+      db.sqlite.exec("ROLLBACK");
+      return { kind: "stale-consent" };
     }
 
     const resolvedConsent = authoritativeConsentRows(db, input.consultation, authority);

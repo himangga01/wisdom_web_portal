@@ -1,4 +1,4 @@
-import type { AdminFailureListDto } from "@wisdom/shared";
+import { adminFailureListSchema, adminRequeuedSchema } from "@wisdom/shared";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -11,12 +11,15 @@ import { Pagination } from "../../components/Pagination";
 export function FailuresPage() {
   const [search] = useSearchParams();
   const page = search.get("page") ?? "1";
-  const resource = useResource<AdminFailureListDto>(`/failures?page=${encodeURIComponent(page)}`);
+  const resource = useResource(
+    `/failures?page=${encodeURIComponent(page)}`,
+    adminFailureListSchema,
+  );
   const [pending, setPending] = useState<string>();
   const [mutationError, setMutationError] = useState<unknown>();
   const requeue = async (id: string) => {
     setPending(id); setMutationError(undefined);
-    try { await apiRequest(`/failures/${encodeURIComponent(id)}/requeue`, { method: "POST", body: {} }); await resource.reload(); }
+    try { await apiRequest(`/failures/${encodeURIComponent(id)}/requeue`, adminRequeuedSchema, { method: "POST", body: {} }); await resource.reload(); }
     catch (error) { setMutationError(error); }
     finally { setPending(undefined); }
   };

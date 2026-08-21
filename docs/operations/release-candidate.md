@@ -12,12 +12,25 @@
 
 ## 현재 검증 상태
 
-- 2026-07-21 현재 작업 트리에서 `npm run verify`가 exit 0으로 통과했다.
-- typecheck: shared·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
-- 테스트: root orchestration 11/11, shared 70/70, control 435/435, site 102/102, Ops 232/232.
+- 2026-07-25 20:26~20:27 KST 현재 작업 트리에서 `npm run verify`가 exit 0으로 통과했다.
+- typecheck: shared·admin·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
+- 테스트: root orchestration 13/13, shared 72/72, admin 4/4, control 470/470, site 105/105, Ops 257/257.
 - 정적 빌드: fixture publication snapshot으로 4개 언어 68페이지 생성.
-- 브라우저 E2E: Chromium·Firefox·WebKit 합계 117/117 통과.
-- 검증 기준 code commit: `273baa0` (`fix: address full code review findings`).
+- 브라우저 E2E: 관리자 mock server 15/15, 실제 Hono Control 연동 1/1, Site Chromium·Firefox·WebKit 123/123 통과.
+- 검증 기준 base code commit: `62c11ce5646dc71e063c8610f798a3d3964d3bca`. 검증 대상은 이 commit 위의 커밋되지 않은 현재 작업 트리이므로 아직 릴리스 commit 근거가 아니다.
+- 외부 Sites project/version/deployment와 release handoff는 생성하거나 실행하지 않았다.
+
+## 승인 대기 운영 drill
+
+다음 항목은 이번 자동 검증에서 실행하지 않았으며 실제 환경 증거가 생길 때까지 pending이다.
+
+- [ ] prune된 release에서 publication build
+- [ ] bootstrap → first publication → Tunnel start
+- [ ] after-switch fault recovery
+- [ ] retention schedule과 restore 상호배제
+- [ ] non-default `CONTROL_PORT` deploy readiness
+- [ ] offsite artifact로 새 장비 restore
+- [ ] Sites old/new/rollback release handoff
 
 ## 2026-07-16 과거 검증 기록
 

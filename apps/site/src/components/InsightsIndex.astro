@@ -1,6 +1,8 @@
 ---
 import type { Locale, PublishedArticleDocument } from "@wisdom/shared";
 
+import { comparePublishedArticlesByRecency } from "../content/published-articles.js";
+
 interface Props {
   locale: Locale;
   articles: readonly PublishedArticleDocument[];
@@ -8,7 +10,9 @@ interface Props {
 }
 
 const { locale, articles, emptyMessage } = Astro.props;
-const exactLocaleArticles = articles.filter((article) => article.locale === locale);
+const exactLocaleArticles = articles
+  .filter((article) => article.locale === locale)
+  .sort(comparePublishedArticlesByRecency);
 const labels: Record<Locale, { updated: string; read: string; empty: string }> = {
   ko: { updated: "최종 검수", read: "안내 읽기", empty: "아직 공개된 실무 안내가 없습니다." },
   en: { updated: "Last reviewed", read: "Read guidance", empty: "No practical guidance has been published yet." },

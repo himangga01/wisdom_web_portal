@@ -42,6 +42,23 @@ export interface ConsultationSubmission {
   };
 }
 
+interface ValidationIssue {
+  path?: unknown;
+}
+
+const CONSULTATION_FIELD_NAMES = new Set([
+  "locale",
+  "category",
+  "name",
+  "phone",
+  "email",
+  "company",
+  "preferredContact",
+  "message",
+  "privacyConsent",
+  "marketingConsent",
+]);
+
 export type ConsultationPostResult =
   | { ok: true; receipt: ConsultationReceipt }
   | { ok: false; status: number; error?: ApiError; retryAfterSeconds?: number };
@@ -178,6 +195,22 @@ export function buildConsultationSubmission(
       website: formValue(data, "website"),
     },
   };
+}
+
+export function consultationSubmissionFieldErrors(
+  error: unknown,
+): Record<string, string[]> | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const issues = (error as { issues?: unknown }).issues;
+  if (!Array.isArray(issues)) return undefined;
+  const fieldErrors: Record<string, string[]> = {};
+  for (const issue of issues as ValidationIssue[]) {
+    if (!Array.isArray(issue.path) || typeof issue.path[0] !== "string") continue;
+    const field = issue.path[0];
+    if (!CONSULTATION_FIELD_NAMES.has(field)) continue;
+    (fieldErrors[field] ??= []).push("invalid");
+  }
+  return Object.keys(fieldErrors).length > 0 ? fieldErrors : undefined;
 }
 
 export async function postConsultation(

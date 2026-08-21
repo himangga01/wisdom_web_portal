@@ -272,7 +272,7 @@ describe("Hermes article draft intake", () => {
     })), "utf8");
     expect(acceptHermesArticleDraft(deps, request(unsafe))).toEqual({ kind: "validation-failed" });
     const pii = Buffer.from(JSON.stringify(draft({
-      bodyMarkdown: "Private contact: private@example.com",
+      bodyMarkdown: "## Contact\n\nPrivate contact: private@example.com",
     })), "utf8");
     expect(acceptHermesArticleDraft(
       deps,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import {
@@ -12,10 +13,19 @@ import { createControlApp, type RedactedLogEvent } from "./app.js";
 import {
   activateConsentBundle,
   createDatabaseConsentAuthorityResolver,
+  getPublishedConsentBundleById,
   seedConsentDocuments,
   type ConsentAuthority,
   type ConsentAuthorityResolver,
 } from "./consent/service.js";
+import { createReleaseBoundConsentAuthorityResolver } from "./consent/release-authority.js";
+import {
+  activateSitesReleaseHandoff,
+  getSitesReleaseHandoff,
+  MIN_RETIRING_WINDOW_MS,
+  prepareSitesReleaseHandoff,
+  recordSitesReleaseDeployment,
+} from "./articles/sites-release-handoff.js";
 import type { IntakeFaultPoint } from "./consultations/service.js";
 import { createStaticKeyProvider } from "./crypto/index.js";
 import { closeDatabase, openDatabase } from "./db/client.js";
@@ -116,6 +126,8 @@ async function consentConfiguration(app: Fixture["app"], locale = "en") {
   expect(response.status).toBe(200);
   return await response.json() as {
     locale: "en";
+    releaseId: string;
+    bundleId: string;
     documents: {
       privacy: { version: string; contentSha256: string };
       marketing: { version: string; contentSha256: string };
@@ -172,6 +184,175 @@ function expectNoRequestCanaries(output: string, body: string, idempotencyKey: s
 }
 
 describe("public control API", () => {
+  it("keeps old, pending, activated, and expired Sites forms bound to their embedded release", async () => {
+    let resolver: ConsentAuthorityResolver | undefined;
+    const current = fixture({
+      consentAuthorityResolver: (request) => resolver?.(request),
+    });
+    const releaseA = "sites-control-release-a";
+    const manifestA = Buffer.alloc(32, 41);
+    const bundleA = getPublishedConsentBundleById(
+      current.database.db,
+      "bundle-2026-07-16",
+    )!;
+    const bundleAContentSha256 = createHash("sha256")
+      .update(`${JSON.stringify(bundleA, null, 2)}\n`, "utf8")
+      .digest("hex");
+    current.database.db.sqlite.prepare(`
+      INSERT INTO releases (
+        id, version, path, manifest_sha256, state, created_at_ms, activated_at_ms,
+        created_by, verified_at_ms, verification_sha256, metadata_json
+      ) VALUES (?, 'sites-control-version-a', '/release-a', ?, 'active', ?, ?,
+        'system', ?, ?, ?)
+    `).run(
+      releaseA,
+      manifestA,
+      current.now,
+      current.now,
+      current.now,
+      manifestA,
+      JSON.stringify({
+        consentBundle: {
+          bundleId: "bundle-2026-07-16",
+          contentFileSha256: bundleAContentSha256,
+        },
+      }),
+    );
+    const commonA = {
+      releaseId: releaseA,
+      manifestSha256: manifestA.toString("hex"),
+      sitesSourceCommit: "a".repeat(40),
+      environmentRevision: "environment-revision-1",
+    };
+    prepareSitesReleaseHandoff(current.database.db, {
+      ...commonA,
+      expectedState: "absent",
+      bundleId: "bundle-2026-07-16",
+    }, { nowMs: current.now, requestId: "app-sites-prepare-a" });
+    recordSitesReleaseDeployment(current.database.db, {
+      ...commonA,
+      expectedState: "pending",
+      savedVersionId: "saved-version-a",
+      deploymentId: "deployment-a",
+    }, { nowMs: current.now + 1, requestId: "app-sites-deployment-a" });
+    activateSitesReleaseHandoff(current.database.db, {
+      ...commonA,
+      expectedState: "pending",
+      savedVersionId: "saved-version-a",
+      deploymentId: "deployment-a",
+      retiringWindowMs: MIN_RETIRING_WINDOW_MS,
+    }, { nowMs: current.now + 2, requestId: "app-sites-activate-a" });
+
+    seedConsentDocuments(current.database.db, consentBundle("bundle-sites-b", "sites-b"), current.now + 3);
+    activateConsentBundle(current.database.db, "bundle-sites-b", current.now + 4);
+    current.database.db.sqlite.prepare(`
+      UPDATE releases SET state = 'retired', rolled_back_at_ms = ? WHERE id = ?
+    `).run(current.now + 4, releaseA);
+    const releaseB = "sites-control-release-b";
+    const manifestB = Buffer.alloc(32, 42);
+    const bundleB = getPublishedConsentBundleById(current.database.db, "bundle-sites-b")!;
+    const bundleBContentSha256 = createHash("sha256")
+      .update(`${JSON.stringify(bundleB, null, 2)}\n`, "utf8")
+      .digest("hex");
+    current.database.db.sqlite.prepare(`
+      INSERT INTO releases (
+        id, version, path, manifest_sha256, state, created_at_ms, activated_at_ms,
+        created_by, verified_at_ms, verification_sha256, metadata_json
+      ) VALUES (?, 'sites-control-version-b', '/release-b', ?, 'active', ?, ?,
+        'system', ?, ?, ?)
+    `).run(
+      releaseB,
+      manifestB,
+      current.now + 5,
+      current.now + 5,
+      current.now + 5,
+      manifestB,
+      JSON.stringify({
+        consentBundle: {
+          bundleId: "bundle-sites-b",
+          contentFileSha256: bundleBContentSha256,
+        },
+      }),
+    );
+    const commonB = {
+      releaseId: releaseB,
+      manifestSha256: manifestB.toString("hex"),
+      sitesSourceCommit: "b".repeat(40),
+      environmentRevision: "environment-revision-1",
+    };
+    prepareSitesReleaseHandoff(current.database.db, {
+      ...commonB,
+      expectedState: "absent",
+      bundleId: "bundle-sites-b",
+    }, { nowMs: current.now + 6, requestId: "app-sites-prepare-b" });
+    recordSitesReleaseDeployment(current.database.db, {
+      ...commonB,
+      expectedState: "pending",
+      savedVersionId: "saved-version-b",
+      deploymentId: "deployment-b",
+    }, { nowMs: current.now + 7, requestId: "app-sites-deployment-b" });
+
+    resolver = createReleaseBoundConsentAuthorityResolver(
+      current.database.db,
+      createDatabaseConsentAuthorityResolver(current.database.db),
+    );
+    const oldConfiguration = await consentConfiguration(current.app);
+    const pendingConfigurationResponse = await current.app.request(
+      `http://localhost/api/v1/consent-documents?locale=en&releaseId=${releaseB}`,
+    );
+    expect(pendingConfigurationResponse.status).toBe(200);
+    const pendingConfiguration = await pendingConfigurationResponse.json() as Awaited<
+      ReturnType<typeof consentConfiguration>
+    >;
+    expect(oldConfiguration).toMatchObject({
+      releaseId: releaseA,
+      bundleId: "bundle-2026-07-16",
+    });
+    expect(pendingConfiguration).toMatchObject({
+      releaseId: releaseB,
+      bundleId: "bundle-sites-b",
+    });
+
+    current.now += 2_000;
+    expect((await post(
+      current.app,
+      JSON.stringify(submission(oldConfiguration)),
+      "sites-old-form-before-activation",
+    )).status).toBe(201);
+    expect((await post(
+      current.app,
+      JSON.stringify(submission(pendingConfiguration)),
+      "sites-new-form-before-activation",
+    )).status).toBe(201);
+
+    const activatedAtMs = current.now + 10;
+    activateSitesReleaseHandoff(current.database.db, {
+      ...commonB,
+      expectedState: "pending",
+      savedVersionId: "saved-version-b",
+      deploymentId: "deployment-b",
+      retiringWindowMs: MIN_RETIRING_WINDOW_MS,
+    }, { nowMs: activatedAtMs, requestId: "app-sites-activate-b" });
+    const acceptUntilMs = getSitesReleaseHandoff(current.database.db, releaseA)!.acceptUntilMs!;
+    current.now = acceptUntilMs - 10_000;
+    const retiringConfigurationResponse = await current.app.request(
+      `http://localhost/api/v1/consent-documents?locale=en&releaseId=${releaseA}`,
+    );
+    expect(retiringConfigurationResponse.status).toBe(200);
+    const retiringConfiguration = await retiringConfigurationResponse.json() as Awaited<
+      ReturnType<typeof consentConfiguration>
+    >;
+    current.now = acceptUntilMs + 1;
+    expect((await post(
+      current.app,
+      JSON.stringify(submission(retiringConfiguration)),
+      "sites-old-form-after-retiring-window",
+    )).status).toBe(409);
+    expect((await current.app.request(
+      `http://localhost/api/v1/consent-documents?locale=en&releaseId=${releaseA}`,
+    )).status).toBe(503);
+  });
+
   it("keeps GET and intake bound to one published release while a newer DB bundle awaits publication", async () => {
     const published = publishedAuthority("bundle-2026-07-16", "2026-07-16");
     const current = fixture({ consentAuthorityResolver: () => published });

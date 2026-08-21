@@ -47,7 +47,14 @@ export type ConsentAuthority =
       bundle: PublishedConsentBundle;
     };
 
-export type ConsentAuthorityResolver = () => ConsentAuthority | undefined;
+export interface ConsentAuthorityRequest {
+  releaseId?: string;
+  nowMs?: number;
+}
+
+export type ConsentAuthorityResolver = (
+  request?: ConsentAuthorityRequest,
+) => ConsentAuthority | undefined;
 
 function contentDigest(document: ConsentDocumentSeed): Buffer {
   return Buffer.from(computePublishedConsentDocumentSha256(document), "hex");

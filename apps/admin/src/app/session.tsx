@@ -1,4 +1,10 @@
-import type { AdminPreAuthDto, AdminSessionDto } from "@wisdom/shared";
+import {
+  adminPreAuthSchema,
+  adminSessionSchema,
+  adminVoidSchema,
+  type AdminPreAuthDto,
+  type AdminSessionDto,
+} from "@wisdom/shared";
 import {
   createContext,
   useCallback,
@@ -45,7 +51,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
   const retrySession = useCallback(async () => {
     setState({ stage: "loading" });
     try {
-      const session = await apiRequest<AdminSessionDto>("/session");
+      const session = await apiRequest("/session", adminSessionSchema);
       setCsrfToken(session.csrfToken);
       setState(session);
       return;
@@ -56,7 +62,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
       }
     }
     try {
-      const preauth = await apiRequest<AdminPreAuthDto>("/auth/preauth");
+      const preauth = await apiRequest("/auth/preauth", adminPreAuthSchema);
       setCsrfToken(preauth.csrfToken);
       setState(preauth);
     } catch (error) {
@@ -72,7 +78,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
   }, [retrySession]);
 
   const login = useCallback(async (username: string, password: string) => {
-    const preauth = await apiRequest<AdminPreAuthDto>("/auth/login", {
+    const preauth = await apiRequest("/auth/login", adminPreAuthSchema, {
       method: "POST",
       body: { username, password },
     });
@@ -85,7 +91,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
     method: "totp" | "recovery",
     code: string,
   ) => {
-    const session = await apiRequest<AdminSessionDto>("/auth/mfa", {
+    const session = await apiRequest("/auth/mfa", adminSessionSchema, {
       method: "POST",
       body: { username, method, code },
     });
@@ -95,7 +101,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
 
   const restartLogin = useCallback(async () => {
     try {
-      await apiRequest<void>("/auth/preauth/reset", { method: "POST", body: {} });
+      await apiRequest("/auth/preauth/reset", adminVoidSchema, { method: "POST", body: {} });
     } finally {
       setCsrfToken(undefined);
       setState({ stage: "anonymous" });
@@ -103,12 +109,9 @@ export function SessionProvider({ children }: PropsWithChildren) {
   }, []);
 
   const logout = useCallback(async () => {
-    try {
-      await apiRequest<void>("/auth/logout", { method: "POST", body: {} });
-    } finally {
-      setCsrfToken(undefined);
-      setState({ stage: "anonymous" });
-    }
+    await apiRequest("/auth/logout", adminVoidSchema, { method: "POST", body: {} });
+    setCsrfToken(undefined);
+    setState({ stage: "anonymous" });
   }, []);
 
   const value = useMemo(() => ({

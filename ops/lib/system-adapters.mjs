@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
+import { minimalExecutableEnvironment } from "./runtime-config.mjs";
+
 const MAX_RESTORE_RETENTION_ROWS = 100_000;
 
 function fail(code, message) {
@@ -65,14 +67,20 @@ async function assertNoIdentityResidue(output) {
   }
 }
 
-export function createAgeAdapter({ executable, run = defaultRun }) {
+export function createAgeAdapter({
+  executable,
+  run = defaultRun,
+  environment = process.env,
+}) {
   if (!validatePath(executable)) fail("AGE_ADAPTER_INPUT_INVALID", "age executable must be absolute");
+  const childEnvironment = minimalExecutableEnvironment(environment);
   return {
     encrypt: async ({ input, output, recipient }) => {
       if (!validatePath(input) || !validatePath(output) || typeof recipient !== "string" || !recipient.startsWith("age1")) {
         fail("AGE_ADAPTER_INPUT_INVALID", "age encryption input is invalid");
       }
       await run(executable, ["--recipient", recipient, "--output", output, input], {
+        env: childEnvironment,
         shell: false,
         stdio: ["ignore", "ignore", "ignore"],
       });
@@ -85,6 +93,7 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
       const identityBytes = Buffer.from(`${identity}\n`, "utf8");
       try {
         await run(executable, ["--decrypt", "--identity", "-", "--output", output, input], {
+          env: childEnvironment,
           shell: false,
           stdio: ["pipe", "ignore", "ignore"],
           stdin: identityBytes,
@@ -98,7 +107,7 @@ export function createAgeAdapter({ executable, run = defaultRun }) {
 
 export function createSqliteAdapter({
   loadDatabase = async () => (await import("better-sqlite3")).default,
-  expectedSchemaVersion = 6,
+  expectedSchemaVersion = 8,
   maxRetentionRows = MAX_RESTORE_RETENTION_ROWS,
 } = {}) {
   if (!Number.isSafeInteger(maxRetentionRows) || maxRetentionRows < 1 || maxRetentionRows > MAX_RESTORE_RETENTION_ROWS) {

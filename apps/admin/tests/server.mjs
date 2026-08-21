@@ -146,14 +146,37 @@ async function api(request, response, url) {
       return;
     }
     consultationStates.set("b", { status: "acknowledged", rowVersion: 2 });
-    sendJson(response, 200, { data: { updated: true } });
+    sendJson(response, 200, { data: {
+      kind: "updated",
+      httpStatus: 200,
+      consultationStatus: "acknowledged",
+      rowVersion: 2,
+    } });
     return;
   }
   if (pathname === "/admin/api/v1/releases" && request.method === "GET") {
     sendJson(response, 200, { data: {
       items: [
-        { id: "release-1", version: "v1", state: "retired", manifestSha256: "ab".repeat(32), createdAtMs: 1 },
-        { id: "release-2", version: "v2", state: "retired", manifestSha256: "cd".repeat(32), createdAtMs: 2 },
+        {
+          id: "release-1",
+          version: "v1",
+          state: "retired",
+          manifestSha256: "ab".repeat(32),
+          verifiedAtMs: null,
+          activatedAtMs: null,
+          rolledBackAtMs: null,
+          createdAtMs: 1,
+        },
+        {
+          id: "release-2",
+          version: "v2",
+          state: "retired",
+          manifestSha256: "cd".repeat(32),
+          verifiedAtMs: null,
+          activatedAtMs: null,
+          rolledBackAtMs: null,
+          createdAtMs: 2,
+        },
       ],
       page: { page: 1, pageSize: 20, total: 2, pageCount: 1 },
     } });
@@ -207,6 +230,7 @@ function consultation(id, name) {
     preferredContact: "phone",
     rowVersion: state.rowVersion,
     pii: { name, phone: "010", email: "", company: "", message: `문의 ${id}` },
+    piiAvailability: "available",
     nextStatuses: state.status === "received" ? ["acknowledged"] : ["in_progress"],
   };
 }

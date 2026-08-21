@@ -27,6 +27,11 @@ describe("shared public origin parser", () => {
       "https://WWW.jihye-office.kr",
       "https://www.example.test",
       "https://preview.jihye-office.kr",
+      "https://127.0.0.1",
+      "https://[::1]",
+      "https://10.0.0.1",
+      "https://portal.local",
+      "https://portal",
     ]) {
       expect(() => parsePublicOrigin(value, { production: true }))
         .toThrow("PUBLIC_ORIGIN_INVALID");

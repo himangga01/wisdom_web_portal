@@ -1,6 +1,6 @@
 # ChatGPT Sites 기능 기준
 
-기준일: 2026-07-24  
+기준일: 2026-07-25  
 검토 기준: 로컬 Sites 패키지 `0.1.31`, 현재 Sites connector, OpenAI 공식 문서
 
 ## 이 문서의 역할
@@ -20,7 +20,7 @@ Sites 기능이 바뀌면 마이그레이션 계획의 전제도 달라집니다
 | runtime env | production 환경변수 조회·수정, secret 표시, environment revision | 공개 API origin과 canonical origin만 관리; secret은 소스에 넣지 않음 |
 | custom domain | domain 추가, DNS record 안내, 상태 갱신·제거 | production 배포 후 도구가 반환한 DNS record만 적용 |
 | history | Site version 목록·상세 조회와 이전 version 재배포 | 애플리케이션 rollback에 사용 |
-| analytics | SDK 없이 순 방문자·페이지 조회·추이·기간·집계 단위 제공 | 기본 운영 성과지표로 사용 |
+| analytics | SDK 없이 순 방문자·페이지 조회·추이·기간·집계 단위 제공 | Sites가 관리하는 외부 baseline으로만 확인 |
 | D1 | 구조화된 영속 상태 | 사용하지 않음 |
 | R2 | blob·upload 저장 | 사용하지 않음 |
 | SIWC | Sign in with ChatGPT와 workspace identity | 익명 공개 포털이므로 사용하지 않음 |
@@ -104,14 +104,15 @@ Control admin host에 남습니다.
 |---|---|---|
 | `PUBLIC_SITE_ORIGIN` | 공개값 | canonical, hreflang, structured data 기준 |
 | `PUBLIC_CONSULTATION_API_ORIGIN` | 공개값 | 브라우저가 직접 호출할 Control API origin |
-| `ANALYTICS_ENABLED` | 공개 flag | first-party page-view client; 기본 `false` |
 
-세 값은 비밀이 아니지만 환경별 변경을 source와 분리하기 위해 runtime env로
+두 값은 비밀이 아니지만 환경별 변경을 source와 분리하기 위해 runtime env로
 관리합니다. server-render 단계에서 client component에 필요한 값만 전달합니다.
 상담 API secret, Control credential 또는 withdrawal token은 Sites env에 넣지
 않습니다.
-Consultation과 자체 Analytics는 같은
-`PUBLIC_CONSULTATION_API_ORIGIN`을 사용합니다.
+
+현재 서비스 first-party Analytics를 Sites에서도 이어서 사용할지는 base
+migration과 별개의 선택 사항입니다. 공개 전환 후 별도 승인을 받은 경우에만
+Sites client flag와 collector origin 계약을 추가합니다.
 
 환경변수 수정은 environment revision을 만들며, 해당 revision은 이후 saved
 version을 배포해야 production에 적용됩니다. 로컬 개발값은 `.env`에 두고
@@ -171,8 +172,9 @@ Analytics 화면이 없습니다. 현재 connector에도 analytics 조회 도구
 현재 공식 가이드에 명시되지 않았습니다. account 화면에서 확인되기 전에는
 확정 기능으로 약속하지 않습니다.
 
-자세한 운영 기준은
-[`06-analytics-and-kpi-plan.md`](06-analytics-and-kpi-plan.md)를 따릅니다.
+자세한 확인·기록 기준은
+[`06-sites-analytics-baseline.md`](06-sites-analytics-baseline.md)를
+따릅니다.
 
 ## 서비스 운영 책임과 제약
 

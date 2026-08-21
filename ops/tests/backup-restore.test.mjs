@@ -13,10 +13,16 @@ import {
 } from "../lib/database-maintenance-lock.mjs";
 import { backupFreshness, loadNewestBackupStatus } from "../lib/monitoring.mjs";
 import { planRestore, restoreBackup } from "../lib/restore.mjs";
-import { createSqliteAdapter } from "../lib/system-adapters.mjs";
+import { createAgeAdapter, createSqliteAdapter } from "../lib/system-adapters.mjs";
 
 async function fixtureDirectory(name) {
   return realpath(await mkdtemp(path.join(os.tmpdir(), `wisdom-${name}-`)));
+}
+
+async function sourceDatabase(root, name) {
+  const sourceRoot = path.join(root, "source");
+  await mkdir(sourceRoot, { recursive: true, mode: 0o700 });
+  return path.join(sourceRoot, name);
 }
 
 function fakeAdapters({ mutateSourceAfterBackup = false, encryptError, decryptError, integrity = "ok", schema = 3 } = {}) {
@@ -63,6 +69,45 @@ test("backup and restore verification never read an entire file into memory", as
   }
 });
 
+test("age children receive only an allowlisted non-secret environment", async () => {
+  const root = await fixtureDirectory("age-child-environment");
+  const calls = [];
+  const adapter = createAgeAdapter({
+    executable: "/usr/bin/age",
+    environment: {
+      PATH: "/usr/bin:/bin",
+      TMPDIR: root,
+      LANG: "ko_KR.UTF-8",
+      AGE_IDENTITY: "AGE-SECRET-KEY-PRIVATE",
+      ADMIN_SESSION_SECRET: "admin-secret",
+      PII_ENCRYPTION_KEY: "pii-secret",
+      WISDOM_KEYCHAIN_EXEC: "1",
+    },
+    run: async (_executable, _args, options) => calls.push(options),
+  });
+  const input = path.join(root, "input.sqlite");
+  const encrypted = path.join(root, "backup.age");
+  const restored = path.join(root, "restored.sqlite");
+  await writeFile(input, "fixture");
+
+  await adapter.encrypt({
+    input,
+    output: encrypted,
+    recipient: "age1fixtureoperatorrecipient",
+  });
+  await adapter.decrypt({
+    input: encrypted,
+    output: restored,
+    identity: "AGE-SECRET-KEY-FIXTURE",
+  });
+
+  assert.deepEqual(calls.map((call) => call.env), [
+    { PATH: "/usr/bin:/bin", TMPDIR: root, LANG: "ko_KR.UTF-8" },
+    { PATH: "/usr/bin:/bin", TMPDIR: root, LANG: "ko_KR.UTF-8" },
+  ]);
+  assert.equal(Buffer.from(calls[1].stdin).toString("utf8").replaceAll("\0", ""), "");
+});
+
 test("backup retention inventories directory entries incrementally under its hard bound", async () => {
   const source = await readFile(new URL("../lib/backup.mjs", import.meta.url), "utf8");
   assert.match(source, /\bopendir\s*\(/u);
@@ -71,7 +116,7 @@ test("backup retention inventories directory entries incrementally under its har
 
 test("online backup is consistent, encrypted, verified, and leaves no plaintext", async () => {
   const root = await fixtureDirectory("backup");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "protected-temp");
   const original = JSON.stringify({
@@ -112,7 +157,7 @@ test("online backup is consistent, encrypted, verified, and leaves no plaintext"
 
 test("backup failure removes pending ciphertext and plaintext work directories", async () => {
   const root = await fixtureDirectory("backup-failure");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "protected-temp");
   await writeFile(sourceDb, "fixture");
@@ -224,7 +269,7 @@ test("database maintenance lock requires confirmed quarantine before reuse and v
 
 test("hourly status publication failure rolls back the renamed artifact", async () => {
   const root = await fixtureDirectory("backup-status-failure");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "protected-temp");
   await writeFile(sourceDb, "fixture");
@@ -248,7 +293,7 @@ test("hourly status publication failure rolls back the renamed artifact", async 
 
 test("an existing daily pair must still match its recorded size and hash", async () => {
   const root = await fixtureDirectory("backup-daily-recheck");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "protected-temp");
   await writeFile(sourceDb, "fixture-one");
@@ -275,7 +320,7 @@ test("an existing daily pair must still match its recorded size and hash", async
 
 test("backup rejects failed integrity before publishing an artifact", async () => {
   const root = await fixtureDirectory("backup-integrity");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "protected-temp");
   await writeFile(sourceDb, "fixture");
@@ -293,7 +338,7 @@ test("backup rejects failed integrity before publishing an artifact", async () =
 
 test("backup rejects symlink roots before writing plaintext or ciphertext", async (t) => {
   const root = await fixtureDirectory("backup-symlink");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const realBackup = path.join(root, "real-backup");
   const backupRoot = path.join(root, "backup-link");
   const tempRoot = path.join(root, "temp");
@@ -320,9 +365,76 @@ test("backup rejects symlink roots before writing plaintext or ciphertext", asyn
   assert.deepEqual(await readdir(realBackup), []);
 });
 
+test("backup rejects a root nested under the canonical database parent", async () => {
+  const root = await fixtureDirectory("backup-canonical-nesting");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
+  const backupRoot = path.join(root, "source", "encrypted");
+  const tempRoot = path.join(root, "temp");
+  await writeFile(sourceDb, "fixture");
+
+  await assert.rejects(createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot,
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T02:00:00.000Z"),
+  }, fakeAdapters()), { code: "BACKUP_PATH_UNSAFE" });
+});
+
+test("backup rejects differently-cased aliases of the same filesystem object", async (t) => {
+  const root = await fixtureDirectory("backup-case-alias");
+  const databaseParent = path.join(root, "CaseData");
+  const backupRoot = path.join(root, "casedata");
+  await mkdir(databaseParent);
+  let aliasReal;
+  try {
+    aliasReal = await realpath(backupRoot);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      t.skip("filesystem is case-sensitive");
+      return;
+    }
+    throw error;
+  }
+  if (aliasReal !== await realpath(databaseParent)) {
+    t.skip("filesystem does not resolve the case alias to the same object");
+    return;
+  }
+  const sourceDb = path.join(databaseParent, "portal.sqlite");
+  await writeFile(sourceDb, "fixture");
+
+  await assert.rejects(createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T02:00:00.000Z"),
+  }, fakeAdapters()), { code: "BACKUP_PATH_UNSAFE" });
+});
+
+test("restore rejects a backup root nested under the canonical target parent", async () => {
+  const root = await fixtureDirectory("restore-canonical-nesting");
+  const target = path.join(root, "data", "portal.sqlite");
+  const backupRoot = path.join(root, "data", "backups");
+  const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
+  await mkdir(backupRoot, { recursive: true });
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup,
+    target,
+    tempRoot: path.join(root, "temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {}), { code: "RESTORE_INPUT_INVALID" });
+});
+
 test("backup compares the decrypted snapshot hash before publication", async () => {
   const root = await fixtureDirectory("backup-hash");
-  const sourceDb = path.join(root, "portal.sqlite");
+  const sourceDb = await sourceDatabase(root, "portal.sqlite");
   const backupRoot = path.join(root, "encrypted");
   const tempRoot = path.join(root, "temp");
   await writeFile(sourceDb, "original-snapshot");
@@ -566,7 +678,7 @@ test("restore rejects a verified hash when the encrypted byte count does not mat
   const backupRoot = path.join(root, "backups");
   const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
   const status = path.join(backupRoot, "hourly-20260716T010203Z.json");
-  const target = path.join(root, "portal.sqlite");
+  const target = path.join(root, "data", "portal.sqlite");
   const encrypted = "verified-ciphertext";
   await mkdir(backupRoot, { recursive: true });
   await writeFile(backup, encrypted);
@@ -576,6 +688,7 @@ test("restore rejects a verified hash when the encrypted byte count does not mat
     encryptedSha256: createHash("sha256").update(encrypted).digest("hex"),
     encryptedBytes: Buffer.byteLength(encrypted) + 1,
   }));
+  await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "unchanged");
   let decryptCalled = false;
 
@@ -607,7 +720,7 @@ test("restore rejects an oversized status file before decrypting the artifact", 
   const backupRoot = path.join(root, "backups");
   const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
   const status = path.join(backupRoot, "hourly-20260716T010203Z.json");
-  const target = path.join(root, "portal.sqlite");
+  const target = path.join(root, "data", "portal.sqlite");
   const encrypted = "verified-ciphertext";
   await mkdir(backupRoot, { recursive: true });
   await writeFile(backup, encrypted);
@@ -618,6 +731,7 @@ test("restore rejects an oversized status file before decrypting the artifact", 
     encryptedBytes: Buffer.byteLength(encrypted),
     padding: "x".repeat(17 * 1024),
   }));
+  await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "unchanged");
   let decryptCalled = false;
 
@@ -646,7 +760,7 @@ test("restore rejects an oversized status file before decrypting the artifact", 
 
 test("guarded restore verifies encrypted metadata and preserves the old DB in quarantine", async () => {
   const root = await fixtureDirectory("restore");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const backupTemp = path.join(root, "backup-temp");
   const restoreTemp = path.join(root, "restore-temp");
@@ -691,7 +805,7 @@ test("guarded restore verifies encrypted metadata and preserves the old DB in qu
 
 test("restore enforces current retention on the staged database before replacement and startup", async () => {
   const root = await fixtureDirectory("restore-retention");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, expiredPii: "must-not-return" }));
@@ -744,7 +858,7 @@ test("restore enforces current retention on the staged database before replaceme
 
 test("restore rechecks service quiescence immediately before replacing the database", async () => {
   const root = await fixtureDirectory("restore-final-quiescence");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
@@ -787,12 +901,55 @@ test("restore rechecks service quiescence immediately before replacing the datab
   assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".quarantine-")), false);
 });
 
+test("restore rechecks SQLite sidecars after final writer unload inspection", async () => {
+  const root = await fixtureDirectory("restore-final-sidecar");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
+  const backupRoot = path.join(root, "backups");
+  const target = path.join(root, "data", "portal.sqlite");
+  await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
+  const backup = await createOnlineBackup({
+    sourceDb,
+    backupRoot,
+    tempRoot: path.join(root, "backup-temp"),
+    ageRecipient: "age1fixtureoperatorrecipient",
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    now: new Date("2026-07-16T01:02:03.000Z"),
+  }, fakeAdapters());
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "old-production-db");
+  let unloadChecks = 0;
+
+  await assert.rejects(restoreBackup({
+    backupRoot,
+    backup: backup.hourlyArtifact,
+    target,
+    tempRoot: path.join(root, "restore-temp"),
+    ageIdentity: "AGE-SECRET-KEY-FIXTURE",
+    confirmDestroy: path.resolve(target),
+    dryRun: false,
+  }, {
+    ...fakeAdapters(),
+    services: {
+      assertUnloaded: async () => {
+        unloadChecks++;
+        if (unloadChecks === 2) await writeFile(`${target}-wal`, "racing-writer");
+      },
+      start: async () => undefined,
+      checkReady: async () => undefined,
+    },
+  }), { code: "RESTORE_SIDECAR_PRESENT" });
+
+  assert.equal(unloadChecks, 2);
+  assert.equal(await readFile(target, "utf8"), "old-production-db");
+  assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".quarantine-")), false);
+});
+
 test("restore rejects wrong keys, corrupt data, schema mismatch, and running services", async (t) => {
   const root = await fixtureDirectory("restore-failures");
   const backupRoot = path.join(root, "backups");
   const backup = path.join(backupRoot, "hourly-20260716T010203Z.age");
   const status = path.join(backupRoot, "hourly-20260716T010203Z.json");
-  const target = path.join(root, "portal.sqlite");
+  const target = path.join(root, "data", "portal.sqlite");
   const tempRoot = path.join(root, "temp");
   await (await import("node:fs/promises")).mkdir(backupRoot, { recursive: true });
   await writeFile(backup, "not-age-ciphertext");
@@ -804,6 +961,7 @@ test("restore rejects wrong keys, corrupt data, schema mismatch, and running ser
     encryptedSha256: "wrong",
     verified: true,
   }));
+  await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "unchanged");
   const common = {
     backupRoot,
@@ -832,7 +990,7 @@ test("restore rejects wrong keys, corrupt data, schema mismatch, and running ser
 
 test("restore independently rejects wrong age identity, corrupt plaintext, and schema mismatch", async (t) => {
   const root = await fixtureDirectory("restore-validation-failures");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
   const backup = await createOnlineBackup({
@@ -875,7 +1033,7 @@ test("restore independently rejects wrong age identity, corrupt plaintext, and s
 
 test("pre-replacement restore failure restarts and checks the unchanged service", async () => {
   const root = await fixtureDirectory("restore-pre-replacement-restart");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
@@ -910,12 +1068,12 @@ test("pre-replacement restore failure restarts and checks the unchanged service"
   }), { code: "AGE_AUTH_FAILED" });
 
   assert.equal(await readFile(target, "utf8"), "unchanged-production-db");
-  assert.deepEqual(calls, ["stopped", "stop", "stopped", "start", "ready"]);
+  assert.deepEqual(calls, ["stop", "stopped", "start", "ready"]);
 });
 
 test("pre-replacement restart failure preserves both sanitized causes", async () => {
   const root = await fixtureDirectory("restore-pre-replacement-restart-failure");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
@@ -967,7 +1125,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
     import.meta.url,
   );
   const root = await fixtureDirectory("sqlite-wal-drill");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const target = path.join(root, "restore", "portal.sqlite");
   const writer = openDatabase(sourceDb);
   runMigrations(writer, Date.parse("2026-07-16T00:00:00.000Z"));
@@ -1017,7 +1175,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
       { receipt: "receipt-in-wal", ciphertext: "opaque-ciphertext-in-wal" },
     ]);
     assert.equal(restored.pragma("integrity_check", { simple: true }), "ok");
-    assert.equal(restored.pragma("user_version", { simple: true }), 6);
+    assert.equal(restored.pragma("user_version", { simple: true }), 8);
   } finally {
     restored.close();
   }
@@ -1025,7 +1183,7 @@ test("a database created by runMigrations survives WAL backup and guarded restor
 
 test("restore rejects stale SQLite sidecars before decrypting", async () => {
   const root = await fixtureDirectory("restore-sidecar");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "opaque" }));
@@ -1058,7 +1216,7 @@ test("restore rejects stale SQLite sidecars before decrypting", async () => {
 
 test("readiness failure restores the previous database and services", async () => {
   const root = await fixtureDirectory("restore-readiness");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));
@@ -1100,7 +1258,7 @@ test("readiness failure restores the previous database and services", async () =
 
   assert.equal(await readFile(target, "utf8"), "old-production-db");
   assert.deepEqual(calls, [
-    "stopped", "stop", "stopped", "stopped", "start", "ready",
+    "stop", "stopped", "stopped", "start", "ready",
     "stop", "stopped", "start", "ready",
   ]);
   assert.ok((await readdir(path.dirname(target))).some((name) => name.includes(".failed-20260716T030405Z")));
@@ -1108,7 +1266,7 @@ test("readiness failure restores the previous database and services", async () =
 
 test("restore surfaces a distinct error when readiness rollback also fails", async () => {
   const root = await fixtureDirectory("restore-rollback-failure");
-  const sourceDb = path.join(root, "source.sqlite");
+  const sourceDb = await sourceDatabase(root, "source.sqlite");
   const backupRoot = path.join(root, "backups");
   const target = path.join(root, "data", "portal.sqlite");
   await writeFile(sourceDb, JSON.stringify({ schemaVersion: 3, ciphertext: "new" }));

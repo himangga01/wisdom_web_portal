@@ -1,4 +1,4 @@
-import type { AdminArticleListDto } from "@wisdom/shared";
+import { adminArticleListSchema } from "@wisdom/shared";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useResource } from "../../api/use-resource";
@@ -10,7 +10,10 @@ import { StatusBadge } from "../../components/StatusBadge";
 export function ArticleListPage() {
   const [search] = useSearchParams();
   const page = search.get("page") ?? "1";
-  const { data, error, loading } = useResource<AdminArticleListDto>(`/articles?page=${encodeURIComponent(page)}`);
+  const { data, error, loading } = useResource(
+    `/articles?page=${encodeURIComponent(page)}`,
+    adminArticleListSchema,
+  );
   return (
     <>
       <PageHeader eyebrow="CONTENT" title="콘텐츠 검토" description="언어별 문서 상태와 공개 슬러그를 검토합니다." />

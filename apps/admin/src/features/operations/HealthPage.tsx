@@ -1,4 +1,4 @@
-import type { AdminHealthDto } from "@wisdom/shared";
+import { adminHealthSchema } from "@wisdom/shared";
 
 import { useResource } from "../../api/use-resource";
 import { Empty, ErrorMessage, Loading } from "../../components/AsyncState";
@@ -6,7 +6,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 
 export function HealthPage() {
-  const { data, error, loading } = useResource<AdminHealthDto>("/health");
+  const { data, error, loading } = useResource("/health", adminHealthSchema);
   return (
     <>
       <PageHeader eyebrow="SYSTEM" title="서비스 상태" description="데이터베이스와 알림 대기열의 비민감 상태만 표시합니다." />

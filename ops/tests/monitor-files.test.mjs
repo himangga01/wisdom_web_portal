@@ -147,6 +147,39 @@ test("secure regular file validation accepts files and rejects directories", asy
   );
 });
 
+test("owner-only validation requires exact 0700 directories and 0600 files", async (t) => {
+  const root = await fixture(t);
+  const data = path.join(root, "data");
+  const database = path.join(data, "control.sqlite");
+  await mkdir(data, { mode: 0o750 });
+  await writeFile(database, "fixture", { mode: 0o640 });
+
+  await assert.rejects(
+    assertSecureRealDirectory(data, {
+      code: "MONITOR_DATABASE_INVALID",
+      requireOwnerOnly: true,
+    }),
+    { code: "MONITOR_DATABASE_INVALID" },
+  );
+  await chmod(data, 0o700);
+  await assert.rejects(
+    assertSecureRegularFile(database, {
+      code: "MONITOR_DATABASE_INVALID",
+      requireOwnerOnly: true,
+    }),
+    { code: "MONITOR_DATABASE_INVALID" },
+  );
+  await chmod(database, 0o600);
+  assert.equal(await assertSecureRealDirectory(data, {
+    code: "MONITOR_DATABASE_INVALID",
+    requireOwnerOnly: true,
+  }), data);
+  assert.deepEqual(await assertSecureRegularFile(database, {
+    code: "MONITOR_DATABASE_INVALID",
+    requireOwnerOnly: true,
+  }), { canonicalPath: database, size: 7 });
+});
+
 test("secure regular file validation rejects a final link", async (t) => {
   const root = await fixture(t);
   const database = path.join(root, "control.sqlite");

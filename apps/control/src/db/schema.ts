@@ -246,6 +246,35 @@ export const marketingWithdrawalCapabilities = sqliteTable("marketing_withdrawal
   ),
 ]);
 
+export const publicationPrivacyGeneration = sqliteTable("publication_privacy_generation", {
+  singleton: integer("singleton").primaryKey(),
+  generation: integer("generation").notNull(),
+});
+
+export const sitesReleaseHandoffs = sqliteTable("sites_release_handoffs", {
+  releaseId: text("release_id").primaryKey(),
+  bundleId: text("bundle_id").notNull(),
+  manifestSha256: blob("manifest_sha256", { mode: "buffer" }).notNull(),
+  sitesSourceCommit: text("sites_source_commit").notNull(),
+  savedVersionId: text("saved_version_id"),
+  deploymentId: text("deployment_id"),
+  environmentRevision: text("environment_revision").notNull(),
+  state: text("state").notNull(),
+  acceptUntilMs: integer("accept_until_ms"),
+  preparedAtMs: integer("prepared_at_ms").notNull(),
+  deploymentRecordedAtMs: integer("deployment_recorded_at_ms"),
+  activatedAtMs: integer("activated_at_ms"),
+  updatedAtMs: integer("updated_at_ms").notNull(),
+}, (table) => [
+  uniqueIndex("sites_release_handoffs_one_pending_uidx")
+    .on(sql`(1)`)
+    .where(sql`${table.state} = 'pending'`),
+  uniqueIndex("sites_release_handoffs_one_default_uidx")
+    .on(sql`(1)`)
+    .where(sql`${table.state} = 'default'`),
+  index("sites_release_handoffs_state_accept_idx").on(table.state, table.acceptUntilMs),
+]);
+
 export const REQUIRED_TABLES = [
   "schema_migrations",
   "consultations",
@@ -276,6 +305,8 @@ export const REQUIRED_TABLES = [
   "hermes_article_idempotency",
   "hermes_article_nonces",
   "audit_events",
+  "publication_privacy_generation",
+  "sites_release_handoffs",
 ] as const;
 
 export const REQUIRED_INDEXES = [
@@ -326,6 +357,9 @@ export const REQUIRED_INDEXES = [
   "publication_outbox_queue_idx",
   "audit_events_created_idx",
   "audit_events_target_idx",
+  "sites_release_handoffs_one_pending_uidx",
+  "sites_release_handoffs_one_default_uidx",
+  "sites_release_handoffs_state_accept_idx",
 ] as const;
 
 export const REQUIRED_TRIGGERS = [
@@ -350,9 +384,14 @@ export const REQUIRED_TRIGGERS = [
   "releases_active_invariant_insert",
   "releases_active_invariant_update",
   "releases_delete_retired_only",
+  "consultations_privacy_generation_insert",
+  "consultations_privacy_generation_update",
+  "sites_release_handoffs_identity_immutable",
+  "sites_release_handoffs_state_transition",
+  "sites_release_control_metadata_immutable",
 ] as const;
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 export const drizzleSchema = {
   schemaMigrations,
@@ -370,4 +409,6 @@ export const drizzleSchema = {
   adminLoginAdmissions,
   notificationDeliveryAttempts,
   marketingWithdrawalCapabilities,
+  publicationPrivacyGeneration,
+  sitesReleaseHandoffs,
 };

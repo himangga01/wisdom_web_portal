@@ -1,4 +1,8 @@
-import type { AdminReleaseListDto } from "@wisdom/shared";
+import {
+  adminConfirmationSchema,
+  adminPublicationResultSchema,
+  adminReleaseListSchema,
+} from "@wisdom/shared";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -12,7 +16,10 @@ import { StatusBadge } from "../../components/StatusBadge";
 export function ReleaseListPage() {
   const [search] = useSearchParams();
   const page = search.get("page") ?? "1";
-  const resource = useResource<AdminReleaseListDto>(`/releases?page=${encodeURIComponent(page)}`);
+  const resource = useResource(
+    `/releases?page=${encodeURIComponent(page)}`,
+    adminReleaseListSchema,
+  );
   const [pending, setPending] = useState<string>();
   const [confirming, setConfirming] = useState<string>();
   const [mutationError, setMutationError] = useState<unknown>();
@@ -42,11 +49,12 @@ export function ReleaseListPage() {
     setPending(id);
     setMutationError(undefined);
     try {
-      const confirmation = await apiRequest<{ confirmationToken: string }>(
+      const confirmation = await apiRequest(
         `/releases/${encodeURIComponent(id)}/rollback/confirm`,
+        adminConfirmationSchema,
         { method: "POST", body: {} },
       );
-      await apiRequest(`/releases/${encodeURIComponent(id)}/rollback`, {
+      await apiRequest(`/releases/${encodeURIComponent(id)}/rollback`, adminPublicationResultSchema, {
         method: "POST",
         body: { confirmationToken: confirmation.confirmationToken },
       });

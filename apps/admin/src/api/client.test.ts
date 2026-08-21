@@ -6,6 +6,7 @@ import {
   setAuthRequiredHandler,
   setCsrfToken,
 } from "./client";
+import { adminDashboardSchema, adminSavedSchema } from "@wisdom/shared";
 
 afterEach(() => {
   setAuthRequiredHandler(undefined);
@@ -24,7 +25,7 @@ describe("administrator API client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     setCsrfToken("csrf-token");
-    await expect(apiRequest("/notifications", {
+    await expect(apiRequest("/notifications", adminSavedSchema, {
       method: "POST",
       body: { enabled: true },
     })).resolves.toEqual({ saved: true });
@@ -36,7 +37,7 @@ describe("administrator API client", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       error: { code: "AUTH_REQUIRED", message: "expired" },
     }), { status: 401, headers: { "content-type": "application/json" } })));
-    await expect(apiRequest("/dashboard")).rejects.toMatchObject({
+    await expect(apiRequest("/dashboard", adminDashboardSchema)).rejects.toMatchObject({
       name: "AdminApiError",
       status: 401,
       code: "AUTH_REQUIRED",
@@ -47,7 +48,7 @@ describe("administrator API client", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       error: { code: "AUTH_INVALID", message: "invalid" },
     }), { status: 401, headers: { "content-type": "application/json" } })));
-    await expect(apiRequest("/auth/mfa", { method: "POST", body: {} })).rejects.toBeInstanceOf(AdminApiError);
+    await expect(apiRequest("/auth/mfa", adminDashboardSchema, { method: "POST", body: {} })).rejects.toBeInstanceOf(AdminApiError);
     expect(required).not.toHaveBeenCalled();
   });
 
@@ -56,11 +57,27 @@ describe("administrator API client", () => {
       status: 503,
       headers: { "content-type": "application/json" },
     })));
-    await expect(apiRequest("/dashboard")).rejects.toMatchObject({
+    await expect(apiRequest("/dashboard", adminDashboardSchema)).rejects.toMatchObject({
       name: "AdminApiError",
       status: 503,
       code: "INTERNAL_ERROR",
       message: "서버 오류 응답을 확인하지 못했습니다.",
     });
+  });
+
+  it("rejects malformed and unknown success bodies with a stable code", async () => {
+    for (const data of [
+      { counts: [{ status: "received" }] },
+      { counts: [{ status: "received", count: 1 }], unknown: true },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })));
+      await expect(apiRequest("/dashboard", adminDashboardSchema)).rejects.toMatchObject({
+        status: 502,
+        code: "ADMIN_API_RESPONSE_INVALID",
+      });
+    }
   });
 });

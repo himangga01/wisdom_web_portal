@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -473,6 +473,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
     CREATE TABLE consultations (retention_expires_at_ms INTEGER NOT NULL, purged_at_ms INTEGER);
     CREATE TABLE release_activations (state TEXT NOT NULL);
     CREATE TABLE releases (state TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+    CREATE TABLE audit_events (action TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
     INSERT INTO notification_outbox VALUES
       ('failed', 0, NULL), ('sent', 0, NULL), ('pending', 89999, NULL), ('processing', 99999, 99999);
     INSERT INTO publication_outbox VALUES
@@ -483,8 +484,11 @@ test("system backlog reader opens only aggregate operational tables", async () =
     INSERT INTO consultations VALUES (100000, NULL), (100000, 99999), (100001, NULL);
     INSERT INTO release_activations VALUES ('prepared'), ('committed');
     INSERT INTO releases VALUES ('active', 100), ('failed', 90), ('failed', 110);
+    INSERT INTO audit_events VALUES
+      ('article.release.build_failed', 120), ('article.release.published', 130);
   `);
   database.close();
+  await chmod(databasePath, 0o600);
 
   const result = await createSystemMonitoringAdapters().readBacklogs(databasePath, {
     timeoutMs: 1_000,
@@ -494,7 +498,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
   assert.deepEqual(result, {
     notificationFailures: 1,
     translationFailures: 1,
-    publicationFailures: 2,
+    publicationFailures: 3,
     indexNowFailures: 1,
     notificationStalled: 2,
     translationStalled: 2,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -611,6 +611,32 @@ test("mac release normalizes node_modules to production dependencies before seal
     "--fund=false",
   ]);
   assert.ok(path.isAbsolute(npmBinary));
+});
+
+test("site publication builder dependencies survive production pruning", async () => {
+  const sitePackage = JSON.parse(await readFile(
+    path.resolve(import.meta.dirname, "../../apps/site/package.json"),
+    "utf8",
+  ));
+  assert.equal(typeof sitePackage.dependencies["@tailwindcss/vite"], "string");
+  assert.equal(typeof sitePackage.dependencies.tailwindcss, "string");
+  assert.equal(sitePackage.devDependencies["@tailwindcss/vite"], undefined);
+  assert.equal(sitePackage.devDependencies.tailwindcss, undefined);
+
+  const outputDirectory = path.join(
+    path.parse(process.cwd()).root,
+    "fixture",
+    "post-prune-publication-build",
+  );
+  assert.deepEqual(macReleaseAdapter.buildMacPostPruneFixtureArguments(outputDirectory), [
+    "run",
+    "build:fixture",
+    "--workspace",
+    "@wisdom/site",
+    "--",
+    "--outDir",
+    outputDirectory,
+  ]);
 });
 
 test("preflight CLI maps --current into path validation", async () => {

@@ -19,6 +19,27 @@ function trimmedCodePointString(min: number, max: number) {
   );
 }
 
+export function isXml10SafeText(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint !== 0x09
+      && codePoint !== 0x0a
+      && codePoint !== 0x0d
+      && (codePoint < 0x20
+        || (codePoint > 0xd7ff && codePoint < 0xe000)
+        || codePoint > 0xfffd && codePoint < 0x10000)
+    ) return false;
+  }
+  return true;
+}
+
+function xmlSafeTrimmedCodePointString(min: number, max: number) {
+  return trimmedCodePointString(min, max).refine(isXml10SafeText, {
+    message: "Text contains a character forbidden by XML 1.0",
+  });
+}
+
 function utf8ByteLength(value: string): number {
   let bytes = 0;
   for (const character of value) {
@@ -45,8 +66,8 @@ export const hermesArticleDraftSchema = z.object({
   idempotencyKey: z.string().min(16).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   hermesDraftId: z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   sourceLocale: localeSchema,
-  title: trimmedCodePointString(1, 200),
-  summary: trimmedCodePointString(1, 500),
+  title: xmlSafeTrimmedCodePointString(1, 200),
+  summary: xmlSafeTrimmedCodePointString(1, 500),
   bodyMarkdown: z.string().min(1).refine(
     (value) => utf8ByteLength(value) <= 240 * 1_024,
     { message: "Markdown exceeds the byte limit" },
@@ -76,8 +97,8 @@ export const articleReviewerFindingSchema = z.object({
 
 export const articleTranslationOutputSchema = z.object({
   locale: localeSchema,
-  title: trimmedCodePointString(1, 200),
-  summary: trimmedCodePointString(1, 500),
+  title: xmlSafeTrimmedCodePointString(1, 200),
+  summary: xmlSafeTrimmedCodePointString(1, 500),
   bodyMarkdown: z.string().min(1).refine(
     (value) => utf8ByteLength(value) <= 240 * 1_024,
     { message: "Markdown exceeds the byte limit" },
@@ -153,8 +174,8 @@ export const publishedManifestSchema = z.object({
 export type PublishedManifest = z.infer<typeof publishedManifestSchema>;
 
 export const publishedReviewerSchema = z.object({
-  name: trimmedCodePointString(1, 100),
-  role: trimmedCodePointString(1, 100),
+  name: xmlSafeTrimmedCodePointString(1, 100),
+  role: xmlSafeTrimmedCodePointString(1, 100),
 }).strict();
 
 export const publishedArticleDocumentSchema = z.object({
@@ -165,8 +186,8 @@ export const publishedArticleDocumentSchema = z.object({
   revisionId: canonicalUuidSchema,
   contentSha256: sha256HexSchema,
   route: z.string().min(1).max(180),
-  title: trimmedCodePointString(1, 160),
-  summary: trimmedCodePointString(1, 320),
+  title: xmlSafeTrimmedCodePointString(1, 160),
+  summary: xmlSafeTrimmedCodePointString(1, 320),
   bodyMarkdown: z.string().min(1).refine(
     (value) => utf8ByteLength(value) <= 240 * 1_024,
     { message: "Published Markdown exceeds the byte limit" },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,11 +10,22 @@ import {
   launchKeychainCommand,
   loadRuntimeConfigFile,
   parseRuntimeConfig,
+  readyUrlFromRuntimeConfig,
 } from "../lib/runtime-config.mjs";
 import { renderTemplateFile } from "../lib/templates.mjs";
 
 const opsRoot = path.resolve(import.meta.dirname, "..");
 const hash = "$argon2id$v=19$m=19456,t=2,p=1$BwcHBwcHBwcHBwcHBwcHBw$+PoSSRtbM306Z90yryZta7Qvu3hikTDby6TmJumCJEY";
+
+test("every database-writing launch agent fixes umask to 077", async () => {
+  for (const service of ["control", "notification-worker", "content-worker", "retention"]) {
+    const source = await readFile(
+      path.join(opsRoot, "launchd", `com.jihye.portal.${service}.plist.template`),
+      "utf8",
+    );
+    assert.match(source, /<key>Umask<\/key><integer>63<\/integer>/);
+  }
+});
 
 test("runtime config accepts only the non-secret allowlist", () => {
   assert.deepEqual(parseRuntimeConfig([
@@ -29,6 +40,7 @@ test("runtime config accepts only the non-secret allowlist", () => {
     "EMAIL_PAYLOAD_MODE=receipt-only",
     "PUBLIC_RELEASE_ROOT=/Users/wisdom/portal/public-releases",
     "PUBLIC_CURRENT_LINK=/Users/wisdom/portal/public-current",
+    "PUBLIC_KAKAO_CHAT_URL=https://pf.kakao.com/_unit_test/chat",
     "SITE_SOURCE_ROOT=/Users/wisdom/portal/current",
     "NODE_BINARY=/opt/homebrew/bin/node",
     "NPM_BINARY=/opt/homebrew/bin/npm",
@@ -58,6 +70,7 @@ test("runtime config accepts only the non-secret allowlist", () => {
     EMAIL_PAYLOAD_MODE: "receipt-only",
     PUBLIC_RELEASE_ROOT: "/Users/wisdom/portal/public-releases",
     PUBLIC_CURRENT_LINK: "/Users/wisdom/portal/public-current",
+    PUBLIC_KAKAO_CHAT_URL: "https://pf.kakao.com/_unit_test/chat",
     SITE_SOURCE_ROOT: "/Users/wisdom/portal/current",
     NODE_BINARY: "/opt/homebrew/bin/node",
     NPM_BINARY: "/opt/homebrew/bin/npm",
@@ -109,6 +122,22 @@ test("runtime config file must be absolute and cannot be a symlink", async (t) =
     throw error;
   }
   await assert.rejects(loadRuntimeConfigFile(link), { code: "RUNTIME_CONFIG_PATH_INVALID" });
+});
+
+test("Control readiness URL comes only from the protected runtime config", async () => {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-ready-url-")));
+  const config = path.join(directory, "runtime.env");
+  await writeFile(config, "CONTROL_HOST=127.0.0.1\nCONTROL_PORT=19876\n", { mode: 0o600 });
+
+  assert.equal(
+    await readyUrlFromRuntimeConfig(config),
+    "http://127.0.0.1:19876/health/ready",
+  );
+
+  await writeFile(config, "CONTROL_HOST=127.0.0.1\nCONTROL_PORT=019876\n", { mode: 0o600 });
+  await assert.rejects(readyUrlFromRuntimeConfig(config), {
+    code: "RUNTIME_CONFIG_CONTROL_INVALID",
+  });
 });
 
 test("rendered production runtime plus independent secrets passes parseControlConfig", async () => {

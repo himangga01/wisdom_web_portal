@@ -244,6 +244,14 @@ function verifyArticleFileSizes(directory: string, manifest: PublishedManifest):
 
 const localeOrder = { ko: 0, en: 1, "zh-Hans": 2, "zh-Hant": 3 } as const;
 
+export function comparePublishedArticlesByRecency(
+  left: PublishedArticleDocument,
+  right: PublishedArticleDocument,
+): number {
+  return right.modifiedAt.localeCompare(left.modifiedAt)
+    || left.route.localeCompare(right.route);
+}
+
 function compareManifestEntries(
   left: PublishedManifestEntry,
   right: PublishedManifestEntry,
@@ -342,9 +350,9 @@ export function loadPublishedContent(directory: string): PublishedContent {
   verifySnapshotInventory(directory, manifest);
   const consentBundle = freezeConsentBundle(readConsentBundle(directory, realDirectory, manifest));
   verifyArticleFileSizes(directory, manifest);
-  const articles = manifest.entries.map((entry) => freezeArticle(
-    readArticle(directory, realDirectory, entry),
-  ));
+  const articles = manifest.entries
+    .map((entry) => freezeArticle(readArticle(directory, realDirectory, entry)))
+    .sort(comparePublishedArticlesByRecency);
   const byRoute = new Map<string, PublishedArticleDocument>();
   const byArticleId = new Map<string, PublishedArticleDocument[]>();
   for (const article of articles) {

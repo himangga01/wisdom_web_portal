@@ -1,4 +1,4 @@
-import type { AdminConsultationListDto } from "@wisdom/shared";
+import { adminConsultationListSchema } from "@wisdom/shared";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useResource } from "../../api/use-resource";
@@ -10,7 +10,10 @@ import { StatusBadge } from "../../components/StatusBadge";
 export function ConsultationListPage() {
   const [search] = useSearchParams();
   const page = search.get("page") ?? "1";
-  const { data, error, loading } = useResource<AdminConsultationListDto>(`/consultations?page=${encodeURIComponent(page)}`);
+  const { data, error, loading } = useResource(
+    `/consultations?page=${encodeURIComponent(page)}`,
+    adminConsultationListSchema,
+  );
   return (
     <>
       <PageHeader eyebrow="INBOX" title="상담 관리" description="개인정보는 상세 화면에서만 확인할 수 있습니다." />

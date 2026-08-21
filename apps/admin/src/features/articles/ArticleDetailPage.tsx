@@ -1,4 +1,9 @@
-import type { AdminArticleDetailDto, AdminArticleHeadDto, Locale } from "@wisdom/shared";
+import {
+  adminArticleDetailSchema,
+  adminArticleMutationResultSchema,
+  type AdminArticleHeadDto,
+  type Locale,
+} from "@wisdom/shared";
 import { useState, type FormEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -27,14 +32,17 @@ export function ArticleDetailPage() {
   const { id = "" } = useParams();
   const [search] = useSearchParams();
   const revisionPage = search.get("revisionPage") ?? "1";
-  const resource = useResource<AdminArticleDetailDto>(`/articles/${encodeURIComponent(id)}?revisionPage=${encodeURIComponent(revisionPage)}`);
+  const resource = useResource(
+    `/articles/${encodeURIComponent(id)}?revisionPage=${encodeURIComponent(revisionPage)}`,
+    adminArticleDetailSchema,
+  );
   const [pending, setPending] = useState<string>();
   const [mutationError, setMutationError] = useState<unknown>();
   const mutate = async (key: string, path: string, body: unknown) => {
     setPending(key);
     setMutationError(undefined);
     try {
-      await apiRequest(path, { method: "POST", body });
+      await apiRequest(path, adminArticleMutationResultSchema, { method: "POST", body });
       await resource.reload();
     } catch (error) {
       setMutationError(error);

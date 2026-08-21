@@ -141,6 +141,12 @@ describe("article pipeline contracts", () => {
     expect(documentSchema.safeParse({ ...document, modifiedAt: "2026-07-16T01:30:00.000Z" }).success).toBe(false);
     expect(documentSchema.safeParse({ ...document, title: "😀".repeat(161) }).success).toBe(false);
     expect(documentSchema.safeParse({ ...document, bodyHtml: "x".repeat(512 * 1_024 + 1) }).success).toBe(false);
+    for (const invalid of [
+      { ...document, title: "Unsafe\u0001title" },
+      { ...document, summary: "Unsafe\u0001summary" },
+      { ...document, reviewer: { ...document.reviewer, name: "Unsafe\u0001name" } },
+      { ...document, reviewer: { ...document.reviewer, role: "Unsafe\u0001role" } },
+    ]) expect(documentSchema.safeParse(invalid).success).toBe(false);
   });
 
   it("maps all four locales to exact canonical article routes", () => {

@@ -319,11 +319,15 @@ describe("immutable publication snapshot", () => {
     expect(snapshot.documents[0]).toMatchObject({
       firstPublishedAt: "2026-07-16T01:00:00.000Z",
       modifiedAt: "2026-07-16T01:00:00.000Z",
-      reviewer: { name: "Kang Jihye", role: "Administrative content reviewer" },
+      reviewer: { name: "Kang Jihye", role: "대표행정사" },
     });
     expect(snapshot.documents[1]).toMatchObject({
       firstPublishedAt: "2026-07-16T03:00:00.000Z",
       modifiedAt: "2026-07-16T03:00:00.000Z",
+      reviewer: {
+        name: "Kang Jihye",
+        role: "Representative Administrative Attorney",
+      },
     });
     expect(snapshot.entries.map(({ route }) => route)).toEqual([
       "/insights/procurement-guide",
@@ -375,6 +379,39 @@ describe("immutable publication snapshot", () => {
     `).run(blindIndex(keyProvider, "email", "retained-person@example.com"));
     expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
       promote: [{ articleId: ARTICLE_ID, locale: "en", revisionId: EN_REVISION_ID, expectedRowVersion: 3 }],
+      nowMs: NOW,
+    })).toThrow("PUBLICATION_PII_REJECTED");
+  });
+
+  it("checks locale slugs and completed routes against retained phone PII", () => {
+    const phone = "010-1234-5678";
+    const envelope = encryptPii(keyProvider, "slug-private", {
+      name: "비공개 상담자",
+      phone,
+      message: "공개 문서와 무관한 충분히 긴 비공개 상담 내용입니다.",
+    });
+    fixture.db.sqlite.prepare(`
+      INSERT INTO consultations (
+        id, receipt_id, status, locale, category, preferred_contact,
+        pii_envelope, pii_key_id, phone_blind_index, blind_index_key_id,
+        marketing_accepted, received_at_ms, updated_at_ms,
+        retention_expires_at_ms, row_version
+      ) VALUES ('slug-private', 'slug-private-receipt', 'received', 'ko',
+        'procurement', 'phone', ?, 'pii-v1', ?, 'pii-v1', 0, 0, 0,
+        9999999999999, 1)
+    `).run(envelope, blindIndex(keyProvider, "phone", phone));
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads SET slug = '010-1234-5678'
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ARTICLE_ID);
+
+    expect(() => capturePublicationSnapshot(fixture.db, keyProvider, {
+      promote: [{
+        articleId: ARTICLE_ID,
+        locale: "en",
+        revisionId: EN_REVISION_ID,
+        expectedRowVersion: 3,
+      }],
       nowMs: NOW,
     })).toThrow("PUBLICATION_PII_REJECTED");
   });

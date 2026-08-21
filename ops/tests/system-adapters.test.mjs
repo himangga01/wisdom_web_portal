@@ -10,7 +10,7 @@ import { createAgeAdapter, createSqliteAdapter } from "../lib/system-adapters.mj
 function createRestoreRetentionFixtureSchema(database) {
   database.exec(`
     PRAGMA foreign_keys = ON;
-    PRAGMA user_version = 6;
+    PRAGMA user_version = 8;
     CREATE TABLE consultations (
       id TEXT PRIMARY KEY,
       receipt_id TEXT NOT NULL,

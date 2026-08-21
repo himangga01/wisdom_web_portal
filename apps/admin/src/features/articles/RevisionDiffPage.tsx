@@ -1,4 +1,4 @@
-import type { AdminRevisionDiffDto } from "@wisdom/shared";
+import { adminRevisionDiffSchema } from "@wisdom/shared";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useResource } from "../../api/use-resource";
@@ -9,8 +9,9 @@ export function RevisionDiffPage() {
   const { id = "", revisionId = "" } = useParams();
   const [search] = useSearchParams();
   const against = search.get("against") ?? "";
-  const { data, error, loading } = useResource<AdminRevisionDiffDto>(
+  const { data, error, loading } = useResource(
     `/articles/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revisionId)}/diff?against=${encodeURIComponent(against)}`,
+    adminRevisionDiffSchema,
   );
   if (loading) return <Loading />;
   if (error || !data) return <ErrorMessage error={error} />;

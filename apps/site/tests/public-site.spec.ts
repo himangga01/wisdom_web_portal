@@ -495,6 +495,11 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
   await page.getByRole("button", { name: "Send consultation request" }).click();
 
   await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
+  await page.fill(
+    '[name="message"]',
+    "Please review our updated public procurement registration plan.",
+  );
+  await expect(page.locator("[data-form-status]")).toBeHidden();
   expect(capturedHeaders["content-type"]).toContain("application/json");
   expect(capturedHeaders["idempotency-key"]).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -509,6 +514,40 @@ test("submits schema-valid JSON with unchecked marketing and renders a validated
     marketingConsent: { version: "marketing-en-2026-07-16", accepted: false },
   });
   expect(envelope.antiAbuse).toEqual({ formToken: "signed-form-token-en", website: "" });
+});
+
+test("maps post-trim name and message failures to localized controls", async ({ page }) => {
+  let submissions = 0;
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(consentResponse("en")),
+    });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    submissions += 1;
+    await route.abort();
+  });
+
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "  A  ");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="message"]', "                    ");
+  await page.check('[name="privacyConsent"]');
+  await page.getByRole("button", { name: "Send consultation request" }).click();
+
+  const name = page.locator('[name="name"]');
+  const message = page.locator('[name="message"]');
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  await expect(message).toHaveAttribute("aria-invalid", "true");
+  await expect(name).toBeFocused();
+  expect(await name.evaluate((control: HTMLInputElement) => control.validationMessage))
+    .toBe("Complete this required field.");
+  expect(await message.evaluate((control: HTMLTextAreaElement) => control.validationMessage))
+    .toBe("Enter between 20 and 2,000 characters.");
+  expect(submissions).toBe(0);
 });
 
 test("reloads stale consent, clears choices, and requires a fresh explicit agreement", async ({ page }) => {
@@ -569,6 +608,48 @@ test("reloads stale consent, clears choices, and requires a fresh explicit agree
   await submit.click();
   await expect(page.locator("[data-form-status]")).toContainText("receipt_01JZZZZZZZZZZZZZZZZZZZZZZZ");
   expect(submissions).toBe(2);
+});
+
+test("keeps the configuration failure when stale consent cannot be refreshed", async ({ page }) => {
+  let consentLoads = 0;
+  await page.route("**/api/v1/consent-documents**", async (route) => {
+    consentLoads += 1;
+    if (consentLoads === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(consentResponse("en")),
+      });
+      return;
+    }
+    await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/v1/consultations", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "CONSENT_VERSION_STALE",
+        message: "Consent version changed",
+        requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+      }),
+    });
+  });
+
+  await page.goto("/en/consultation");
+  await page.selectOption('[name="category"]', "procurement");
+  await page.fill('[name="name"]', "Hong Gildong");
+  await page.fill('[name="phone"]', "+82 (10) 1234-5678");
+  await page.fill('[name="message"]', "Please review our public procurement registration plan.");
+  await page.check('[name="privacyConsent"]');
+  await page.getByRole("button", { name: "Send consultation request" }).click();
+
+  const status = page.locator("[data-form-status]");
+  await expect(status).toHaveText(
+    "We could not load the current consent documents. Please try again shortly.",
+  );
+  await expect(status).not.toContainText("consent documents changed");
+  await expect(page.getByRole("button", { name: "Retry loading consent documents" })).toBeVisible();
 });
 
 test("reuses an idempotency key for retries and rotates it when the submission changes", async ({ page }) => {

@@ -84,12 +84,13 @@ describe("visible-content-derived JSON-LD", () => {
       datePublished: "2026-07-03T00:00:00.000Z",
       dateModified: "2026-07-03T00:00:00.000Z",
       reviewedBy: {
-        "@id": `${origin}/#representative`,
+        "@type": "Person",
         name: "Jihye Kang",
         jobTitle: "Administrative Attorney",
       },
       citation: ["https://example.test/procurement"],
     });
+    expect(articleNode?.reviewedBy).not.toHaveProperty("@id");
     expect(articleNode).not.toHaveProperty("author");
     const breadcrumb = document.jsonLd["@graph"]
       .find((node) => node["@type"] === "BreadcrumbList");

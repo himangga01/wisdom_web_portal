@@ -7,6 +7,7 @@ import {
   openMarketingWithdrawalCapability,
   withdrawMarketingConsent,
 } from "./service.js";
+import { WITHDRAWAL_STYLES, WITHDRAWAL_STYLES_PATH } from "./styles.js";
 
 interface AdminEnvironment {
   Variables: { requestId: string };
@@ -17,8 +18,13 @@ const MAX_FORM_FIELDS = 32;
 const MAX_FORM_FIELD_NAME = 128;
 const MAX_FORM_FIELD_VALUE = 4_096;
 
-function page(title: string, body: string, lang = "en"): string {
-  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/admin/styles.css"></head><body><main>${body}</main></body></html>`;
+function page(
+  title: string,
+  body: string,
+  lang = "en",
+  tone: "default" | "success" | "error" = "default",
+): string {
+  return `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="${WITHDRAWAL_STYLES_PATH}"></head><body><main class="withdrawal-card withdrawal-card--${tone}">${body}</main></body></html>`;
 }
 
 function cookieValue(header: string, name: string): string | undefined {
@@ -128,6 +134,12 @@ export function registerWithdrawalRoutes(
   app: Hono<AdminEnvironment>,
   dependencies: AdminRouteDependencies,
 ): void {
+  app.get(WITHDRAWAL_STYLES_PATH, (context) => {
+    return context.body(WITHDRAWAL_STYLES, 200, {
+      "Content-Type": "text/css; charset=utf-8",
+    });
+  });
+
   const routes = [
     "/marketing/withdraw/confirm",
     "/en/marketing/withdraw/confirm",
@@ -147,7 +159,7 @@ export function registerWithdrawalRoutes(
       const locale = result.kind === "invalid" ? withdrawalLocaleForRoute(route) : result.locale;
       const copy = WITHDRAWAL_COPY[locale];
       if (result.kind === "invalid") {
-        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 410);
+        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale, "error"), 410);
       }
       return context.html(page(copy.title, `<h1>${copy.title}</h1><p>${copy.description}</p><form method="post" action="${escapeHtml(route)}"><input type="hidden" name="confirmation" value="${escapeHtml(result.confirmationValue)}"><button type="submit">${copy.button}</button></form>`, locale));
     });
@@ -155,7 +167,7 @@ export function registerWithdrawalRoutes(
       const locale = withdrawalLocaleForRoute(route);
       const copy = WITHDRAWAL_COPY[locale];
       if (context.req.header("origin") !== dependencies.publicOrigin) {
-        return context.html(page("Forbidden", "<h1>Forbidden</h1>"), 403);
+        return context.html(page("Forbidden", "<h1>Forbidden</h1>", "en", "error"), 403);
       }
       const landingToken = cookieValue(
         context.req.header("cookie") ?? "",
@@ -170,10 +182,10 @@ export function registerWithdrawalRoutes(
         requestId: context.get("requestId"),
       });
       if (result.kind === "invalid") {
-        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale), 400);
+        return context.html(page(copy.invalidTitle, `<h1>${copy.invalid}</h1>`, locale, "error"), 400);
       }
       context.header("Set-Cookie", "__Host-wisdom-marketing-withdraw=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
-      return context.html(page(copy.successTitle, `<h1>${copy.successTitle}</h1><p>${copy.success}</p>`, locale));
+      return context.html(page(copy.successTitle, `<h1>${copy.successTitle}</h1><p>${copy.success}</p>`, locale, "success"));
     });
   }
 
@@ -184,7 +196,7 @@ export function registerWithdrawalRoutes(
       nowMs: dependencies.now(),
     });
     if (result.kind === "invalid") {
-      return context.html(page("Invalid link", "<h1>This withdrawal link is invalid or expired.</h1>"), 404);
+      return context.html(page("Invalid link", "<h1>This withdrawal link is invalid or expired.</h1>", "en", "error"), 404);
     }
     context.header("Set-Cookie", result.cookie);
     return context.redirect(result.location, 303);

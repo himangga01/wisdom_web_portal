@@ -14,7 +14,11 @@ import path from "node:path";
 
 import { acquireDatabaseMaintenanceLock } from "./database-maintenance-lock.mjs";
 import { hashSecureRegularFile, readSecureRegularFile } from "./monitor-files.mjs";
-import { assertNoSymlinkPath, ensureRealDirectory } from "./safe-paths.mjs";
+import {
+  assertCanonicalDirectoryIsolation,
+  assertNoSymlinkPath,
+  ensureRealDirectory,
+} from "./safe-paths.mjs";
 
 const MAX_BACKUP_STATUS_BYTES = 16 * 1024;
 const MAX_BACKUP_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024;
@@ -43,6 +47,22 @@ async function exists(candidate) {
     if (error.code === "ENOENT") return false;
     throw error;
   }
+}
+
+async function assertNoDatabaseSidecars(target) {
+  for (const sidecar of [`${target}-wal`, `${target}-shm`, `${target}-journal`]) {
+    if (await exists(sidecar)) {
+      fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be absent while every database writer is unloaded");
+    }
+  }
+}
+
+async function assertWritersUnloaded(services) {
+  if (typeof services.assertUnloaded === "function") {
+    await services.assertUnloaded();
+    return;
+  }
+  await services.assertStopped();
 }
 
 function stamp(date) {
@@ -126,6 +146,13 @@ export async function restoreBackup(input, adapters) {
   const plan = planRestore(input);
   if (plan.dryRun) return plan;
   await ensureRealDirectory(path.dirname(plan.target), "RESTORE_TARGET_UNSAFE");
+  await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
+  await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
+  await assertCanonicalDirectoryIsolation([
+    path.dirname(plan.target),
+    plan.backupRoot,
+    plan.tempRoot,
+  ], "RESTORE_INPUT_INVALID");
   const releaseMaintenanceLock = await acquireDatabaseMaintenanceLock(plan.target);
   try {
     return await restoreBackupLocked(input, plan, adapters);
@@ -145,21 +172,18 @@ async function restoreBackupLocked(input, plan, adapters) {
   let serviceStopAttempted = false;
   let retentionPurgedCount = 0;
   try {
-    await adapters.services.assertStopped();
     if (adapters.services.stop) {
       serviceStopAttempted = true;
       await adapters.services.stop();
-      await adapters.services.assertStopped();
     }
+    await assertWritersUnloaded(adapters.services);
 
     await assertNoSymlinkPath(plan.backupRoot, "RESTORE_INPUT_INVALID");
     await assertNoSymlinkPath(plan.backup, "RESTORE_INPUT_INVALID");
     await assertNoSymlinkPath(plan.status, "RESTORE_INPUT_INVALID");
     await ensureRealDirectory(plan.tempRoot, "RESTORE_INPUT_INVALID");
     if (await exists(plan.target)) await assertNoSymlinkPath(plan.target, "RESTORE_TARGET_UNSAFE");
-    for (const sidecar of [`${plan.target}-wal`, `${plan.target}-shm`, `${plan.target}-journal`]) {
-      if (await exists(sidecar)) fail("RESTORE_SIDECAR_PRESENT", "SQLite sidecars must be handled before restore");
-    }
+    await assertNoDatabaseSidecars(plan.target);
 
     for (const candidate of [plan.backup, plan.status]) {
       const metadata = await lstat(candidate);
@@ -216,7 +240,8 @@ async function restoreBackupLocked(input, plan, adapters) {
     }
     await syncFile(staged);
 
-    await adapters.services.assertStopped();
+    await assertWritersUnloaded(adapters.services);
+    await assertNoDatabaseSidecars(plan.target);
     if (await exists(plan.target)) {
       const targetMetadata = await lstat(plan.target);
       if (!targetMetadata.isFile() || targetMetadata.isSymbolicLink()) {
@@ -243,7 +268,8 @@ async function restoreBackupLocked(input, plan, adapters) {
     if (replaced) {
       try {
         if (adapters.services.stop) await adapters.services.stop();
-        await adapters.services.assertStopped();
+        await assertWritersUnloaded(adapters.services);
+        await assertNoDatabaseSidecars(plan.target);
         await copyFile(plan.target, failedPath, constants.COPYFILE_EXCL);
         await chmod(failedPath, 0o600);
         await syncFile(failedPath);

@@ -1,7 +1,7 @@
 # ChatGPT Sites 마이그레이션 범위
 
-기준일: 2026-07-24  
-문서 상태: 자체 Analytics 구현 계획 반영 v1.3
+기준일: 2026-07-25  
+문서 상태: 현재 서비스와 Sites 책임 분리 v1.5
 
 ## 목표
 
@@ -74,15 +74,17 @@ Sites는 공개 presentation과 interaction layer를 담당하고, 상담 데이
 - 실제 Control receipt를 받은 경우에만 성공 표시
 - 전화·이메일 대체 연락 경로
 
-### 운영 성과지표
+### 성과지표 경계
 
-- Control 자체 추정 순 방문자 수
-- Control 자체 페이지 조회 수
-- 두 자체 지표의 시간 추이 그래프
-- 조회 기간과 집계 단위 선택
-- normalized public path 기준 자체 인기 페이지
-- 같은 기간 Control 상담 접수 집계와의 비식별 운영 비교
-- Sites 내장 Analytics의 독립 외부 baseline
+Base migration은 Sites 내장 Analytics의 실제 제공 범위를 확인하고 공개 후
+외부 baseline을 기록하는 것만 포함합니다. Control의 수집·집계·DB schema,
+KPI와 React 관리자 성과 화면은 Sites 이관 대상이 아니며
+[`2026-07-24-first-party-analytics.md`](../superpowers/plans/2026-07-24-first-party-analytics.md)를
+따릅니다.
+
+현재 서비스 collector를 Sites에서도 이어서 사용할 필요가 생기면 공개 전환
+후 별도 승인으로 최소 client adapter를 추가합니다. 이 선택 작업과 현재
+서비스 Analytics 구현 여부는 Sites migration의 시작·완료 조건이 아닙니다.
 
 ## 기존 시스템에 유지할 대상
 
@@ -164,14 +166,10 @@ Sites는 공개 presentation과 interaction layer를 담당하고, 상담 데이
     않습니다.
 14. 기존 `www` withdrawal capability가 남아 있으면 direct domain cutover가
     차단됩니다.
-15. React 관리자에서 추정 순 방문자, 페이지 조회, 두 지표의 추이와
-    기간·granularity 변경을 확인할 수 있습니다.
-16. 자체 인기 페이지를 normalized public path 기준으로 확인할 수 있습니다.
-17. Sites 내장 Analytics 제공 범위는 실제 account 기준 외부 baseline으로
-    기록됩니다.
-18. 별도 analytics/차트 package, cookie, browser visitor ID나 개인 단위
-    visitor-to-consultation 추적을 추가하지 않습니다.
-19. raw event, raw IP·UA와 장기 visitor hash가 DB에 없습니다.
+15. Sites 내장 Analytics 제공 범위는 실제 account 기준 외부 baseline으로
+    기록되며, 제공되지 않아도 migration 완료를 막지 않습니다.
+16. Base migration은 제3자 analytics package, visitor cookie, browser
+    visitor ID와 개인 단위 visitor-to-consultation 연결을 추가하지 않습니다.
 
 성공 기준을 확인하는 테스트나 브라우저 검증은 계획에 포함하되 사용자 승인
 전에는 실행하지 않습니다.
@@ -182,13 +180,14 @@ Sites는 공개 presentation과 interaction layer를 담당하고, 상담 데이
 |---|---|---|
 | A. 계획 문서 | 기능 재확인과 문서 전면 수정 | 이번 작업 |
 | B. local scaffold | 독립 source root와 starter 생성 | 미승인·미실행 |
-| C. 구현 | Sites UI/content, Control 연동과 자체 Analytics 코드 수정 | 미승인·미실행 |
+| C. 구현 | Sites UI/content와 Control 상담 연동; 현재 서비스 Analytics 제외 | 미승인·미실행 |
 | D. 검증 | typecheck, unit/build/browser/API 검증 | 미승인·미실행 |
 | E. 외부 Site 생성 | `create_site` 1회와 `project_id` 기록 | 미승인·미실행 |
 | F. source/version | credential 발급, source push, archive와 saved version | 미승인·미실행 |
 | G. owner-only deploy | 접근 제한을 확인한 production 배포 | 미승인·미실행 |
 | H. domain 준비 | custom domain 추가, DNS와 active 확인 | 미승인·미실행 |
 | I. 공개 전환 | `public` access policy와 실제 트래픽 | 미승인·미실행 |
-| J. 성과지표 운영 | 자체 관리자·Sites Analytics 확인, baseline과 KPI review | 미승인·미실행 |
+| J. Sites baseline | Sites Analytics 제공 범위 확인과 공개 후 기록 | 미승인·미실행 |
 
 한 승인 단위가 다음 단위의 권한을 자동으로 포함하지 않습니다.
+현재 서비스 성과지표 구현은 이 표와 별개의 계획·승인 단위입니다.

@@ -105,7 +105,6 @@ function serviceNode(document: SearchDocument): Record<string, unknown> {
 }
 
 function articleNode(document: SearchDocument, article: PublishedArticleDocument): Record<string, unknown> {
-  const origin = new URL(document.canonicalUrl).origin;
   return {
     "@type": "Article",
     "@id": `${document.canonicalUrl}#article`,
@@ -117,7 +116,7 @@ function articleNode(document: SearchDocument, article: PublishedArticleDocument
     datePublished: article.firstPublishedAt,
     dateModified: article.modifiedAt,
     reviewedBy: {
-      "@id": `${origin}/#representative`,
+      "@type": "Person",
       name: article.reviewer.name,
       jobTitle: article.reviewer.role,
     },

@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useState } from "react";
 
 import { useSession } from "../app/session";
 
@@ -15,6 +16,19 @@ const links = [
 
 export function AppShell() {
   const { logout } = useSession();
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [logoutFailed, setLogoutFailed] = useState(false);
+  const handleLogout = async () => {
+    setLogoutPending(true);
+    setLogoutFailed(false);
+    try {
+      await logout();
+    } catch {
+      setLogoutFailed(true);
+    } finally {
+      setLogoutPending(false);
+    }
+  };
   return (
     <div className="app-frame">
       <a className="skip-link" href="#main-content">본문으로 바로가기</a>
@@ -27,7 +41,15 @@ export function AppShell() {
             </NavLink>
           ))}
         </nav>
-        <button className="button button-ghost logout" type="button" onClick={() => void logout()}>로그아웃</button>
+        {logoutFailed ? <p className="muted" role="alert">로그아웃하지 못했습니다. 다시 시도하세요.</p> : null}
+        <button
+          className="button button-ghost logout"
+          type="button"
+          disabled={logoutPending}
+          onClick={() => void handleLogout()}
+        >
+          {logoutPending ? "로그아웃 중…" : "로그아웃"}
+        </button>
       </aside>
       <main id="main-content" className="main-content" tabIndex={-1}>
         <Outlet />

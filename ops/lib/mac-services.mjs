@@ -14,11 +14,19 @@ function isKnownMissingService(error) {
 }
 
 export function createMacServiceAdapter({
-  labels = ["com.jihye.portal.control", "com.jihye.portal.notification-worker", "com.jihye.portal.content-worker"],
+  labels = [
+    "com.jihye.portal.control",
+    "com.jihye.portal.notification-worker",
+    "com.jihye.portal.content-worker",
+    "com.jihye.portal.retention",
+  ],
+  scheduledLabels = labels.includes("com.jihye.portal.retention")
+    ? ["com.jihye.portal.retention"]
+    : [],
   userId = process.getuid?.(),
   execute = execFile,
   fetchImpl = globalThis.fetch,
-  readyUrl = `http://127.0.0.1:${process.env.CONTROL_PORT ?? "8787"}/health/ready`,
+  readyUrl = "http://127.0.0.1:8787/health/ready",
   launchAgentRoot = path.join(os.homedir(), "Library", "LaunchAgents"),
   stopAttempts = 20,
   stopDelayMs = 250,
@@ -28,16 +36,26 @@ export function createMacServiceAdapter({
   if (
     !Array.isArray(labels) || labels.length === 0 ||
     labels.some((label) => typeof label !== "string" || !/^[A-Za-z0-9.-]+$/u.test(label)) ||
+    !Array.isArray(scheduledLabels) ||
+    scheduledLabels.some((label) => !labels.includes(label)) ||
     typeof launchAgentRoot !== "string" || !path.isAbsolute(launchAgentRoot) || /[\0\r\n]/u.test(launchAgentRoot)
   ) {
     throw Object.assign(new Error("Launch agent configuration is invalid"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
   }
+  const readyMatch = typeof readyUrl === "string"
+    ? /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/health\/ready$/u.exec(readyUrl)
+    : null;
+  if (!readyMatch || Number(readyMatch[1]) > 65_535) {
+    throw Object.assign(new Error("Control readiness URL is invalid"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
+  }
   if (!Number.isInteger(stopAttempts) || stopAttempts < 1 || !Number.isInteger(stopDelayMs) || stopDelayMs < 0) {
     throw Object.assign(new Error("Service stop bounds are invalid"), { code: "SERVICE_ADAPTER_UNAVAILABLE" });
   }
+  const scheduled = new Set(scheduledLabels);
+  const persistentLabels = labels.filter((label) => !scheduled.has(label));
   const domain = `gui/${userId}`;
   const assertRunning = async () => {
-    for (const label of labels) {
+    for (const label of persistentLabels) {
       let stdout;
       try {
         ({ stdout } = await execute("/bin/launchctl", ["print", `${domain}/${label}`], { encoding: "utf8", maxBuffer: 128 * 1024 }));
@@ -132,7 +150,9 @@ export function createMacServiceAdapter({
           if (!loaded) {
             await execute("/bin/launchctl", ["bootstrap", domain, path.join(launchAgentRoot, `${label}.plist`)]);
           }
-          await execute("/bin/launchctl", ["kickstart", "-k", service]);
+          if (!scheduled.has(label)) {
+            await execute("/bin/launchctl", ["kickstart", "-k", service]);
+          }
         } catch (error) {
           throw Object.assign(new Error(`Unable to start ${label}`, { cause: error }), { code: "SERVICE_START_FAILED" });
         }

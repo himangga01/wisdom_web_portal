@@ -17,6 +17,10 @@ import {
   type ConsentAuthorityResolver,
 } from "./consent/service.js";
 import {
+  isConsentReleaseId,
+  publicConsentRelease,
+} from "./consent/release-authority.js";
+import {
   acceptConsultation,
   type IntakeFaultPoint,
 } from "./consultations/service.js";
@@ -310,7 +314,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   app.get("/health/ready", (context) => {
     let consentReady = false;
     try {
-      consentReady = resolveConsentAuthority() !== undefined;
+      consentReady = resolveConsentAuthority({ nowMs: now() }) !== undefined;
     } catch {
       consentReady = false;
     }
@@ -385,15 +389,28 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     if (!locale.success) {
       return apiError(context, 400, "INVALID_LOCALE", "A supported locale is required.");
     }
+    const requestedReleaseId = context.req.query("releaseId");
+    if (requestedReleaseId !== undefined && !isConsentReleaseId(requestedReleaseId)) {
+      return apiError(context, 400, "INVALID_RELEASE_ID", "A valid release ID is required.");
+    }
     let authority;
     try {
-      authority = resolveConsentAuthority();
+      authority = resolveConsentAuthority({
+        ...(requestedReleaseId === undefined ? {} : { releaseId: requestedReleaseId }),
+        nowMs: requestNowMs,
+      });
     } catch {
       authority = undefined;
     }
-    const documents = authority
-      ? publicConsentDocumentsFromBundle(authority.bundle, locale.data)
-      : undefined;
+    if (!authority) {
+      return apiError(
+        context,
+        503,
+        "CONSENT_DOCUMENTS_UNAVAILABLE",
+        "Active consent documents are unavailable.",
+      );
+    }
+    const documents = publicConsentDocumentsFromBundle(authority.bundle, locale.data);
     if (!documents) {
       return apiError(
         context,
@@ -402,13 +419,22 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         "Active consent documents are unavailable.",
       );
     }
+    const release = publicConsentRelease(dependencies.db, authority);
     const issuedAtMs = requestNowMs;
     const formToken = issueFormToken(dependencies.keyProvider, {
       locale: locale.data,
+      releaseId: release.releaseId,
+      bundleId: release.bundleId,
+      manifestSha256: release.manifestSha256,
       privacyVersion: documents.documents.privacy.version,
       marketingVersion: documents.documents.marketing.version,
     }, issuedAtMs, randomUUID());
-    return context.json({ ...documents, formToken }, 200);
+    return context.json({
+      ...documents,
+      releaseId: release.releaseId,
+      bundleId: release.bundleId,
+      formToken,
+    }, 200);
   });
 
   app.post("/api/v1/consultations", async (context) => {
@@ -545,6 +571,9 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       peerAddress: dependencies.peerAddress ?? (() => "unknown"),
       ...(dependencies.articlePublication
         ? { articlePublication: dependencies.articlePublication }
+        : {}),
+      ...(dependencies.consentAuthorityResolver
+        ? { consentAuthorityResolver: dependencies.consentAuthorityResolver }
         : {}),
     });
   }

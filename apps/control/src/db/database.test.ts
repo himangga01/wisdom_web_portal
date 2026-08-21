@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +16,7 @@ import { computePublishedConsentDocumentSha256 } from "@wisdom/shared";
 
 import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import {
+  assertDatabaseSchemaCurrent,
   assertRollbackCompatibleMigration,
   closeDatabase,
   isDatabaseReady,
@@ -17,6 +25,7 @@ import {
   runMigrations,
 } from "./client.js";
 import { REQUIRED_INDEXES, REQUIRED_TABLES, SCHEMA_VERSION } from "./schema.js";
+import { createControlRuntime } from "../runtime.js";
 
 let testDatabase: TestDatabase | undefined;
 
@@ -147,6 +156,34 @@ function insertConsentEventFixture(
 }
 
 describe("SQLite durability and migrations", () => {
+  it("requires an explicit migration before runtime startup without changing the legacy schema", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wisdom-control-runtime-schema-"));
+    const path = join(directory, "control.sqlite");
+    const legacy = openDatabase(path);
+    try {
+      runMigrations(legacy, 1_000, 2);
+      expect(() => assertDatabaseSchemaCurrent(legacy)).toThrow("DATABASE_MIGRATION_REQUIRED");
+    } finally {
+      closeDatabase(legacy);
+    }
+
+    expect(() => createControlRuntime({
+      NODE_ENV: "test",
+      DATABASE_PATH: path,
+    })).toThrow("DATABASE_MIGRATION_REQUIRED");
+
+    const unchanged = openDatabase(path);
+    try {
+      expect(unchanged.sqlite.pragma("user_version", { simple: true })).toBe(2);
+      expect(unchanged.sqlite.prepare(
+        "SELECT max(version) version FROM schema_migrations",
+      ).get()).toEqual({ version: 2 });
+    } finally {
+      closeDatabase(unchanged);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps SQLite user_version synchronized with the exact migration history", () => {
     const db = openDatabase(":memory:");
     try {
@@ -272,7 +309,7 @@ describe("SQLite durability and migrations", () => {
 
   it("appends the article publication and immutable consent schemas without rewriting v1 or v2", () => {
     testDatabase = createTestDatabase();
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBe(8);
     expect(testDatabase.db.sqlite.prepare(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     ).all()).toEqual([
@@ -282,6 +319,8 @@ describe("SQLite durability and migrations", () => {
       { version: 4, name: "immutable-consent-bundles" },
       { version: 5, name: "append-only-consent-events" },
       { version: 6, name: "consent-event-replace-guard" },
+      { version: 7, name: "publication-privacy-generation" },
+      { version: 8, name: "sites-release-handoff" },
     ]);
     const tables = new Set((testDatabase.db.sqlite.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table'
@@ -295,13 +334,59 @@ describe("SQLite durability and migrations", () => {
       "publication_outbox",
       "hermes_article_idempotency",
       "hermes_article_nonces",
+      "publication_privacy_generation",
+      "sites_release_handoffs",
     ]) expect(tables.has(table), table).toBe(true);
+  });
+
+  it("increments the privacy generation only for retained-PII membership or envelope changes", () => {
+    testDatabase = createTestDatabase();
+    const generation = () => testDatabase!.db.sqlite.prepare(
+      "SELECT generation FROM publication_privacy_generation WHERE singleton = 1",
+    ).pluck().get();
+    expect(generation()).toBe(0);
+    testDatabase.db.sqlite.prepare(`
+      INSERT INTO consultations (
+        id, receipt_id, status, locale, category, preferred_contact,
+        pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+        blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+        retention_expires_at_ms, row_version
+      ) VALUES ('generation-consultation', 'generation-receipt', 'received', 'ko',
+        'procurement', 'phone', 'opaque-a', 'pii-v1', ?, ?, 'pii-v1', 0,
+        1, 1, 1000, 1)
+    `).run(Buffer.alloc(32, 1), Buffer.alloc(32, 2));
+    expect(generation()).toBe(1);
+
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations SET status = 'acknowledged', updated_at_ms = 2
+      WHERE id = 'generation-consultation'
+    `).run();
+    expect(generation()).toBe(1);
+
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations SET retention_expires_at_ms = 900
+      WHERE id = 'generation-consultation'
+    `).run();
+    expect(generation()).toBe(2);
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations SET pii_envelope = 'opaque-b'
+      WHERE id = 'generation-consultation'
+    `).run();
+    expect(generation()).toBe(3);
+    testDatabase.db.sqlite.prepare(`
+      UPDATE consultations
+      SET purged_at_ms = 3, pii_envelope = NULL, pii_key_id = NULL,
+        phone_blind_index = NULL, email_blind_index = NULL,
+        blind_index_key_id = NULL
+      WHERE id = 'generation-consultation'
+    `).run();
+    expect(generation()).toBe(4);
   });
 
   it("retains v4 consent bundle identity and effective-time immutability", () => {
     testDatabase = createTestDatabase();
     const db = testDatabase.db.sqlite;
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBe(8);
     expect(db.prepare(
       "SELECT version, name FROM schema_migrations WHERE version = 4",
     ).get()).toEqual({ version: 4, name: "immutable-consent-bundles" });
@@ -1203,7 +1288,7 @@ describe("SQLite durability and migrations", () => {
       runMigrations(restarted, 3_000);
       expect(restarted.sqlite.prepare(
         "SELECT version, name FROM schema_migrations ORDER BY version",
-      ).all()).toHaveLength(6);
+      ).all()).toHaveLength(8);
       expect(restarted.sqlite.prepare(
         "SELECT body_markdown FROM article_revisions WHERE id = 'legacy-revision'",
       ).get()).toEqual({ body_markdown: "# Legacy body" });
@@ -1384,6 +1469,8 @@ describe("SQLite durability and migrations", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
+      { version: 8 },
     ]);
     expect(upgraded.sqlite.prepare("SELECT id FROM consultations").all()).toEqual([{ id: "consultation-v1" }]);
     expect(upgraded.sqlite.prepare("SELECT admin_id FROM admin_sessions").all()).toEqual([{ admin_id: "admin-v1" }]);
@@ -1399,6 +1486,7 @@ describe("SQLite durability and migrations", () => {
       "article_locale_heads",
       "article_translation_jobs",
       "release_activations",
+      "sites_release_handoffs",
     ]));
     const columns = (table: string) => (
       upgraded.sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>
@@ -1419,7 +1507,7 @@ describe("SQLite durability and migrations", () => {
     closeDatabase(upgraded);
     const restarted = openDatabase(path);
     runMigrations(restarted, 4_000);
-    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 6 });
+    expect(restarted.sqlite.prepare("SELECT count(*) count FROM schema_migrations").get()).toEqual({ count: 8 });
     closeDatabase(restarted);
     rmSync(directory, { force: true, recursive: true });
   });
@@ -1630,5 +1718,37 @@ describe("SQLite durability and migrations", () => {
     runMigrations(reopened);
     expect(reopened.sqlite.pragma("journal_mode", { simple: true })).toBe("wal");
     closeDatabase(reopened);
+  });
+
+  it("requires owner-only database directories and SQLite files", () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "wisdom-owner-only-db-"));
+    try {
+      const databasePath = join(root, "control.sqlite");
+      const database = openDatabase(databasePath);
+      runMigrations(database);
+      expect(statSync(root).mode & 0o777).toBe(0o700);
+      for (const candidate of [
+        databasePath,
+        `${databasePath}-wal`,
+        `${databasePath}-shm`,
+      ]) {
+        if (existsSync(candidate)) expect(statSync(candidate).mode & 0o777).toBe(0o600);
+      }
+      closeDatabase(database);
+
+      chmodSync(root, 0o750);
+      expect(() => openDatabase(databasePath)).toThrow(/owner-only/u);
+      chmodSync(root, 0o700);
+
+      chmodSync(databasePath, 0o640);
+      expect(() => openDatabase(databasePath)).toThrow(/owner-only/u);
+      chmodSync(databasePath, 0o600);
+
+      writeFileSync(`${databasePath}-wal`, "unsafe", { mode: 0o644 });
+      expect(() => openDatabase(databasePath)).toThrow(/owner-only/u);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });

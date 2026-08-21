@@ -245,12 +245,39 @@ describe("published article filesystem boundary", () => {
 
     expect(content.articles).toHaveLength(4);
     expect([...content.byRoute.keys()]).toEqual([
-      "/insights/jodal-entry-guide",
       "/en/insights/procurement-entry-guide",
-      "/zh-hant/insights/caigou-ruzhu-zhinan",
       "/en/insights/visa-extension-checklist",
+      "/insights/jodal-entry-guide",
+      "/zh-hant/insights/caigou-ruzhu-zhinan",
     ]);
     expect(content.byRoute.has("/zh-hans/insights/procurement-entry-guide")).toBe(false);
+  });
+
+  it("orders Insights content by modified time and then canonical route", () => {
+    const older = validDocument();
+    const newer = validDocument({
+      articleId: "33333333-3333-4333-8333-333333333333",
+      revisionId: "44444444-4444-4444-8444-444444444444",
+      slug: "newer-guidance",
+      route: "/insights/newer-guidance",
+      title: "더 최신인 실무 안내",
+      modifiedAt: "2026-07-04T00:00:00.000Z",
+    });
+    const sameTimeLaterRoute = validDocument({
+      articleId: "55555555-5555-4555-8555-555555555555",
+      revisionId: "66666666-6666-4666-8666-666666666666",
+      slug: "z-guidance",
+      route: "/insights/z-guidance",
+      title: "같은 시각의 두 번째 안내",
+      modifiedAt: "2026-07-04T00:00:00.000Z",
+    });
+    const directory = writeSnapshot([older, newer, sameTimeLaterRoute]);
+
+    expect(loadPublishedContent(directory).articles.map(({ route }) => route)).toEqual([
+      "/insights/newer-guidance",
+      "/insights/z-guidance",
+      "/insights/procurement-basics",
+    ]);
   });
 
   it("fails closed on missing, malformed, or oversized manifests without leaking host paths", () => {
