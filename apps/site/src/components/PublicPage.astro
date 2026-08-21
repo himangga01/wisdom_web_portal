@@ -158,8 +158,8 @@ const policyDocument = route === "/privacy"
                 <span class="map-pin" aria-hidden="true">智</span>
                 <p>{content.office.nearby}</p>
                 <div class="map-actions">
-                  <a class="button button-primary" href={OFFICE.mapUrl} target="_blank" rel="noreferrer">{content.buttons.map}</a>
-                  <a class="button button-secondary" href={OFFICE.blogUrl} target="_blank" rel="noreferrer">{content.buttons.blog}</a>
+                  <a class="button button-primary" href={OFFICE.mapUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.map} (${content.accessibility.newWindow})`}>{content.buttons.map}</a>
+                  <a class="button button-secondary" href={OFFICE.blogUrl} target="_blank" rel="noreferrer" aria-label={`${content.buttons.blog} (${content.accessibility.newWindow})`}>{content.buttons.blog}</a>
                 </div>
               </div>
             </div>

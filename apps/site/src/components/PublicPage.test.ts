@@ -61,6 +61,8 @@ describe("public Astro page DOM", () => {
     expect(html).toContain('href="/zh-hans"');
     expect(html).toContain('href="/zh-hant"');
     expect(html).toContain('href="/en/consultation"');
+    expect(html.match(/href="\/en\/insights"/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(html).toContain('aria-label="Naver Blog (opens in a new window)"');
     expect(html.match(/data-reveal(?:=|\s)/g)).toHaveLength(18);
     expect(html.match(/rel="canonical"/g)).toHaveLength(1);
     expect(html).toContain(`rel="canonical" href="${searchOrigin}/en"`);
@@ -198,8 +200,8 @@ describe("public Astro page DOM", () => {
       articleId: "11111111-1111-4111-8111-111111111111",
       slug: "guide",
       contentSha256: "0".repeat(64),
-      bodyMarkdown: "## Guide\n\nSafe body.",
-      bodyHtml: "<h2>Guide</h2>\n<p>Safe body.</p>\n",
+      bodyMarkdown: "## Guide\n\nSafe body.\n",
+      bodyHtml: "<h2>Guide</h2>\n<p>Safe body.</p>",
       revisionCreatedAt: "2026-07-01T00:00:00.000Z",
       approvedAt: "2026-07-02T00:00:00.000Z",
       firstPublishedAt: "2026-07-03T00:00:00.000Z",

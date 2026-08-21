@@ -95,6 +95,25 @@ describe("consultation form adapter", () => {
     }
   });
 
+  it("maps post-trim schema failures back to the affected form field", async () => {
+    const {
+      buildConsultationSubmission,
+      consultationSubmissionFieldErrors,
+    } = await import("./consultation-adapter.js");
+
+    for (const [field, data] of [
+      ["name", formData({ name: "  A  " })],
+      ["message", formData({ message: "                    " })],
+    ] as const) {
+      try {
+        buildConsultationSubmission(data, consentConfiguration);
+        expect.fail(`expected ${field} validation failure`);
+      } catch (error) {
+        expect(consultationSubmissionFieldErrors(error)).toHaveProperty(field);
+      }
+    }
+  });
+
   it("loads and validates active consent versions with the signed form token", async () => {
     const { loadConsentConfiguration } = await import("./consultation-adapter.js");
     const fetchRef = vi.fn(async (
@@ -215,6 +234,26 @@ describe("consultation form adapter", () => {
       },
       body: JSON.stringify(submission),
     });
+  });
+
+  it("returns structured field errors and a bounded Retry-After value", async () => {
+    const { buildConsultationSubmission, postConsultation } = await import("./consultation-adapter.js");
+    const error = {
+      code: "RATE_LIMITED",
+      message: "Try later",
+      fieldErrors: { email: ["Email is invalid"] },
+      requestId: "request_01JZZZZZZZZZZZZZZZZZZZZZZZ",
+    };
+    const result = await postConsultation(
+      buildConsultationSubmission(formData(), consentConfiguration),
+      {
+        fetchRef: async () => new Response(JSON.stringify(error), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "37" },
+        }),
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 429, error, retryAfterSeconds: 37 });
   });
 
   it("aborts a hung consultation submission with a bounded timeout signal", async () => {

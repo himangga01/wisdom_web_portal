@@ -17,15 +17,19 @@ import {
   type ConsentAuthorityResolver,
 } from "./consent/service.js";
 import {
+  isConsentReleaseId,
+  publicConsentRelease,
+} from "./consent/release-authority.js";
+import {
   acceptConsultation,
   type IntakeFaultPoint,
 } from "./consultations/service.js";
 import { keyedDigest, type KeyProvider } from "./crypto/index.js";
 import { isDatabaseReady, type ControlDatabase } from "./db/client.js";
 import {
-  registerTask4Routes,
+  registerAdminRoutes,
   type AdminArticlePublicationActions,
-} from "./admin/routes.js";
+} from "./admin/index.js";
 
 const MAX_BODY_BYTES = 32_768;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{16,128}$/;
@@ -137,6 +141,20 @@ function isSensitivePath(path: string): boolean {
 
 function redactedRoute(path: string): string {
   if (/^\/marketing\/withdraw\/[^/]+$/.test(path)) return "/marketing/withdraw/:token";
+  if (path.startsWith("/admin/api/v1/consultations/")) {
+    return path.replace(/^\/admin\/api\/v1\/consultations\/[^/]+/u, "/admin/api/v1/consultations/:id");
+  }
+  if (path.startsWith("/admin/api/v1/articles/")) {
+    return path
+      .replace(/^\/admin\/api\/v1\/articles\/[^/]+/u, "/admin/api/v1/articles/:id")
+      .replace(/\/revisions\/[^/]+/u, "/revisions/:revisionId");
+  }
+  if (path.startsWith("/admin/api/v1/releases/")) {
+    return path.replace(/^\/admin\/api\/v1\/releases\/[^/]+/u, "/admin/api/v1/releases/:id");
+  }
+  if (path.startsWith("/admin/api/v1/failures/")) {
+    return path.replace(/^\/admin\/api\/v1\/failures\/[^/]+/u, "/admin/api/v1/failures/:id");
+  }
   if (/^\/admin\/consultations\/[^/]+\/status$/.test(path)) return "/admin/consultations/:id/status";
   if (/^\/admin\/consultations\/[^/]+$/.test(path)) return "/admin/consultations/:id";
   if (/^\/admin\/failures\/[^/]+\/requeue$/.test(path)) return "/admin/failures/:id/requeue";
@@ -220,7 +238,9 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   app.use("*", async (context, next) => {
     context.set("requestId", randomUUID());
     await next();
-    context.res.headers.set("Cache-Control", "no-store");
+    if (!context.res.headers.has("Cache-Control")) {
+      context.res.headers.set("Cache-Control", "no-store");
+    }
     context.res.headers.set("X-Request-Id", context.get("requestId"));
   });
 
@@ -233,7 +253,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     context.res.headers.set("X-Frame-Options", "DENY");
     context.res.headers.set(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     );
   });
 
@@ -273,6 +293,14 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       route: redactedRoute(context.req.path),
       code: "STORAGE_UNAVAILABLE",
     });
+    if (context.req.path.startsWith("/admin/api/")) {
+      return context.json({
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "관리자 요청을 처리하지 못했습니다.",
+        },
+      }, 503);
+    }
     return apiError(
       context,
       503,
@@ -286,7 +314,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
   app.get("/health/ready", (context) => {
     let consentReady = false;
     try {
-      consentReady = resolveConsentAuthority() !== undefined;
+      consentReady = resolveConsentAuthority({ nowMs: now() }) !== undefined;
     } catch {
       consentReady = false;
     }
@@ -361,15 +389,28 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     if (!locale.success) {
       return apiError(context, 400, "INVALID_LOCALE", "A supported locale is required.");
     }
+    const requestedReleaseId = context.req.query("releaseId");
+    if (requestedReleaseId !== undefined && !isConsentReleaseId(requestedReleaseId)) {
+      return apiError(context, 400, "INVALID_RELEASE_ID", "A valid release ID is required.");
+    }
     let authority;
     try {
-      authority = resolveConsentAuthority();
+      authority = resolveConsentAuthority({
+        ...(requestedReleaseId === undefined ? {} : { releaseId: requestedReleaseId }),
+        nowMs: requestNowMs,
+      });
     } catch {
       authority = undefined;
     }
-    const documents = authority
-      ? publicConsentDocumentsFromBundle(authority.bundle, locale.data)
-      : undefined;
+    if (!authority) {
+      return apiError(
+        context,
+        503,
+        "CONSENT_DOCUMENTS_UNAVAILABLE",
+        "Active consent documents are unavailable.",
+      );
+    }
+    const documents = publicConsentDocumentsFromBundle(authority.bundle, locale.data);
     if (!documents) {
       return apiError(
         context,
@@ -378,13 +419,22 @@ export function createControlApp(dependencies: ControlAppDependencies) {
         "Active consent documents are unavailable.",
       );
     }
+    const release = publicConsentRelease(dependencies.db, authority);
     const issuedAtMs = requestNowMs;
     const formToken = issueFormToken(dependencies.keyProvider, {
       locale: locale.data,
+      releaseId: release.releaseId,
+      bundleId: release.bundleId,
+      manifestSha256: release.manifestSha256,
       privacyVersion: documents.documents.privacy.version,
       marketingVersion: documents.documents.marketing.version,
     }, issuedAtMs, randomUUID());
-    return context.json({ ...documents, formToken }, 200);
+    return context.json({
+      ...documents,
+      releaseId: release.releaseId,
+      bundleId: release.bundleId,
+      formToken,
+    }, 200);
   });
 
   app.post("/api/v1/consultations", async (context) => {
@@ -509,7 +559,7 @@ export function createControlApp(dependencies: ControlAppDependencies) {
     ) {
       throw new Error("Complete administrator and withdrawal dependencies are required");
     }
-    registerTask4Routes(app, {
+    registerAdminRoutes(app, {
       db: dependencies.db,
       keyProvider: dependencies.keyProvider,
       publicOrigin: dependencies.publicOrigin,
@@ -521,6 +571,9 @@ export function createControlApp(dependencies: ControlAppDependencies) {
       peerAddress: dependencies.peerAddress ?? (() => "unknown"),
       ...(dependencies.articlePublication
         ? { articlePublication: dependencies.articlePublication }
+        : {}),
+      ...(dependencies.consentAuthorityResolver
+        ? { consentAuthorityResolver: dependencies.consentAuthorityResolver }
         : {}),
     });
   }

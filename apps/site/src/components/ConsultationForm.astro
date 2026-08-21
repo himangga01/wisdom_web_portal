@@ -36,6 +36,9 @@ const emailHref = `mailto:${content.office.email}`;
   data-status-consent-ready={form.status.consentReady}
   data-status-consent-updated={form.status.consentUpdated}
   data-status-invalid={form.status.invalid}
+  data-error-server={form.status.invalid}
+  data-status-rate-limited={form.status.rateLimited}
+  data-status-rate-limited-generic={form.status.rateLimitedWithoutDelay}
   data-consent-version-label={form.help.consentVersion}
   data-consent-effective-label={form.help.consentEffectiveAt}
   data-consent-retention-label={form.help.consentRetention}
@@ -66,7 +69,7 @@ const emailHref = `mailto:${content.office.email}`;
 
     <div class="field">
       <label for="consultation-name">{form.labels.name}</label>
-      <input id="consultation-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="50" required data-error-required={form.errors.required} />
+      <input id="consultation-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="50" required data-error-required={form.errors.required} data-error-schema={form.errors.required} />
     </div>
     <div class="field">
       <label for="consultation-phone">{form.labels.phone}</label>
@@ -97,7 +100,7 @@ const emailHref = `mailto:${content.office.email}`;
 
     <div class="field full-field">
       <label for="consultation-message">{form.labels.message}</label>
-      <textarea id="consultation-message" name="message" rows="8" minlength="20" maxlength="2000" required aria-describedby="message-help sensitive-warning attachment-warning" data-error-required={form.errors.required} data-error-too-short={form.errors.messageLength}></textarea>
+      <textarea id="consultation-message" name="message" rows="8" minlength="20" maxlength="2000" required aria-describedby="message-help sensitive-warning attachment-warning" data-error-required={form.errors.required} data-error-too-short={form.errors.messageLength} data-error-schema={form.errors.messageLength}></textarea>
       <small id="message-help">{form.help.message}</small>
       <p class="warning" id="sensitive-warning">{form.help.sensitiveIdWarning}</p>
       <p class="warning" id="attachment-warning">{form.help.noAttachments}</p>

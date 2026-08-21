@@ -37,8 +37,16 @@ function serviceSlug(route: PublicRoute): ServiceCategorySlug | undefined {
     : undefined;
 }
 
-function buildBaseDocument(origin: string, locale: Locale, route: PublicRoute): SearchDocument {
-  const surface = getBaseSurface(route);
+function buildBaseDocument(
+  origin: string,
+  locale: Locale,
+  route: PublicRoute,
+  insightsLastModified?: string,
+): SearchDocument {
+  const surface = getBaseSurface(
+    route,
+    insightsLastModified ? { insightsLastModified } : {},
+  );
   const localizedRoute = toLocalizedPath(locale, route);
   const content = siteContent[locale];
   const slug = serviceSlug(route);
@@ -141,8 +149,20 @@ function assertSearchGraph(documents: readonly SearchDocument[]): void {
 }
 
 export function buildSearchIndex(origin: string, content: PublishedContent): SearchIndex {
+  const insightsLastModified = new Map<Locale, string>();
+  for (const article of content.articles) {
+    const current = insightsLastModified.get(article.locale);
+    if (!current || article.modifiedAt > current) {
+      insightsLastModified.set(article.locale, article.modifiedAt);
+    }
+  }
   const documents = [
-    ...PUBLIC_ROUTE_ENTRIES.map(({ locale, route }) => buildBaseDocument(origin, locale, route)),
+    ...PUBLIC_ROUTE_ENTRIES.map(({ locale, route }) => buildBaseDocument(
+      origin,
+      locale,
+      route,
+      route === "/insights" ? insightsLastModified.get(locale) : undefined,
+    )),
     ...content.articles.map((article) => buildArticleDocument(origin, content, article)),
   ];
   assertSearchGraph(documents);

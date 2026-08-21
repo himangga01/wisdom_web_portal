@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   rmSync,
@@ -34,15 +35,20 @@ import {
 } from "./indexnow-outbox.js";
 import {
   verifyAndSealPublicationBuild,
+  verifySealedPublicationRelease,
   type SealedPublicationRelease,
 } from "./publication-build.js";
 import {
   createRetentionPruningPath,
   createReleaseConsentAuthorityResolver,
+  createPublicationBatchPlan,
+  PublicationActivationSettlementError,
   publishApprovedArticles,
   pruneRetiredPublicationReleases,
   reconcilePublicationActivation,
   rollbackPublication,
+  type PublicationAuthorityWorkerInput,
+  type PublicationAuthorityWorkerResult,
   type PublicationReleaseConfig,
   type PublicationReleaseDependencies,
 } from "./publication-release.js";
@@ -91,11 +97,89 @@ function insertRevision(
   );
 }
 
+function insertBatchArticle(index: number): void {
+  const suffix = String(index).padStart(3, "0");
+  const uuidSuffix = String(index + 1).padStart(12, "0");
+  const articleId = `10000000-0000-4000-8000-${uuidSuffix}`;
+  const revisionId = `20000000-0000-4000-8000-${uuidSuffix}`;
+  const slug = `batch-guide-${suffix}`;
+  const title = `Batch guide ${suffix}`;
+  const summary = `Reviewed batch summary ${suffix}.`;
+  fixture.db.sqlite.prepare(`
+    INSERT INTO articles (
+      id, slug, state, source_locale, current_revision_id,
+      created_by_type, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, 'approved', 'ko', ?, 'hermes', ?, ?)
+  `).run(articleId, slug, revisionId, NOW - 2_000, NOW - 1_000);
+  fixture.db.sqlite.prepare(`
+    INSERT INTO article_revisions (
+      id, article_id, locale, revision_no, title, summary, body_markdown,
+      content_sha256, source_revision_id, sources_json, source_sha256,
+      initial_review_state, created_at_ms, created_by_type, created_by_id
+    ) VALUES (?, ?, 'ko', 1, ?, ?, ?, ?, NULL, ?, ?, 'approved', ?,
+      'hermes', 'batch-fixture')
+  `).run(
+    revisionId,
+    articleId,
+    title,
+    summary,
+    BODY,
+    contentHash(title, summary, "ko"),
+    JSON.stringify(SOURCES),
+    Buffer.alloc(32, index + 10),
+    NOW - 2_000,
+  );
+  fixture.db.sqlite.prepare(`
+    INSERT INTO article_locale_heads (
+      article_id, locale, slug, state, head_revision_id, approved_revision_id,
+      approved_by_admin_id, approved_at_ms, row_version, updated_at_ms
+    ) VALUES (?, 'ko', ?, 'approved', ?, ?, ?, ?, 1, ?)
+  `).run(
+    articleId,
+    slug,
+    revisionId,
+    revisionId,
+    ADMIN_ID,
+    NOW - 1_000,
+    NOW - 1_000,
+  );
+}
+
+function insertRetainedConsultation(
+  id: string,
+  pii: {
+    name: string;
+    phone: string;
+    email?: string;
+    company?: string;
+    message: string;
+  },
+): void {
+  fixture.db.sqlite.prepare(`
+    INSERT INTO consultations (
+      id, receipt_id, status, locale, category, preferred_contact,
+      pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+      blind_index_key_id, marketing_accepted, received_at_ms, updated_at_ms,
+      retention_expires_at_ms, row_version
+    ) VALUES (?, ?, 'received', 'ko', 'procurement', 'phone', ?, 'pii-v1',
+      ?, ?, 'pii-v1', 0, ?, ?, ?, 1)
+  `).run(
+    id,
+    `receipt-${id}`,
+    encryptPii(keyProvider, id, pii),
+    blindIndex(keyProvider, "phone", pii.phone),
+    pii.email ? blindIndex(keyProvider, "email", pii.email) : null,
+    NOW,
+    NOW,
+    NOW + 1_000_000,
+  );
+}
+
 beforeEach(() => {
   fixture = createTestDatabase();
   seedCompleteConsentBundles(fixture.db, consentBundle(), NOW - 10_000);
   activateConsentBundle(fixture.db, "bundle-2026-07-16", NOW - 9_000);
-  root = mkdtempSync(join(tmpdir(), "wisdom-publication-release-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "wisdom-publication-release-")));
   mkdirSync(join(root, "releases"));
   mkdirSync(join(root, "site"));
   config = {
@@ -232,7 +316,145 @@ function dependencies(
   };
 }
 
+async function verifyAuthorityForTest(
+  input: PublicationAuthorityWorkerInput,
+): Promise<PublicationAuthorityWorkerResult> {
+  const verified = verifySealedPublicationRelease(
+    input.releasePath,
+    input.publicOrigin,
+  );
+  if (verified.manifestSha256 !== input.expectedManifestSha256) {
+    throw new Error("PUBLICATION_AUTHORITY_MANIFEST_MISMATCH");
+  }
+  return {
+    manifestSha256: verified.manifestSha256,
+    bundle: verified.consentBundle,
+  };
+}
+
 describe("journaled publication activation", () => {
+  it("publishes deterministic groups of 64 and leaves the next approved head for the following batch", async () => {
+    for (let index = 0; index < 64; index += 1) insertBatchArticle(index);
+    const firstPlan = createPublicationBatchPlan(fixture.db, "next-batch");
+    expect(firstPlan).toMatchObject({
+      eligibleTotal: 65,
+      batchCount: 64,
+      remainingAfterBatch: 1,
+      mode: "next-batch",
+    });
+    expect(firstPlan.promotions).toHaveLength(64);
+
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-batch-64",
+      nowMs: NOW,
+      mode: "next-batch",
+      expectedFingerprint: firstPlan.fingerprint,
+    }, config, dependencies());
+
+    const nextPlan = createPublicationBatchPlan(fixture.db, "next-batch");
+    expect(nextPlan).toMatchObject({
+      eligibleTotal: 1,
+      batchCount: 1,
+      remainingAfterBatch: 0,
+    });
+    expect(fixture.db.sqlite.prepare(`
+      SELECT json_extract(metadata_json, '$.batchCount') batch_count,
+        json_extract(metadata_json, '$.remainingAfterBatch') remaining
+      FROM audit_events WHERE action = 'article.release.published'
+    `).get()).toEqual({ batch_count: 64, remaining: 1 });
+  });
+
+  it("publishes policy-only without consuming an approved content head", async () => {
+    const plan = createPublicationBatchPlan(fixture.db, "policy-only");
+    expect(plan).toMatchObject({
+      eligibleTotal: 1,
+      batchCount: 0,
+      remainingAfterBatch: 1,
+      mode: "policy-only",
+    });
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-policy-only-explicit",
+      nowMs: NOW,
+      mode: "policy-only",
+      expectedFingerprint: plan.fingerprint,
+    }, config, dependencies());
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state FROM article_locale_heads WHERE article_id = ? AND locale = 'ko'
+    `).pluck().get(ARTICLE_ID)).toBe("approved");
+  });
+
+  it("hands the committed authority to the shared resolver before the first public request", async () => {
+    const resolver = createReleaseConsentAuthorityResolver(fixture.db, config, {
+      verifyAuthority: verifyAuthorityForTest,
+      refreshIntervalMs: 0,
+    });
+    const deps = dependencies({ activateAuthority: resolver.activate });
+    const app = createControlApp({
+      db: fixture.db,
+      keyProvider,
+      consentAuthorityResolver: resolver,
+      allowedOrigins: [config.publicOrigin],
+      enforceOrigin: true,
+      peerAddress: () => "203.0.113.71",
+    });
+
+    const published = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-immediate-authority",
+      nowMs: NOW,
+    }, config, deps);
+
+    const activeAuthority = resolver();
+    expect(activeAuthority?.source).toBe("release");
+    expect(activeAuthority?.bundle.bundleId).toBe("bundle-2026-07-16");
+    expect((await app.request(`${config.publicOrigin}/health/ready`)).status).toBe(200);
+    const consent = await app.request(
+      `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
+    );
+    expect(consent.status).toBe(200);
+    expect((await consent.json()).documents.privacy.version).toBe("privacy-2026-07-16");
+    expect(activeAuthority?.source === "release" ? activeAuthority.releaseId : undefined)
+      .toBe(published.releaseId);
+    resolver.stop();
+  });
+
+  it("discards a stale worker result after a newer activation handoff", async () => {
+    const deps = dependencies();
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-worker-base",
+      nowMs: NOW,
+    }, config, deps);
+    let resolveWorker: ((result: PublicationAuthorityWorkerResult) => void) | undefined;
+    let workerInput: PublicationAuthorityWorkerInput | undefined;
+    const resolver = createReleaseConsentAuthorityResolver(fixture.db, config, {
+      refreshIntervalMs: 0,
+      verifyAuthority: (input) => {
+        workerInput = input;
+        return new Promise((resolve) => { resolveWorker = resolve; });
+      },
+    });
+    const staleRefresh = resolver.refresh();
+    await expect.poll(() => workerInput).toBeDefined();
+
+    seedCompleteConsentBundles(fixture.db, consentBundle("bundle-worker-new", "worker-new"), NOW + 1);
+    activateConsentBundle(fixture.db, "bundle-worker-new", NOW + 2);
+    deps.activateAuthority = resolver.activate;
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-worker-new",
+      nowMs: NOW + 3,
+    }, config, deps);
+    expect(resolver()?.bundle.bundleId).toBe("bundle-worker-new");
+
+    resolveWorker!(await verifyAuthorityForTest(workerInput!));
+    expect(await staleRefresh).toBe(false);
+    expect(resolver()?.bundle.bundleId).toBe("bundle-worker-new");
+    resolver.stop();
+  });
+
   it("caches verified consent authority and refreshes changed releases once outside request paths", async () => {
     const deps = dependencies();
     await publishApprovedArticles(fixture.db, keyProvider, {
@@ -249,6 +471,7 @@ describe("journaled publication activation", () => {
         onFullVerification: () => void;
         scheduleRefresh: (task: () => void) => void;
         refreshIntervalMs: number;
+        verifyAuthority: typeof verifyAuthorityForTest;
       },
     ) => ReturnType<typeof createReleaseConsentAuthorityResolver> & {
       refresh(): boolean;
@@ -257,7 +480,9 @@ describe("journaled publication activation", () => {
       onFullVerification: () => { verificationCount += 1; },
       scheduleRefresh: (task) => { scheduled.push(task); },
       refreshIntervalMs: 0,
+      verifyAuthority: verifyAuthorityForTest,
     });
+    expect(await resolver.refresh()).toBe(true);
     expect(verificationCount).toBe(1);
     const app = createControlApp({
       db: fixture.db,
@@ -288,7 +513,8 @@ describe("journaled publication activation", () => {
     expect(scheduled).toHaveLength(1);
     expect(verificationCount).toBe(1);
     scheduled.shift()!();
-    expect(verificationCount).toBe(2);
+    await expect.poll(() => verificationCount).toBe(2);
+    await expect.poll(() => resolver()?.bundle.bundleId).toBe("bundle-cache-b");
     expect(resolver()?.source).toBe("release");
     expect(resolver()?.bundle.bundleId).toBe("bundle-cache-b");
 
@@ -300,7 +526,8 @@ describe("journaled publication activation", () => {
     expect(resolver()).toBeUndefined();
     expect(scheduled).toHaveLength(1);
     scheduled.shift()!();
-    expect(verificationCount).toBe(3);
+    await expect.poll(() => verificationCount).toBe(3);
+    await expect.poll(() => resolver()).toBeUndefined();
     expect(resolver()).toBeUndefined();
     const unavailable = await app.request(
       `${config.publicOrigin}/api/v1/consent-documents?locale=en`,
@@ -321,13 +548,18 @@ describe("journaled publication activation", () => {
       createReleaseConsentAuthorityResolver?: (
         db: typeof fixture.db,
         config: PublicationReleaseConfig,
+        options: { verifyAuthority: typeof verifyAuthorityForTest; refreshIntervalMs: number },
       ) => ((() => { bundle: PublicationSnapshot["consentBundle"] } | undefined) & {
-        refresh(): boolean;
+        refresh(): Promise<boolean>;
         stop(): void;
       });
     }).createReleaseConsentAuthorityResolver;
     expect(typeof resolverFactory).toBe("function");
-    const resolveAuthority = resolverFactory!(fixture.db, config);
+    const resolveAuthority = resolverFactory!(fixture.db, config, {
+      verifyAuthority: verifyAuthorityForTest,
+      refreshIntervalMs: 0,
+    });
+    expect(await resolveAuthority.refresh()).toBe(true);
     expect(resolveAuthority()?.bundle.bundleId).toBe("bundle-2026-07-16");
 
     seedCompleteConsentBundles(fixture.db, consentBundle("bundle-new", "new"), NOW + 1);
@@ -354,7 +586,7 @@ describe("journaled publication activation", () => {
     }, config, deps);
     expect(second.releaseId).not.toBe(first.releaseId);
     expect(resolveAuthority()).toBeUndefined();
-    expect(resolveAuthority.refresh()).toBe(true);
+    expect(await resolveAuthority.refresh()).toBe(true);
     const authority = resolveAuthority()!;
     expect(authority.bundle.bundleId).toBe("bundle-new");
 
@@ -704,7 +936,7 @@ describe("journaled publication activation", () => {
     expect(readdirSync(config.releaseRoot).sort()).toEqual([first.version]);
   });
 
-  it("preserves the previous pointer on build failure and retains failed output for investigation", async () => {
+  it("preserves the previous pointer, audits the failure, and removes all build temporaries", async () => {
     await expect(publishApprovedArticles(fixture.db, keyProvider, {
       actorAdminId: ADMIN_ID,
       requestId: "request-failed-build",
@@ -720,6 +952,46 @@ describe("journaled publication activation", () => {
     expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
     expect(existsSync(config.releaseRoot)).toBe(true);
     expect(readFileSync(join(config.releaseRoot, "failed-publication.log"), "utf8")).toContain("PUBLICATION_BUILD_FAILED");
+    expect(readdirSync(config.releaseRoot)).toEqual(["failed-publication.log"]);
+    expect(fixture.db.sqlite.prepare(`
+      SELECT action, target_type, request_id,
+        json_extract(metadata_json, '$.errorCode') error_code
+      FROM audit_events
+      WHERE action = 'article.release.build_failed'
+    `).get()).toEqual({
+      action: "article.release.build_failed",
+      target_type: "release-attempt",
+      request_id: "request-failed-build",
+      error_code: "PUBLICATION_BUILD_FAILED",
+    });
+  });
+
+  it("does not turn a committed publication into a failure when temporary cleanup fails", async () => {
+    const result = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "request-cleanup-failed",
+      nowMs: NOW,
+    }, config, dependencies({
+      prepareRelease: ({ snapshot, snapshotDirectory, outputDirectory }) => {
+        const sealed = prepareRelease(snapshot, outputDirectory);
+        const target = join(root, "cleanup-target");
+        mkdirSync(target);
+        rmSync(snapshotDirectory, { recursive: true });
+        symlinkSync(target, snapshotDirectory, process.platform === "win32" ? "junction" : "dir");
+        return Promise.resolve(sealed);
+      },
+    }));
+
+    expect(result.releaseId).toBe("99999999-9999-4999-8999-000000000010");
+    expect(existsSync(config.currentLink)).toBe(true);
+    expect(fixture.db.sqlite.prepare(`
+      SELECT action, json_extract(metadata_json, '$.temporaryKind') temporary_kind
+      FROM audit_events
+      WHERE action = 'article.release.cleanup_failed'
+    `).get()).toEqual({
+      action: "article.release.cleanup_failed",
+      temporary_kind: "snapshot",
+    });
   });
 
   it("rejects an approved-head change that races the long static build", async () => {
@@ -739,14 +1011,14 @@ describe("journaled publication activation", () => {
         `).run(ARTICLE_ID);
         return Promise.resolve(sealed);
       },
-    }))).rejects.toThrow("PUBLICATION_PROMOTION_CHANGED_DURING_BUILD");
+    }))).rejects.toThrow("PUBLICATION_BATCH_CHANGED_DURING_BUILD");
     expect(existsSync(config.currentLink)).toBe(false);
     expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM releases").get()).toEqual({ count: 0 });
     expect(fixture.db.sqlite.prepare("SELECT state FROM article_locale_heads WHERE locale = 'ko'").pluck().get()).toBe("in_review");
   });
 
-  it("reconciles a crash after the symlink switch exactly once", async () => {
-    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+  it("settles an after-switch fault before the request returns", async () => {
+    const published = await publishApprovedArticles(fixture.db, keyProvider, {
       actorAdminId: ADMIN_ID,
       requestId: "request-crash",
       nowMs: NOW,
@@ -754,27 +1026,199 @@ describe("journaled publication activation", () => {
       faultInjector(point) {
         if (point === "after-switch") throw new Error("simulated-crash");
       },
-    }))).rejects.toThrow("simulated-crash");
+    }));
     expect(existsSync(config.currentLink)).toBe(true);
-    expect(fixture.db.sqlite.prepare("SELECT state FROM releases").get()).toEqual({ state: "building" });
-    expect(fixture.db.sqlite.prepare("SELECT state FROM release_activations").get()).toEqual({ state: "prepared" });
-
-    const reconciled = reconcilePublicationActivation(fixture.db, {
-      requestId: "startup-reconcile",
-      nowMs: NOW + 1,
-    }, config, dependencies());
-    expect(reconciled.kind).toBe("committed");
+    expect(published.releaseId).toBe("99999999-9999-4999-8999-000000000010");
     expect(fixture.db.sqlite.prepare("SELECT state FROM releases").get()).toEqual({ state: "active" });
+    expect(fixture.db.sqlite.prepare("SELECT state FROM release_activations").get()).toEqual({ state: "committed" });
     expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM publication_outbox").get()).toEqual({ count: 1 });
     expect(reconcilePublicationActivation(fixture.db, {
       requestId: "startup-reconcile-again",
-      nowMs: NOW + 2,
+      nowMs: NOW + 1,
     }, config, dependencies())).toEqual({ kind: "already-consistent" });
     expect(fixture.db.sqlite.prepare("SELECT count(*) count FROM publication_outbox").get()).toEqual({ count: 1 });
+  });
+
+  it("restores the verified previous pointer when the database commit cannot complete", async () => {
+    const ids = idFactory();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-recovery-base",
+      nowMs: NOW,
+    }, config, dependencies({ randomUUID: ids }));
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+
+    await expect(publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-recovery-reverted",
+      nowMs: NOW + 2,
+    }, config, dependencies({
+      randomUUID: ids,
+      faultInjector(point) {
+        if (point !== "before-db-commit") return;
+        fixture.db.sqlite.exec(`
+          CREATE TRIGGER force_publication_commit_failure
+          BEFORE UPDATE OF state ON releases
+          WHEN NEW.state = 'active'
+          BEGIN
+            SELECT RAISE(ABORT, 'forced activation failure');
+          END;
+        `);
+      },
+    }))).rejects.toMatchObject({
+      outcome: {
+        kind: "reverted",
+        previousReleaseId: first.releaseId,
+      },
+    });
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, first.version));
+    expect(fixture.db.sqlite.prepare(
+      "SELECT state FROM releases WHERE id = ?",
+    ).pluck().get(first.releaseId)).toBe("active");
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state, error_code FROM release_activations ORDER BY created_at_ms DESC LIMIT 1
+    `).get()).toEqual({
+      state: "failed",
+      error_code: "PUBLICATION_COMMIT_REVERTED",
+    });
+  });
+
+  it("keeps an unresolved activation fail-closed when verified pointer recovery fails", async () => {
+    const ids = idFactory();
+    await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-manual-base",
+      nowMs: NOW,
+    }, config, dependencies({ randomUUID: ids }));
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+    let switches = 0;
+
+    const attempt = publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-manual-required",
+      nowMs: NOW + 2,
+    }, config, dependencies({
+      randomUUID: ids,
+      switchCurrent(targetPath, currentLink) {
+        switches += 1;
+        if (switches > 1) throw new Error("forced recovery switch failure");
+        rmSync(currentLink, { force: true });
+        symlinkSync(targetPath, currentLink, process.platform === "win32" ? "junction" : "dir");
+      },
+      faultInjector(point) {
+        if (point !== "before-db-commit") return;
+        fixture.db.sqlite.exec(`
+          CREATE TRIGGER force_publication_manual_recovery
+          BEFORE UPDATE OF state ON releases
+          WHEN NEW.state = 'active'
+          BEGIN
+            SELECT RAISE(ABORT, 'forced activation failure');
+          END;
+        `);
+      },
+    }));
+    await expect(attempt).rejects.toBeInstanceOf(PublicationActivationSettlementError);
+    await expect(attempt).rejects.toMatchObject({
+      outcome: {
+        kind: "manual-recovery-required",
+        errorCode: "PUBLICATION_RECOVERY_FAILED",
+      },
+    });
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state, error_code FROM release_activations ORDER BY created_at_ms DESC LIMIT 1
+    `).get()).toEqual({
+      state: "switched",
+      error_code: "PUBLICATION_RECOVERY_FAILED",
+    });
   });
 });
 
 describe("verified publication rollback", () => {
+  it("rejects a historical release that matches PII retained after its publication", async () => {
+    const deps = dependencies();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-before-new-pii",
+      nowMs: NOW,
+    }, config, deps);
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-after-new-pii",
+      nowMs: NOW + 2,
+    }, config, deps);
+    insertRetainedConsultation("rollback-new-pii", {
+      name: "조달 안내",
+      phone: "010-9876-5432",
+      message: "공개 문서와 무관했던 비공개 상담 내용이 이후 새로 접수되었습니다.",
+    });
+
+    expect(() => rollbackPublication(fixture.db, keyProvider, {
+      releaseId: first.releaseId,
+      actorAdminId: ADMIN_ID,
+      requestId: "rollback-blocked-by-new-pii",
+      nowMs: NOW + 3,
+    }, config, deps)).toThrow("PUBLICATION_ROLLBACK_PII_REJECTED");
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
+  });
+
+  it("rejects rollback before pointer switch when privacy generation changes after the scan", async () => {
+    const deps = dependencies();
+    const first = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-generation-base",
+      nowMs: NOW,
+    }, config, deps);
+    fixture.db.sqlite.prepare(`
+      UPDATE article_locale_heads
+      SET state = 'approved', approved_revision_id = head_revision_id,
+        approved_by_admin_id = ?, approved_at_ms = ?, row_version = row_version + 1
+      WHERE article_id = ? AND locale = 'en'
+    `).run(ADMIN_ID, NOW + 1, ARTICLE_ID);
+    const second = await publishApprovedArticles(fixture.db, keyProvider, {
+      actorAdminId: ADMIN_ID,
+      requestId: "publish-generation-current",
+      nowMs: NOW + 2,
+    }, config, deps);
+    deps.faultInjector = (point) => {
+      if (point !== "after-rollback-pii-scan") return;
+      insertRetainedConsultation("rollback-generation-race", {
+        name: "새 상담자",
+        phone: "010-5555-6666",
+        message: "세대 변경 검증을 위한 공개 문서와 무관한 비공개 상담 내용입니다.",
+      });
+    };
+
+    expect(() => rollbackPublication(fixture.db, keyProvider, {
+      releaseId: first.releaseId,
+      actorAdminId: ADMIN_ID,
+      requestId: "rollback-generation-race",
+      nowMs: NOW + 3,
+    }, config, deps)).toThrow("PUBLICATION_PRIVACY_GENERATION_CHANGED");
+    expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
+    expect(fixture.db.sqlite.prepare(`
+      SELECT state, error_code FROM release_activations ORDER BY created_at_ms DESC LIMIT 1
+    `).get()).toEqual({
+      state: "failed",
+      error_code: "PUBLICATION_PRIVACY_GENERATION_CHANGED",
+    });
+  });
+
   it("serves a retired bundle with its original effective time after a valid release rollback", async () => {
     const deps = dependencies();
     const originalEffectiveAtMs = NOW - 9_000;
@@ -797,14 +1241,19 @@ describe("verified publication rollback", () => {
       nowMs: NOW + 4,
     }, config, deps);
 
-    rollbackPublication(fixture.db, {
+    rollbackPublication(fixture.db, keyProvider, {
       releaseId: first.releaseId,
       actorAdminId: ADMIN_ID,
       requestId: "rollback-consent-authority-a",
       nowMs: NOW + 5,
     }, config, deps);
 
-    const authority = createReleaseConsentAuthorityResolver(fixture.db, config)();
+    const authorityResolver = createReleaseConsentAuthorityResolver(fixture.db, config, {
+      verifyAuthority: verifyAuthorityForTest,
+      refreshIntervalMs: 0,
+    });
+    expect(await authorityResolver.refresh()).toBe(true);
+    const authority = authorityResolver();
     expect(authority?.source).toBe("release");
     if (authority?.source !== "release") throw new Error("expected release consent authority");
     expect(authority.releaseId).toBe(first.releaseId);
@@ -847,7 +1296,7 @@ describe("verified publication rollback", () => {
     }, config, deps);
     expect(second.releaseId).not.toBe(first.releaseId);
 
-    const rolledBack = rollbackPublication(fixture.db, {
+    const rolledBack = rollbackPublication(fixture.db, keyProvider, {
       releaseId: first.releaseId,
       actorAdminId: ADMIN_ID,
       requestId: "rollback-first",
@@ -910,7 +1359,7 @@ describe("verified publication rollback", () => {
     await publishApprovedArticles(fixture.db, keyProvider, {
       actorAdminId: ADMIN_ID, requestId: "publish-after-claim", nowMs: NOW + 3,
     }, config, deps);
-    rollbackPublication(fixture.db, {
+    rollbackPublication(fixture.db, keyProvider, {
       releaseId: first.releaseId,
       actorAdminId: ADMIN_ID,
       requestId: "rollback-resets-claim",
@@ -947,7 +1396,7 @@ describe("verified publication rollback", () => {
       actorAdminId: ADMIN_ID, requestId: "publish-second", nowMs: NOW + 1,
     }, config, deps);
     writeFileSync(join(config.releaseRoot, first.version, "robots.txt"), "tampered", "utf8");
-    expect(() => rollbackPublication(fixture.db, {
+    expect(() => rollbackPublication(fixture.db, keyProvider, {
       releaseId: first.releaseId,
       actorAdminId: ADMIN_ID,
       requestId: "rollback-tampered",
@@ -956,7 +1405,7 @@ describe("verified publication rollback", () => {
     expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
   });
 
-  it("rejects tampered release consent metadata before changing the current pointer", async () => {
+  it("prevents published release consent metadata from being tampered", async () => {
     const deps = dependencies();
     const first = await publishApprovedArticles(fixture.db, keyProvider, {
       actorAdminId: ADMIN_ID,
@@ -974,16 +1423,9 @@ describe("verified publication rollback", () => {
       consentBundle: { contentFileSha256: string };
     };
     metadata.consentBundle.contentFileSha256 = "00".repeat(32);
-    fixture.db.sqlite.prepare(
+    expect(() => fixture.db.sqlite.prepare(
       "UPDATE releases SET metadata_json = ? WHERE id = ?",
-    ).run(JSON.stringify(metadata), first.releaseId);
-
-    expect(() => rollbackPublication(fixture.db, {
-      releaseId: first.releaseId,
-      actorAdminId: ADMIN_ID,
-      requestId: "rollback-metadata-tampered",
-      nowMs: NOW + 2,
-    }, config, deps)).toThrow(/^PUBLICATION_RELEASE_METADATA_MISMATCH$/);
+    ).run(JSON.stringify(metadata), first.releaseId)).toThrow(/metadata is immutable/i);
     expect(readlinkSync(config.currentLink)).toBe(join(config.releaseRoot, second.version));
     expect(fixture.db.sqlite.prepare(
       "SELECT count(*) count FROM release_activations",

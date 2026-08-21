@@ -98,6 +98,7 @@ function parsePublicationConfig(
       ? { NAVER_SITE_VERIFICATION_FILE: source.NAVER_SITE_VERIFICATION_FILE }
       : {}),
   });
+  const kakaoChatUrl = parseKakaoChatUrl(source.PUBLIC_KAKAO_CHAT_URL);
   if (new Set([releaseRoot, currentLink, siteSourceRoot]).size !== 3) {
     throw new Error("Publication roots and current link must be distinct");
   }
@@ -124,7 +125,27 @@ function parsePublicationConfig(
     ...(searchVerification.naverFile
       ? { naverSiteVerificationFile: searchVerification.naverFile.filename }
       : {}),
+    ...(kakaoChatUrl ? { kakaoChatUrl } : {}),
   });
+}
+
+function parseKakaoChatUrl(value: string | undefined): string | undefined {
+  const candidate = value?.trim();
+  if (!candidate || candidate === "#") return undefined;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error("PUBLIC_KAKAO_CHAT_URL must be a secure Kakao URL");
+  }
+  const isKakaoHost = url.hostname === "kakao.com" || url.hostname.endsWith(".kakao.com");
+  if (
+    url.protocol !== "https:" || !isKakaoHost || url.username || url.password ||
+    url.href !== candidate
+  ) {
+    throw new Error("PUBLIC_KAKAO_CHAT_URL must be a secure Kakao URL");
+  }
+  return candidate;
 }
 
 function parsePort(value: string | undefined): number {
@@ -150,6 +171,17 @@ function parseOrigin(name: "PUBLIC_ORIGIN" | "ADMIN_ORIGIN", value: string | und
     throw new Error(`${name} must be an exact origin without path or credentials`);
   }
   if (production && url.protocol !== "https:") throw new Error(`${name} must use HTTPS in production`);
+  const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  if (
+    production &&
+    (
+      isIP(hostname) !== 0 ||
+      !hostname.includes(".") ||
+      hostname.endsWith(".local")
+    )
+  ) {
+    throw new Error(`${name} must use a public DNS hostname in production`);
+  }
   return value;
 }
 

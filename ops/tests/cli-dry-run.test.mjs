@@ -6,6 +6,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import {
+  buildFirstPublicationKeychainArguments,
+} from "../scripts/first-publication.mjs";
+
 const execute = promisify(execFile);
 const opsRoot = path.resolve(import.meta.dirname, "..");
 const drive = path.parse(process.cwd()).root;
@@ -123,7 +127,7 @@ test("deploy and rollback CLIs default to plans without invoking macOS tools", a
 });
 
 test("stale lock recovery CLI is dry-run and binds release and database paths exactly", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-")));
   const owner = (kind) => `${JSON.stringify({
     formatVersion: 2,
     kind,
@@ -162,7 +166,7 @@ test("stale lock recovery CLI is dry-run and binds release and database paths ex
 });
 
 test("stale lock recovery CLI rejects lexical aliases in the lock and confirmation paths", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-alias-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-lock-cli-alias-")));
   const releaseRoot = path.join(root, "releases");
   const releaseLock = path.join(releaseRoot, ".release-operation-lock");
   await mkdir(releaseLock, { recursive: true });
@@ -232,14 +236,59 @@ test("stale lock recovery CLI rejects lexical aliases in the lock and confirmati
 });
 
 test("public bootstrap CLI plans a distinct verified public release", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-public-seed-plan-")));
+  const publicReleaseRoot = path.join(root, "public-releases");
+  await mkdir(publicReleaseRoot);
   const result = await dryRun("seed-public.mjs", [
     "--source-dist", path.join(drive, "fixture", "app", "apps", "site", "dist"),
-    "--public-release-root", path.join(drive, "fixture", "portal", "public-releases"),
-    "--public-current", path.join(drive, "fixture", "portal", "public-current"),
+    "--public-release-root", publicReleaseRoot,
+    "--public-current", path.join(root, "public-current"),
     "--release-id", "20260716T010203Z-abcdef1",
   ]);
   assert.equal(result.action, "seed-public-current");
   assert.doesNotMatch(result.destination, /\\current(?:\\|$)/i);
+});
+
+test("first publication CLI dry-run does not inspect Keychain, launchd, or the database", async () => {
+  const root = path.join(drive, "fixture", "first-publication");
+  const result = await dryRun("first-publication.mjs", [
+    "--public-release-root", path.join(root, "public-releases"),
+    "--public-current", path.join(root, "public-current"),
+    "--application-current", path.join(root, "application-current"),
+    "--runtime-config", path.join(root, "runtime.env"),
+    "--node", process.execPath,
+    "--account", "wisdom",
+    "--admin-id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ]);
+  assert.equal(result.action, "first-publication");
+  assert.match(result.steps.join(" "), /exact-publication-fingerprint/u);
+});
+
+test("first publication Keychain command binds the verified bootstrap and exact confirmation", () => {
+  const root = path.join(drive, "fixture", "first-publication-command");
+  const nodeBinary = process.execPath;
+  const applicationRelease = path.join(root, "release");
+  const args = buildFirstPublicationKeychainArguments({
+    applicationRelease,
+    nodeBinary,
+    runtimeConfig: path.join(root, "runtime.env"),
+    keychainAccount: "wisdom",
+    bootstrapReleaseId: "20260716T010203Z-abcdef1",
+    actorAdminId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    apply: true,
+    confirmFingerprint: "a".repeat(64),
+  });
+  assert.equal(args[0], path.join(applicationRelease, "ops", "scripts", "keychain-exec.mjs"));
+  assert.deepEqual(args.slice(-8), [
+    path.join(applicationRelease, "apps", "control", "dist", "cli", "publication-first.js"),
+    "--bootstrap-release-id",
+    "20260716T010203Z-abcdef1",
+    "--actor-admin-id",
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "--apply",
+    "--confirm-first-publication",
+    "a".repeat(64),
+  ]);
 });
 
 test("age identity import dry-run never requires or prints the identity", async () => {

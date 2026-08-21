@@ -1,12 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import { consentBundle, createTestDatabase, type TestDatabase } from "../../test/helpers.js";
+import { issueFormToken } from "../abuse/form-token.js";
+import {
+  activateConsentBundle,
+  createDatabaseConsentAuthorityResolver,
+  getActivePublishedConsentBundle,
+  getConsentBundleDigest,
+  seedConsentDocuments,
+} from "../consent/service.js";
 import {
   blindIndex,
   createStaticKeyProvider,
   encryptPii,
 } from "../crypto/index.js";
-import { findConsultationIdsByContact } from "./service.js";
+import { acceptConsultation, findConsultationIdsByContact } from "./service.js";
 
 let testDatabase: TestDatabase | undefined;
 afterEach(() => testDatabase?.close());
@@ -57,5 +65,65 @@ describe("consultation contact lookup", () => {
       "phone",
       "+821099999999",
     )).toEqual([]);
+  });
+});
+
+describe("consultation release binding", () => {
+  it("accepts the exact signed release identity and rejects a signed mismatch as stale", () => {
+    testDatabase = createTestDatabase();
+    seedConsentDocuments(testDatabase.db, consentBundle(), 1_000);
+    activateConsentBundle(testDatabase.db, "bundle-2026-07-16", 2_000);
+    const bundle = getActivePublishedConsentBundle(testDatabase.db)!;
+    const manifestSha256 = getConsentBundleDigest(testDatabase.db, bundle.bundleId);
+    const provider = createStaticKeyProvider({
+      id: "pii-v1",
+      secret: Buffer.alloc(32, 9),
+    });
+    const binding = {
+      locale: "en" as const,
+      releaseId: `database:${bundle.bundleId}`,
+      bundleId: bundle.bundleId,
+      manifestSha256,
+      privacyVersion: "privacy-2026-07-16",
+      marketingVersion: "marketing-2026-07-16",
+    };
+    const consultation = {
+      locale: "en" as const,
+      category: "procurement" as const,
+      name: "Release Bound Client",
+      phone: "+821012345678",
+      email: "release-bound@example.test",
+      preferredContact: "email" as const,
+      message: "Please review this release-bound consultation request in detail.",
+      privacyConsent: { version: binding.privacyVersion, accepted: true as const },
+      marketingConsent: { version: binding.marketingVersion, accepted: false },
+    };
+    const options = {
+      resolveConsentAuthority: createDatabaseConsentAuthorityResolver(testDatabase.db),
+      randomUUID: (() => {
+        let counter = 0;
+        return () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
+      })(),
+    };
+    expect(acceptConsultation(testDatabase.db, provider, {
+      consultation,
+      formToken: issueFormToken(provider, binding, 1_000, "release-bound-valid"),
+      idempotencyKey: "release-bound-valid-idempotency",
+      requestId: "release-bound-valid-request",
+      clientIp: "198.51.100.10",
+      nowMs: 3_000,
+    }, options).kind).toBe("created");
+
+    expect(acceptConsultation(testDatabase.db, provider, {
+      consultation: { ...consultation, phone: "+821012345679" },
+      formToken: issueFormToken(provider, {
+        ...binding,
+        releaseId: "different-release",
+      }, 1_000, "release-bound-stale"),
+      idempotencyKey: "release-bound-stale-idempotency",
+      requestId: "release-bound-stale-request",
+      clientIp: "198.51.100.11",
+      nowMs: 3_000,
+    }, options).kind).toBe("stale-consent");
   });
 });

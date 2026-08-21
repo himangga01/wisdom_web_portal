@@ -53,6 +53,23 @@ writer transaction after the build. `PUBLICATION_CONSENT_PII_REJECTED` or
 `PUBLICATION_PII_CHANGED_DURING_BUILD` therefore leaves no release row, activation
 journal, final directory, or public pointer.
 
+## First publication without Tunnel
+
+The one-time bootstrap-to-Wisdom transition must run through
+`ops/scripts/first-publication.mjs` while the Cloudflare Tunnel LaunchAgent remains
+unloaded. The default command only prints its operating steps. `--plan` acquires the
+public release operation lock, proves the Tunnel is unloaded, verifies the exact
+bootstrap release, and returns a fingerprint covering the operator admin, complete
+consent bundle, and eligible approved article heads.
+
+Apply only the unchanged plan with
+`--apply --confirm-first-publication <fingerprint>`. The wrapper reads secrets through
+the Keychain execution path, invokes the built Control CLI from the verified application
+release, and verifies that `public-current` became a Wisdom release before releasing the
+lock. A second first-publication attempt, a changed bootstrap pointer, an incomplete
+consent bundle, or a changed plan is rejected. Run the normal external preflight and
+start the Tunnel only after this transition succeeds.
+
 ## Database migration safety
 
 Schema v4 adds the bundle identity index and immutable content/lifecycle triggers. The

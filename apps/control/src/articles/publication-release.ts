@@ -17,6 +17,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { Worker } from "node:worker_threads";
 
 import {
   LOCALES,
@@ -31,7 +32,10 @@ import {
 } from "../consent/service.js";
 import type { KeyProvider } from "../crypto/index.js";
 import type { ControlDatabase } from "../db/client.js";
-import { checkArticleForRetainedConsultationPii } from "./no-pii.js";
+import {
+  checkArticleForRetainedConsultationPii,
+  collectReleasePiiSegments,
+} from "./no-pii.js";
 import {
   INDEXNOW_MAX_ATTEMPTS,
   INDEXNOW_RETRYABLE_ERROR_CODES,
@@ -65,6 +69,7 @@ export interface PublicationReleaseConfig {
   requiredCoreRoutes: readonly string[];
   forbiddenCanaries: readonly string[];
   publicOrigin: string;
+  kakaoChatUrl?: string;
   naverSiteVerificationMeta?: string;
   naverSiteVerificationFile?: string;
 }
@@ -73,7 +78,8 @@ export type PublicationActivationFaultPoint =
   | "before-switch"
   | "after-switch"
   | "before-db-commit"
-  | "after-db-commit";
+  | "after-db-commit"
+  | "after-rollback-pii-scan";
 
 export interface PublicationReleaseDependencies {
   randomUUID: () => string;
@@ -86,30 +92,84 @@ export interface PublicationReleaseDependencies {
   }): Promise<SealedPublicationRelease>;
   faultInjector?: (point: PublicationActivationFaultPoint) => void;
   switchCurrent?: (targetPath: string, currentLink: string, nonce: string) => void;
+  activateAuthority?: (handoff: AuthorityActivationHandoff) => boolean;
 }
 
 export interface ReleaseConsentAuthorityResolverOptions {
   onFullVerification?: () => void;
   scheduleRefresh?: (task: () => void) => void;
+  verifyAuthority?: (
+    input: PublicationAuthorityWorkerInput,
+  ) => Promise<PublicationAuthorityWorkerResult>;
   refreshIntervalMs?: number;
   now?: () => number;
 }
 
 export interface CachedReleaseConsentAuthorityResolver extends ConsentAuthorityResolver {
-  refresh(): boolean;
+  activate(handoff: AuthorityActivationHandoff): boolean;
+  refresh(): Promise<boolean>;
   stop(): void;
+}
+
+export interface AuthorityActivationHandoff {
+  releaseId: string;
+  activationGeneration: number;
+  manifestSha256: string;
+  bundle: PublishedConsentBundle;
+}
+
+export interface PublicationAuthorityWorkerInput {
+  releasePath: string;
+  publicOrigin: string;
+  expectedManifestSha256: string;
+}
+
+export interface PublicationAuthorityWorkerResult {
+  manifestSha256: string;
+  bundle: PublishedConsentBundle;
 }
 
 export interface PublicationActionInput {
   actorAdminId: string;
   requestId: string;
   nowMs: number;
+  mode?: "next-batch" | "policy-only";
+  expectedFingerprint?: string;
 }
 
 export interface PublicationActionResult {
   releaseId: string;
   version: string;
   manifestSha256: string;
+}
+
+export interface PublicationBatchPreview {
+  eligibleTotal: number;
+  batchCount: number;
+  remainingAfterBatch: number;
+  mode: "next-batch" | "policy-only";
+  fingerprint: string;
+}
+
+export interface PublicationBatchPlan extends PublicationBatchPreview {
+  promotions: readonly PublicationPromotion[];
+}
+
+export type PublicationActivationOutcome =
+  | { kind: "committed"; result: PublicationActionResult }
+  | { kind: "reverted"; activationId: string; previousReleaseId: string | null }
+  | { kind: "manual-recovery-required"; activationId: string; errorCode: string };
+
+export class PublicationActivationSettlementError extends Error {
+  readonly outcome: Exclude<PublicationActivationOutcome, { kind: "committed" }>;
+
+  constructor(outcome: Exclude<PublicationActivationOutcome, { kind: "committed" }>) {
+    super(outcome.kind === "reverted"
+      ? "PUBLICATION_ACTIVATION_REVERTED"
+      : "PUBLICATION_MANUAL_RECOVERY_REQUIRED");
+    this.name = "PublicationActivationSettlementError";
+    this.outcome = outcome;
+  }
 }
 
 interface ReleaseRow {
@@ -142,6 +202,7 @@ interface PublicationReleaseMetadata {
   baseReleaseId: string | null;
   baseReleaseGeneration: number;
   promotions: PublicationPromotion[];
+  publicationMode?: "next-batch" | "policy-only";
   consentBundle: {
     bundleId: string;
     contentFileSha256: string;
@@ -257,7 +318,7 @@ function readCurrentPointerIdentity(config: PublicationReleaseConfig): CurrentPo
   };
 }
 
-function verifyBootstrapRelease(directory: string): void {
+function verifyBootstrapRelease(directory: string): string {
   const manifestPath = join(directory, ".ops-public-release.json");
   let manifestMetadata;
   try {
@@ -321,6 +382,14 @@ function verifyBootstrapRelease(directory: string): void {
       throw new Error("PUBLICATION_BOOTSTRAP_HASH_MISMATCH");
     }
   }
+  return manifest.releaseId;
+}
+
+export function verifiedBootstrapReleaseId(config: PublicationReleaseConfig): string {
+  validateConfig(config);
+  const active = readCurrentTarget(config);
+  if (active === null) throw new Error("PUBLICATION_BOOTSTRAP_POINTER_MISSING");
+  return verifyBootstrapRelease(active);
 }
 
 function switchCurrentAtomic(targetPath: string, currentLink: string, nonce: string): void {
@@ -362,6 +431,9 @@ async function defaultPrepareRelease(input: {
     nodeBinary: input.config.nodeBinary,
     timeoutMs: input.config.buildTimeoutMs,
     publicOrigin: input.config.publicOrigin,
+    ...(input.config.kakaoChatUrl
+      ? { kakaoChatUrl: input.config.kakaoChatUrl }
+      : {}),
     ...(input.config.naverSiteVerificationMeta
       ? { naverSiteVerificationMeta: input.config.naverSiteVerificationMeta }
       : {}),
@@ -386,6 +458,9 @@ function resolvedDependencies(
     prepareRelease: dependencies?.prepareRelease ?? defaultPrepareRelease,
     ...(dependencies?.faultInjector ? { faultInjector: dependencies.faultInjector } : {}),
     ...(dependencies?.switchCurrent ? { switchCurrent: dependencies.switchCurrent } : {}),
+    ...(dependencies?.activateAuthority
+      ? { activateAuthority: dependencies.activateAuthority }
+      : {}),
   };
 }
 
@@ -422,8 +497,12 @@ function parsePublicationReleaseMetadata(value: string | null): PublicationRelea
     throw new Error("PUBLICATION_RELEASE_METADATA_INVALID");
   }
   const record = parsed as Partial<PublicationReleaseMetadata>;
-  if (Object.keys(record).sort().join("\0")
-      !== "baseReleaseGeneration\0baseReleaseId\0consentBundle\0promotions\0schemaVersion\0snapshotManifestSha256"
+  const keys = Object.keys(record).sort().join("\0");
+  if (
+    ![
+      "baseReleaseGeneration\0baseReleaseId\0consentBundle\0promotions\0schemaVersion\0snapshotManifestSha256",
+      "baseReleaseGeneration\0baseReleaseId\0consentBundle\0promotions\0publicationMode\0schemaVersion\0snapshotManifestSha256",
+    ].includes(keys)
     || record.schemaVersion !== 1
     || typeof record.snapshotManifestSha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(record.snapshotManifestSha256)
@@ -432,6 +511,10 @@ function parsePublicationReleaseMetadata(value: string | null): PublicationRelea
     || (record.baseReleaseGeneration ?? -1) < 0
     || !Array.isArray(record.promotions)
     || record.promotions.length > 64
+    || (
+      record.publicationMode !== undefined &&
+      !["next-batch", "policy-only"].includes(record.publicationMode)
+    )
     || !record.consentBundle || typeof record.consentBundle !== "object"
     || Object.keys(record.consentBundle).sort().join("\0") !== "bundleId\0contentFileSha256"
     || typeof record.consentBundle.bundleId !== "string"
@@ -460,21 +543,74 @@ function parsePublicationReleaseMetadata(value: string | null): PublicationRelea
   return record as PublicationReleaseMetadata;
 }
 
-function recordBuildFailure(config: PublicationReleaseConfig, error: unknown, nowMs: number): void {
-  appendFileSync(
-    join(config.releaseRoot, "failed-publication.log"),
-    `${new Date(nowMs).toISOString()} ${safeFailureCode(error)}\n`,
-    { encoding: "utf8", mode: 0o600 },
+function recordPublicationDiagnostic(
+  db: ControlDatabase,
+  input: PublicationActionInput,
+  releaseId: string,
+  version: string,
+  action: "article.release.build_failed" | "article.release.cleanup_failed",
+  error: unknown,
+  metadata: Record<string, string>,
+): void {
+  const errorCode = safeFailureCode(error);
+  try {
+    db.sqlite.prepare(`
+      INSERT INTO audit_events (
+        id, actor_type, actor_id, action, target_type, target_id,
+        request_id, metadata_json, created_at_ms
+      ) VALUES (?, ?, ?, ?, 'release-attempt', ?, ?, ?, ?)
+    `).run(
+      safeUuid(nodeRandomUUID),
+      input.actorAdminId ? "admin" : "system",
+      input.actorAdminId || "publication-service",
+      action,
+      releaseId,
+      input.requestId,
+      JSON.stringify({ releaseId, version, errorCode, ...metadata }),
+      input.nowMs,
+    );
+  } catch {
+    // Operational diagnostics must never replace the publication outcome.
+  }
+}
+
+function recordBuildFailure(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+  input: PublicationActionInput,
+  releaseId: string,
+  version: string,
+  error: unknown,
+): void {
+  const errorCode = safeFailureCode(error);
+  try {
+    appendFileSync(
+      join(config.releaseRoot, "failed-publication.log"),
+      `${new Date(input.nowMs).toISOString()} ${errorCode}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+  } catch {
+    // The original publication error remains authoritative.
+  }
+  recordPublicationDiagnostic(
+    db,
+    input,
+    releaseId,
+    version,
+    "article.release.build_failed",
+    error,
+    { phase: "prepare" },
   );
 }
 
-function approvedPromotions(db: ControlDatabase): PublicationPromotion[] {
+function approvedPromotions(db: ControlDatabase, limit = 64): PublicationPromotion[] {
   return (db.sqlite.prepare(`
     SELECT article_id, locale, head_revision_id, row_version
     FROM article_locale_heads
     WHERE state = 'approved' AND approved_revision_id = head_revision_id
     ORDER BY article_id, locale
-  `).all() as Array<{
+    LIMIT ?
+  `).all(limit) as Array<{
     article_id: string;
     locale: PublicationPromotion["locale"];
     head_revision_id: string;
@@ -485,6 +621,65 @@ function approvedPromotions(db: ControlDatabase): PublicationPromotion[] {
     revisionId: row.head_revision_id,
     expectedRowVersion: row.row_version,
   }));
+}
+
+export function createPublicationBatchPlan(
+  db: ControlDatabase,
+  mode: "next-batch" | "policy-only" = "next-batch",
+): PublicationBatchPlan {
+  return db.sqlite.transaction(() => {
+    const eligibleTotal = Number(db.sqlite.prepare(`
+      SELECT count(*) FROM article_locale_heads
+      WHERE state = 'approved' AND approved_revision_id = head_revision_id
+    `).pluck().get());
+    const promotions = mode === "next-batch" ? approvedPromotions(db, 64) : [];
+    const bundle = getActivePublishedConsentBundle(db);
+    if (!bundle) throw new Error("PUBLICATION_CONSENT_BUNDLE_INVALID");
+    const activeRelease = db.sqlite.prepare(`
+      SELECT id, activation_generation, manifest_sha256
+      FROM releases WHERE state = 'active'
+    `).get() as {
+      id: string;
+      activation_generation: number;
+      manifest_sha256: Buffer;
+    } | undefined;
+    const fingerprint = createHash("sha256")
+      .update("wisdom:publication-batch:v1\0", "utf8")
+      .update(JSON.stringify({
+        mode,
+        consentBundleId: bundle.bundleId,
+        consentDocuments: bundle.documents.map((document) => [
+          document.kind,
+          document.locale,
+          document.version,
+          document.contentSha256,
+        ]),
+        activeRelease: activeRelease
+          ? [
+              activeRelease.id,
+              activeRelease.activation_generation,
+              activeRelease.manifest_sha256.toString("hex"),
+            ]
+          : null,
+        promotions: promotions.map((promotion) => [
+          promotion.articleId,
+          promotion.locale,
+          promotion.revisionId,
+          promotion.expectedRowVersion,
+        ]),
+      }), "utf8")
+      .digest("hex");
+    return Object.freeze({
+      eligibleTotal,
+      batchCount: promotions.length,
+      remainingAfterBatch: mode === "next-batch"
+        ? Math.max(0, eligibleTotal - promotions.length)
+        : eligibleTotal,
+      mode,
+      fingerprint,
+      promotions: Object.freeze(promotions.map((promotion) => Object.freeze(promotion))),
+    });
+  }).deferred();
 }
 
 function assertBaseReleaseConsistent(
@@ -605,6 +800,8 @@ function insertPreparedRelease(
         liveRevision.title,
         liveRevision.summary,
         liveRevision.body_markdown,
+        document.slug,
+        document.route,
         ...sourceValues,
       ]);
       if (!pii.safe) throw new Error("PUBLICATION_PII_CHANGED_DURING_BUILD");
@@ -637,6 +834,7 @@ function insertPreparedRelease(
         baseReleaseId: snapshot.baseReleaseId,
         baseReleaseGeneration: snapshot.baseReleaseGeneration,
         promotions: snapshot.promotions,
+        publicationMode: input.mode ?? "next-batch",
         consentBundle: release.consentBundle,
       }),
       input.nowMs,
@@ -809,6 +1007,58 @@ function freezeDeep<T>(value: T): T {
   return value;
 }
 
+function verifyAuthorityInWorker(
+  input: PublicationAuthorityWorkerInput,
+): Promise<PublicationAuthorityWorkerResult> {
+  return new Promise((resolveWorker, rejectWorker) => {
+    const worker = new Worker(
+      new URL("./publication-authority-worker.js", import.meta.url),
+      { workerData: input },
+    );
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+      rejectWorker(new Error("PUBLICATION_AUTHORITY_WORKER_TIMEOUT"));
+    }, 60_000);
+    timeout.unref();
+    const finish = (
+      callback: () => void,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    worker.once("message", (message: unknown) => {
+      finish(() => {
+        if (
+          !message ||
+          typeof message !== "object" ||
+          Array.isArray(message) ||
+          (message as { ok?: unknown }).ok !== true
+        ) {
+          rejectWorker(new Error("PUBLICATION_AUTHORITY_WORKER_FAILED"));
+          return;
+        }
+        resolveWorker((message as {
+          ok: true;
+          result: PublicationAuthorityWorkerResult;
+        }).result);
+      });
+    });
+    worker.once("error", () => {
+      finish(() => rejectWorker(new Error("PUBLICATION_AUTHORITY_WORKER_FAILED")));
+    });
+    worker.once("exit", (code) => {
+      if (code !== 0) {
+        finish(() => rejectWorker(new Error("PUBLICATION_AUTHORITY_WORKER_FAILED")));
+      }
+    });
+  });
+}
+
 export function createReleaseConsentAuthorityResolver(
   db: ControlDatabase,
   config: PublicationReleaseConfig,
@@ -820,6 +1070,7 @@ export function createReleaseConsentAuthorityResolver(
     const immediate = setImmediate(task);
     immediate.unref();
   });
+  const verifyAuthority = options.verifyAuthority ?? verifyAuthorityInWorker;
   let cache: {
     key: ReleaseAuthorityCacheKey;
     authority: NonNullable<ReturnType<ConsentAuthorityResolver>>;
@@ -830,7 +1081,7 @@ export function createReleaseConsentAuthorityResolver(
   let lastFailedKey: string | undefined;
   let retryAfterMs = 0;
 
-  const refreshNow = (force: boolean): boolean => {
+  const refreshNow = async (force: boolean): Promise<boolean> => {
     if (stopped || refreshing) return false;
     refreshing = true;
     let candidate: ReturnType<typeof releaseAuthorityCacheKey>;
@@ -843,7 +1094,19 @@ export function createReleaseConsentAuthorityResolver(
       const fingerprint = JSON.stringify(candidate.key);
       if (!force && fingerprint === lastFailedKey && now() < retryAfterMs) return false;
       options.onFullVerification?.();
-      const { verified } = verifyReleaseAuthority(db, config, candidate.row);
+      const workerResult = await verifyAuthority({
+        releasePath: candidate.key.releasePath,
+        publicOrigin: config.publicOrigin,
+        expectedManifestSha256: candidate.key.manifestSha256,
+      });
+      if (workerResult.manifestSha256 !== candidate.key.manifestSha256) {
+        throw new Error("PUBLICATION_RELEASE_DATABASE_MANIFEST_MISMATCH");
+      }
+      const bundle = publishedConsentBundleSchema.parse(workerResult.bundle);
+      const databaseBundle = getPublishedConsentBundleById(db, bundle.bundleId);
+      if (!databaseBundle || !consentBundlesEqual(databaseBundle, bundle)) {
+        throw new Error("PUBLICATION_RELEASE_CONSENT_BUNDLE_MISMATCH");
+      }
       const after = releaseAuthorityCacheKey(db, config);
       if (!after || !releaseAuthorityKeysEqual(candidate.key, after.key)) {
         throw new Error("PUBLICATION_RELEASE_CHANGED_DURING_AUTHORITY_REFRESH");
@@ -853,15 +1116,21 @@ export function createReleaseConsentAuthorityResolver(
         authority: freezeDeep({
           source: "release" as const,
           releaseId: candidate.row.id,
-          releaseManifestSha256: verified.manifestSha256,
-          bundle: publishedConsentBundleSchema.parse(verified.consentBundle),
+          releaseManifestSha256: workerResult.manifestSha256,
+          bundle,
         }),
       };
       lastFailedKey = undefined;
       retryAfterMs = 0;
       return true;
     } catch {
-      cache = undefined;
+      if (
+        candidate &&
+        cache &&
+        releaseAuthorityKeysEqual(cache.key, candidate.key)
+      ) {
+        cache = undefined;
+      }
       try {
         const failed = candidate ?? releaseAuthorityCacheKey(db, config);
         lastFailedKey = failed ? JSON.stringify(failed.key) : undefined;
@@ -883,7 +1152,7 @@ export function createReleaseConsentAuthorityResolver(
     try {
       scheduleRefresh(() => {
         refreshScheduled = false;
-        refreshNow(false);
+        void refreshNow(false);
       });
     } catch {
       refreshScheduled = false;
@@ -908,11 +1177,40 @@ export function createReleaseConsentAuthorityResolver(
     }
   }) as CachedReleaseConsentAuthorityResolver;
 
+  resolver.activate = (handoff) => {
+    if (stopped) return false;
+    try {
+      const current = releaseAuthorityCacheKey(db, config);
+      if (
+        !current ||
+        current.row.id !== handoff.releaseId ||
+        current.key.activationGeneration !== handoff.activationGeneration ||
+        current.key.manifestSha256 !== handoff.manifestSha256
+      ) return false;
+      const bundle = publishedConsentBundleSchema.parse(handoff.bundle);
+      const databaseBundle = getPublishedConsentBundleById(db, bundle.bundleId);
+      if (!databaseBundle || !consentBundlesEqual(databaseBundle, bundle)) return false;
+      cache = {
+        key: current.key,
+        authority: freezeDeep({
+          source: "release" as const,
+          releaseId: handoff.releaseId,
+          releaseManifestSha256: handoff.manifestSha256,
+          bundle,
+        }),
+      };
+      lastFailedKey = undefined;
+      retryAfterMs = 0;
+      return true;
+    } catch {
+      return false;
+    }
+  };
   resolver.refresh = () => refreshNow(true);
   let interval: ReturnType<typeof setInterval> | undefined;
   const refreshIntervalMs = options.refreshIntervalMs ?? 60_000;
   if (refreshIntervalMs > 0) {
-    interval = setInterval(() => { refreshNow(true); }, refreshIntervalMs);
+    interval = setInterval(() => { void refreshNow(true); }, refreshIntervalMs);
     interval.unref();
   }
   resolver.stop = () => {
@@ -921,7 +1219,6 @@ export function createReleaseConsentAuthorityResolver(
     if (interval) clearInterval(interval);
     interval = undefined;
   };
-  refreshNow(true);
   return resolver;
 }
 
@@ -1038,7 +1335,7 @@ function commitActivation(
     throw new Error("PUBLICATION_ACTIVATION_NOT_PENDING");
   }
   const target = releaseRow(db, activation.release_id);
-  const { verified } = verifyReleaseAuthority(db, config, target);
+  const { verified, metadata } = verifyReleaseAuthority(db, config, target);
   if (verified.manifestSha256 !== activation.manifest_sha256.toString("hex")) {
     throw new Error("PUBLICATION_ACTIVATION_MANIFEST_MISMATCH");
   }
@@ -1150,6 +1447,12 @@ function commitActivation(
         version: target.version,
         manifestSha256: verified.manifestSha256,
         activationId,
+        mode: metadata.publicationMode ?? "next-batch",
+        batchCount: metadata.promotions.length,
+        remainingAfterBatch: Number(db.sqlite.prepare(`
+          SELECT count(*) FROM article_locale_heads
+          WHERE state = 'approved' AND approved_revision_id = head_revision_id
+        `).pluck().get()),
       }),
       input.nowMs,
     );
@@ -1159,6 +1462,17 @@ function commitActivation(
       manifestSha256: verified.manifestSha256,
     };
   }).immediate();
+  const activationGeneration = db.sqlite.prepare(
+    "SELECT activation_generation FROM releases WHERE id = ? AND state = 'active'",
+  ).pluck().get(target.id) as number | undefined;
+  if (activationGeneration !== undefined) {
+    dependencies.activateAuthority?.({
+      releaseId: target.id,
+      activationGeneration,
+      manifestSha256: verified.manifestSha256,
+      bundle: verified.consentBundle,
+    });
+  }
   return result;
 }
 
@@ -1170,6 +1484,183 @@ function markActivationSwitched(db: ControlDatabase, activationId: string, nowMs
   if (changed.changes !== 1) throw new Error("PUBLICATION_ACTIVATION_FENCE_LOST");
 }
 
+function markActivationReverted(
+  db: ControlDatabase,
+  activation: ActivationRow,
+  errorCode: string,
+): void {
+  db.sqlite.transaction(() => {
+    const changed = db.sqlite.prepare(`
+      UPDATE release_activations
+      SET state = 'failed', error_code = ?
+      WHERE id = ? AND state IN ('prepared', 'switched')
+    `).run(errorCode, activation.id);
+    if (changed.changes !== 1) throw new Error("PUBLICATION_ACTIVATION_FENCE_LOST");
+    db.sqlite.prepare(`
+      UPDATE releases SET state = 'failed'
+      WHERE id = ? AND state = 'building'
+    `).run(activation.release_id);
+  }).immediate();
+}
+
+function recordManualRecovery(
+  db: ControlDatabase,
+  activationId: string,
+  errorCode: string,
+): void {
+  try {
+    db.sqlite.prepare(`
+      UPDATE release_activations SET error_code = ?
+      WHERE id = ? AND state IN ('prepared', 'switched')
+    `).run(errorCode, activationId);
+  } catch {
+    // The pending activation remains the fail-closed readiness signal.
+  }
+}
+
+function committedActivationResult(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+  activation: Pick<ActivationRow, "release_id">,
+): PublicationActionResult {
+  const target = releaseRow(db, activation.release_id);
+  if (target.state !== "active") throw new Error("PUBLICATION_ACTIVATION_STATE_MISMATCH");
+  const { verified } = verifyReleaseAuthority(db, config, target);
+  return {
+    releaseId: target.id,
+    version: target.version,
+    manifestSha256: verified.manifestSha256,
+  };
+}
+
+export function settlePublicationActivation(
+  db: ControlDatabase,
+  activationId: string,
+  input: { actorAdminId?: string; requestId: string; nowMs: number },
+  config: PublicationReleaseConfig,
+  dependencyOverrides?: Partial<PublicationReleaseDependencies>,
+): PublicationActivationOutcome {
+  const dependencies = resolvedDependencies(dependencyOverrides);
+  const activation = db.sqlite.prepare(`
+    SELECT id, release_id, previous_release_id, operation, state,
+      manifest_sha256, target_path, previous_path
+    FROM release_activations WHERE id = ?
+  `).get(activationId) as (
+    Omit<ActivationRow, "state"> & {
+      state: ActivationRow["state"] | "committed" | "failed";
+    }
+  ) | undefined;
+  if (!activation) {
+    return {
+      kind: "manual-recovery-required",
+      activationId,
+      errorCode: "PUBLICATION_ACTIVATION_MISSING",
+    };
+  }
+  if (activation.state === "committed") {
+    return { kind: "committed", result: committedActivationResult(db, config, activation) };
+  }
+  if (activation.state === "failed") {
+    return { kind: "reverted", activationId, previousReleaseId: activation.previous_release_id };
+  }
+
+  let current: string | null;
+  let target: string;
+  let previous: string | null;
+  try {
+    current = readCurrentTarget(config);
+    target = assertDirectReleasePath(config.releaseRoot, activation.target_path);
+    previous = activation.previous_path
+      ? assertDirectReleasePath(config.releaseRoot, activation.previous_path)
+      : null;
+  } catch {
+    recordManualRecovery(db, activationId, "PUBLICATION_RECOVERY_PATH_INVALID");
+    return {
+      kind: "manual-recovery-required",
+      activationId,
+      errorCode: "PUBLICATION_RECOVERY_PATH_INVALID",
+    };
+  }
+
+  if (current === target) {
+    try {
+      if (activation.state === "prepared") {
+        markActivationSwitched(db, activationId, input.nowMs);
+      }
+      return {
+        kind: "committed",
+        result: commitActivation(db, activationId, input, config, dependencies),
+      };
+    } catch {
+      // Fall through to verified previous-pointer recovery.
+    }
+  } else if (current === previous) {
+    try {
+      markActivationReverted(db, activation as ActivationRow, "PUBLICATION_SWITCH_NOT_COMMITTED");
+      return {
+        kind: "reverted",
+        activationId,
+        previousReleaseId: activation.previous_release_id,
+      };
+    } catch {
+      recordManualRecovery(db, activationId, "PUBLICATION_RECOVERY_DATABASE_FAILED");
+      return {
+        kind: "manual-recovery-required",
+        activationId,
+        errorCode: "PUBLICATION_RECOVERY_DATABASE_FAILED",
+      };
+    }
+  } else {
+    recordManualRecovery(db, activationId, "PUBLICATION_RECOVERY_POINTER_UNKNOWN");
+    return {
+      kind: "manual-recovery-required",
+      activationId,
+      errorCode: "PUBLICATION_RECOVERY_POINTER_UNKNOWN",
+    };
+  }
+
+  if (previous === null) {
+    recordManualRecovery(db, activationId, "PUBLICATION_RECOVERY_PREVIOUS_MISSING");
+    return {
+      kind: "manual-recovery-required",
+      activationId,
+      errorCode: "PUBLICATION_RECOVERY_PREVIOUS_MISSING",
+    };
+  }
+  try {
+    if (activation.previous_release_id) {
+      const previousRow = releaseRow(db, activation.previous_release_id);
+      verifyReleaseAuthority(db, config, previousRow);
+      if (assertDirectReleasePath(config.releaseRoot, previousRow.path) !== previous) {
+        throw new Error("PUBLICATION_RECOVERY_PREVIOUS_MISMATCH");
+      }
+    } else {
+      verifyBootstrapRelease(previous);
+    }
+    (dependencies.switchCurrent ?? switchCurrentAtomic)(
+      previous,
+      config.currentLink,
+      `${activationId}-revert`,
+    );
+    if (readCurrentTarget(config) !== previous) {
+      throw new Error("PUBLICATION_RECOVERY_POINTER_MISMATCH");
+    }
+    markActivationReverted(db, activation as ActivationRow, "PUBLICATION_COMMIT_REVERTED");
+    return {
+      kind: "reverted",
+      activationId,
+      previousReleaseId: activation.previous_release_id,
+    };
+  } catch {
+    recordManualRecovery(db, activationId, "PUBLICATION_RECOVERY_FAILED");
+    return {
+      kind: "manual-recovery-required",
+      activationId,
+      errorCode: "PUBLICATION_RECOVERY_FAILED",
+    };
+  }
+}
+
 function cleanSuccessfulTemporaryDirectory(releaseRoot: string, candidate: string): void {
   const root = realpathSync(releaseRoot);
   const target = realpathSync(candidate);
@@ -1178,6 +1669,37 @@ function cleanSuccessfulTemporaryDirectory(releaseRoot: string, candidate: strin
     throw new Error("PUBLICATION_TEMP_PATH_INVALID");
   }
   rmSync(target, { recursive: true, force: false });
+}
+
+interface PublicationTemporary {
+  kind: "building" | "snapshot" | "home";
+  path: string;
+}
+
+function cleanupPublicationTemporaries(
+  db: ControlDatabase,
+  config: PublicationReleaseConfig,
+  input: PublicationActionInput,
+  releaseId: string,
+  version: string,
+  temporaries: readonly PublicationTemporary[],
+): void {
+  for (const temporary of temporaries) {
+    if (!existsSync(temporary.path)) continue;
+    try {
+      cleanSuccessfulTemporaryDirectory(config.releaseRoot, temporary.path);
+    } catch (error) {
+      recordPublicationDiagnostic(
+        db,
+        input,
+        releaseId,
+        version,
+        "article.release.cleanup_failed",
+        error,
+        { temporaryKind: temporary.kind },
+      );
+    }
+  }
 }
 
 export function createRetentionPruningPath(
@@ -1344,9 +1866,16 @@ export async function publishApprovedArticles(
 ): Promise<PublicationActionResult> {
   validateConfig(config);
   const dependencies = resolvedDependencies(dependencyOverrides);
-  const promotions = approvedPromotions(db);
+  const mode = input.mode ?? "next-batch";
+  const batchPlan = createPublicationBatchPlan(db, mode);
+  if (
+    input.expectedFingerprint !== undefined &&
+    input.expectedFingerprint !== batchPlan.fingerprint
+  ) {
+    throw new Error("PUBLICATION_BATCH_CHANGED");
+  }
   const snapshot = capturePublicationSnapshot(db, keyProvider, {
-    promote: promotions,
+    promote: batchPlan.promotions,
     nowMs: input.nowMs,
   });
   assertBaseReleaseConsistent(db, config, snapshot);
@@ -1355,24 +1884,31 @@ export async function publishApprovedArticles(
   const version = versionName(input.nowMs, releaseId);
   const finalPath = join(config.releaseRoot, version);
   const outputDirectory = join(config.releaseRoot, `.building-${releaseId}`);
-  const snapshotDirectory = mkdtempSync(join(config.releaseRoot, `.snapshot-${releaseId}-`));
-  const buildHome = mkdtempSync(join(config.releaseRoot, `.home-${releaseId}-`));
-  writePublicationSnapshot(snapshot, snapshotDirectory);
-  let sealed: SealedPublicationRelease;
+  const temporaries: PublicationTemporary[] = [{
+    kind: "building",
+    path: outputDirectory,
+  }];
+  let activationPrepared = false;
   try {
-    sealed = await dependencies.prepareRelease({
-      snapshot,
-      snapshotDirectory,
-      outputDirectory,
-      buildHome,
-      config,
-    });
-  } catch (error) {
-    recordBuildFailure(config, error, input.nowMs);
-    throw error;
-  }
-  const independent = verifySealedPublicationRelease(outputDirectory, config.publicOrigin);
-  try {
+    const snapshotDirectory = mkdtempSync(join(config.releaseRoot, `.snapshot-${releaseId}-`));
+    temporaries.push({ kind: "snapshot", path: snapshotDirectory });
+    const buildHome = mkdtempSync(join(config.releaseRoot, `.home-${releaseId}-`));
+    temporaries.push({ kind: "home", path: buildHome });
+    writePublicationSnapshot(snapshot, snapshotDirectory);
+    let sealed: SealedPublicationRelease;
+    try {
+      sealed = await dependencies.prepareRelease({
+        snapshot,
+        snapshotDirectory,
+        outputDirectory,
+        buildHome,
+        config,
+      });
+    } catch (error) {
+      recordBuildFailure(db, config, input, releaseId, version, error);
+      throw error;
+    }
+    const independent = verifySealedPublicationRelease(outputDirectory, config.publicOrigin);
     if (independent.manifestSha256 !== sealed.manifestSha256) {
       throw new Error("PUBLICATION_PREPARED_MANIFEST_MISMATCH");
     }
@@ -1381,17 +1917,13 @@ export async function publishApprovedArticles(
       throw new Error("PUBLICATION_SNAPSHOT_MANIFEST_MISMATCH");
     }
     assertConsentBundleConsistent(db, snapshot);
+    if (createPublicationBatchPlan(db, mode).fingerprint !== batchPlan.fingerprint) {
+      throw new Error("PUBLICATION_BATCH_CHANGED_DURING_BUILD");
+    }
     const previousUrls = snapshot.baseReleaseId
       ? verifyReleaseRow(config, releaseRow(db, snapshot.baseReleaseId)).sitemapUrls
       : [];
     activationIndexNowPayload(config, independent.sitemapUrls, previousUrls);
-  } catch (error) {
-    cleanSuccessfulTemporaryDirectory(config.releaseRoot, outputDirectory);
-    cleanSuccessfulTemporaryDirectory(config.releaseRoot, snapshotDirectory);
-    cleanSuccessfulTemporaryDirectory(config.releaseRoot, buildHome);
-    throw error;
-  }
-  try {
     insertPreparedRelease(db, keyProvider, snapshot, input, {
       releaseId,
       activationId,
@@ -1402,38 +1934,64 @@ export async function publishApprovedArticles(
       snapshotManifestSha256: independent.manifest.snapshotManifestSha256,
       consentBundle: independent.manifest.consentBundle,
     }, config);
+    activationPrepared = true;
+    dependencies.faultInjector?.("before-switch");
+    (dependencies.switchCurrent ?? switchCurrentAtomic)(finalPath, config.currentLink, activationId);
+    dependencies.faultInjector?.("after-switch");
+    markActivationSwitched(db, activationId, input.nowMs);
+    dependencies.faultInjector?.("before-db-commit");
+    const result = commitActivation(db, activationId, input, config, dependencies);
+    dependencies.faultInjector?.("after-db-commit");
+    pruneWithoutAffectingActivation(db, config, input.nowMs, dependencies);
+    return result;
   } catch (error) {
-    for (const temporary of [outputDirectory, snapshotDirectory, buildHome]) {
-      if (existsSync(temporary)) {
-        cleanSuccessfulTemporaryDirectory(config.releaseRoot, temporary);
-      }
+    if (activationPrepared) {
+      const outcome = settlePublicationActivation(
+        db,
+        activationId,
+        input,
+        config,
+        dependencies,
+      );
+      if (outcome.kind === "committed") return outcome.result;
+      throw new PublicationActivationSettlementError(outcome);
     }
     throw error;
+  } finally {
+    cleanupPublicationTemporaries(
+      db,
+      config,
+      input,
+      releaseId,
+      version,
+      temporaries,
+    );
   }
-  dependencies.faultInjector?.("before-switch");
-  (dependencies.switchCurrent ?? switchCurrentAtomic)(finalPath, config.currentLink, activationId);
-  dependencies.faultInjector?.("after-switch");
-  markActivationSwitched(db, activationId, input.nowMs);
-  dependencies.faultInjector?.("before-db-commit");
-  const result = commitActivation(db, activationId, input, config, dependencies);
-  dependencies.faultInjector?.("after-db-commit");
-  cleanSuccessfulTemporaryDirectory(config.releaseRoot, snapshotDirectory);
-  cleanSuccessfulTemporaryDirectory(config.releaseRoot, buildHome);
-  pruneWithoutAffectingActivation(db, config, input.nowMs, dependencies);
-  return result;
 }
 
 export function rollbackPublication(
   db: ControlDatabase,
+  keyProvider: KeyProvider,
   input: PublicationActionInput & { releaseId: string },
   config: PublicationReleaseConfig,
   dependencyOverrides?: Partial<PublicationReleaseDependencies>,
 ): PublicationActionResult {
   validateConfig(config);
   const dependencies = resolvedDependencies(dependencyOverrides);
+  const privacyGeneration = () => Number(db.sqlite.prepare(`
+    SELECT generation FROM publication_privacy_generation WHERE singleton = 1
+  `).pluck().get());
+  const scannedPrivacyGeneration = privacyGeneration();
   const target = releaseRow(db, input.releaseId);
   if (target.state !== "retired") throw new Error("PUBLICATION_ROLLBACK_TARGET_NOT_RETIRED");
   const { verified } = verifyReleaseAuthority(db, config, target);
+  const pii = checkArticleForRetainedConsultationPii(
+    db,
+    keyProvider,
+    collectReleasePiiSegments(verified),
+  );
+  if (!pii.safe) throw new Error("PUBLICATION_ROLLBACK_PII_REJECTED");
+  dependencies.faultInjector?.("after-rollback-pii-scan");
   const active = db.sqlite.prepare(`
     SELECT id, path FROM releases WHERE state = 'active'
   `).get() as { id: string; path: string } | undefined;
@@ -1463,15 +2021,60 @@ export function rollbackPublication(
     active.path,
     input.nowMs,
   );
-  dependencies.faultInjector?.("before-switch");
-  (dependencies.switchCurrent ?? switchCurrentAtomic)(target.path, config.currentLink, activationId);
-  dependencies.faultInjector?.("after-switch");
-  markActivationSwitched(db, activationId, input.nowMs);
-  dependencies.faultInjector?.("before-db-commit");
-  const result = commitActivation(db, activationId, input, config, dependencies);
-  dependencies.faultInjector?.("after-db-commit");
-  pruneWithoutAffectingActivation(db, config, input.nowMs, dependencies);
-  return result;
+  try {
+    dependencies.faultInjector?.("before-switch");
+    db.sqlite.exec("BEGIN IMMEDIATE");
+    try {
+      if (privacyGeneration() !== scannedPrivacyGeneration) {
+        throw new Error("PUBLICATION_PRIVACY_GENERATION_CHANGED");
+      }
+      (dependencies.switchCurrent ?? switchCurrentAtomic)(
+        target.path,
+        config.currentLink,
+        activationId,
+      );
+      dependencies.faultInjector?.("after-switch");
+      markActivationSwitched(db, activationId, input.nowMs);
+      db.sqlite.exec("COMMIT");
+    } catch (error) {
+      if (db.sqlite.inTransaction) db.sqlite.exec("ROLLBACK");
+      if (
+        error instanceof Error &&
+        error.message === "PUBLICATION_PRIVACY_GENERATION_CHANGED"
+      ) {
+        const activation = db.sqlite.prepare(`
+          SELECT id, release_id, previous_release_id, operation, state,
+            manifest_sha256, target_path, previous_path
+          FROM release_activations WHERE id = ?
+        `).get(activationId) as ActivationRow;
+        markActivationReverted(
+          db,
+          activation,
+          "PUBLICATION_PRIVACY_GENERATION_CHANGED",
+        );
+      }
+      throw error;
+    }
+    dependencies.faultInjector?.("before-db-commit");
+    const result = commitActivation(db, activationId, input, config, dependencies);
+    dependencies.faultInjector?.("after-db-commit");
+    pruneWithoutAffectingActivation(db, config, input.nowMs, dependencies);
+    return result;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "PUBLICATION_PRIVACY_GENERATION_CHANGED"
+    ) throw error;
+    const outcome = settlePublicationActivation(
+      db,
+      activationId,
+      input,
+      config,
+      dependencies,
+    );
+    if (outcome.kind === "committed") return outcome.result;
+    throw new PublicationActivationSettlementError(outcome);
+  }
 }
 
 export function reconcilePublicationActivation(
@@ -1550,7 +2153,7 @@ export function createArticlePublicationActions(
       dependencyOverrides,
     ),
     rollback: (input: PublicationActionInput & { releaseId: string }) => Promise.resolve(
-      rollbackPublication(db, input, config, dependencyOverrides),
+      rollbackPublication(db, keyProvider, input, config, dependencyOverrides),
     ),
   });
 }

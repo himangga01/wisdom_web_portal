@@ -6,9 +6,11 @@
 
 1. [`README.md`](../README.md): 시스템 구성, 설치·검증, 주요 기능과 Mac mini 운영 개요
 2. [`docs/superpowers/plans/2026-07-15-production-portal.md`](superpowers/plans/2026-07-15-production-portal.md): Task 1~8의 승인된 구현 범위와 전역 제약
-3. [`docs/operations/release-candidate.md`](operations/release-candidate.md): 구현 추적표, 실제 공개 전 필수 입력과 실기기 점검
-4. [`AGENT.md`](../AGENT.md): 구현 결정과 작업 단위별 기술 기록
-5. [`work-log.md`](../work-log.md): 날짜순 작업·검증 이력
+3. [`docs/superpowers/plans/2026-07-24-first-party-analytics.md`](superpowers/plans/2026-07-24-first-party-analytics.md): 현재 Astro·Control·React 관리자 성과지표 구현 계획
+4. [`docs/gpt-sites-migration/README.md`](gpt-sites-migration/README.md): 현재 공개 포털의 콘텐츠·디자인·문의 폼을 ChatGPT Sites로 이전하는 독립 계획
+5. [`docs/operations/release-candidate.md`](operations/release-candidate.md): 구현 추적표, 실제 공개 전 필수 입력과 실기기 점검
+6. [`AGENT.md`](../AGENT.md): 구현 결정과 작업 단위별 기술 기록
+7. [`work-log.md`](../work-log.md): 날짜순 작업·검증 이력
 
 ## 운영 런북
 

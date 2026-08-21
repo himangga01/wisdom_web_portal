@@ -63,4 +63,30 @@ describe("daily abuse limits", () => {
       phone: "01099999999",
     }, start + 20 * 10 * 60 * 1_000)).toMatchObject({ allowed: false });
   });
+
+  it("uses the latest reset when ten-minute and daily limits are exceeded together", () => {
+    database = createTestDatabase();
+    const start = Date.UTC(2026, 6, 16, 0, 0, 0);
+    for (let index = 0; index < 7; index += 1) {
+      expect(attempt({
+        clientIp: `198.51.100.${index + 1}`,
+        phone: "01012345678",
+      }, start + index * 10 * 60 * 1_000)).toEqual({ allowed: true });
+    }
+    const crowdedWindow = start + 12 * 60 * 60 * 1_000 + 1_000;
+    for (let index = 0; index < 3; index += 1) {
+      expect(attempt({
+        clientIp: `203.0.113.${index + 1}`,
+        phone: "01012345678",
+      }, crowdedWindow)).toEqual({ allowed: true });
+    }
+
+    expect(attempt({
+      clientIp: "203.0.113.10",
+      phone: "01012345678",
+    }, crowdedWindow)).toEqual({
+      allowed: false,
+      retryAfterSeconds: Math.ceil((start + 24 * 60 * 60 * 1_000 - crowdedWindow) / 1_000),
+    });
+  });
 });

@@ -14,6 +14,11 @@ test("provides the loopback control workspace and required operations", () => {
   const packageJson = JSON.parse(readFileSync(controlPackageUrl, "utf8"));
   assert.equal(packageJson.name, "@wisdom/control");
   assert.equal(packageJson.dependencies["@wisdom/shared"], "0.1.0");
+  assert.equal(
+    packageJson.scripts.pretest,
+    "npm run build --workspace @wisdom/admin",
+    "Control SPA tests must build the administrator assets they serve",
+  );
 
   for (const dependency of [
     "@hono/node-server",

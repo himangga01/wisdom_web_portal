@@ -66,7 +66,7 @@ export function applyRateLimitsInTransaction(
     DO UPDATE SET count = count + 1, expires_at_ms = excluded.expires_at_ms
     RETURNING count
   `);
-  let retryAtMs = Number.POSITIVE_INFINITY;
+  let retryAtMs = 0;
   let limited = false;
   for (const subject of subjects) {
     const digest = keyedDigest(
@@ -83,7 +83,7 @@ export function applyRateLimitsInTransaction(
       const row = upsert.get(subject.kind, digest, window, start, expiresAtMs) as { count: number };
       if (row.count > threshold(subject.kind, window)) {
         limited = true;
-        retryAtMs = Math.min(retryAtMs, start + sizeMs);
+        retryAtMs = Math.max(retryAtMs, start + sizeMs);
       }
     }
   }

@@ -27,6 +27,7 @@ function createAdapter(overrides = {}) {
       build: async () => calls.push("build"),
       migrate: async () => calls.push("migrate"),
       prepareRuntime: async () => calls.push("prune-runtime"),
+      verifyPublicationBuilder: async () => calls.push("post-prune-build"),
       writeManifest: async () => calls.push("manifest"),
       verify: async () => calls.push("verify"),
       startCanary: async () => {
@@ -62,6 +63,7 @@ test("release planning is dry-run by default and names every guarded phase", asy
     "build",
     "migrate",
     "prune-to-production-runtime",
+    "post-prune-publication-build",
     "start-loopback-canary",
     "check-live-and-ready",
     "verify-release",
@@ -86,6 +88,7 @@ test("successful release switches only after install, migration, health, and ver
     "build",
     "migrate",
     "prune-runtime",
+    "post-prune-build",
     "manifest",
     "verify",
     "start-canary",
@@ -112,6 +115,27 @@ test("failed canary health preserves current and removes only the incomplete rel
   assert.deepEqual(calls.slice(-3), ["health-failed", "stop-canary", "remove-incomplete"]);
   assert.ok(!calls.includes("switch"));
   assert.ok(!calls.includes("prune"));
+});
+
+test("failed post-prune publication build preserves current and removes the incomplete release", async () => {
+  const { adapter, calls } = createAdapter({
+    verifyPublicationBuilder: async () => {
+      calls.push("post-prune-build-failed");
+      throw Object.assign(new Error("builder missing"), { code: "RELEASE_COMMAND_FAILED" });
+    },
+  });
+
+  await assert.rejects(
+    deployRelease({ ...fixture, dryRun: false }, adapter),
+    { code: "RELEASE_COMMAND_FAILED" },
+  );
+  assert.deepEqual(calls.slice(-3), [
+    "prune-runtime",
+    "post-prune-build-failed",
+    "remove-incomplete",
+  ]);
+  assert.ok(!calls.includes("manifest"));
+  assert.ok(!calls.includes("switch"));
 });
 
 test("release rejects traversal, reused IDs, invalid ports, and unchecked pointer paths", async () => {

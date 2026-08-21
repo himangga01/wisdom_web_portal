@@ -72,6 +72,19 @@ describe("control environment", () => {
       ...origins,
       ADMIN_ORIGIN: "https://admin.example.test/path",
     })).toThrow(/origin/i);
+    for (const invalidOrigin of [
+      "https://127.0.0.1",
+      "https://[::1]",
+      "https://10.0.0.1",
+      "https://portal.local",
+      "https://portal",
+    ]) {
+      expect(() => parseControlConfig({
+        ...base,
+        ...origins,
+        PUBLIC_ORIGIN: invalidOrigin,
+      }), invalidOrigin).toThrow(/public DNS hostname/i);
+    }
   });
 
   it("parses independent active/previous key IDs and normalized origin lists", () => {
@@ -83,6 +96,7 @@ describe("control environment", () => {
       PII_PREVIOUS_KEYS_JSON: JSON.stringify({ "pii-v1": "e".repeat(32) }),
       ...origins,
       NAVER_SITE_VERIFICATION_META: "unit_test_naver_meta_token_1234567890",
+      PUBLIC_KAKAO_CHAT_URL: "https://pf.kakao.com/_unit_test/chat",
       CONTROL_PORT: "9876",
     });
     expect(config.port).toBe(9876);
@@ -98,6 +112,7 @@ describe("control environment", () => {
       npmBinary: secrets.NPM_BINARY,
       nodeBinary: secrets.NODE_BINARY,
       publicOrigin: origins.PUBLIC_ORIGIN,
+      kakaoChatUrl: "https://pf.kakao.com/_unit_test/chat",
       naverSiteVerificationMeta: "unit_test_naver_meta_token_1234567890",
     });
     expect(config.indexNow).toEqual({
@@ -137,6 +152,32 @@ describe("control environment", () => {
     } catch (error) {
       expect(error).toMatchObject({ message: "SEARCH_VERIFICATION_INVALID" });
       expect((error as Error).message).not.toContain(multiline);
+    }
+  });
+
+  it("accepts only an exact secure Kakao publication URL", () => {
+    const base = {
+      NODE_ENV: "production",
+      DATABASE_PATH: "./data/wisdom.sqlite",
+      ...secrets,
+      ...origins,
+    };
+    expect(parseControlConfig({
+      ...base,
+      PUBLIC_KAKAO_CHAT_URL: " https://pf.kakao.com/_unit_test/chat ",
+    }).publication).toMatchObject({
+      kakaoChatUrl: "https://pf.kakao.com/_unit_test/chat",
+    });
+    for (const value of [
+      "http://pf.kakao.com/_unit_test/chat",
+      "https://example.com/chat",
+      "https://user@pf.kakao.com/_unit_test/chat",
+      "https://pf.kakao.com/_unit_test/chat extra",
+    ]) {
+      expect(() => parseControlConfig({
+        ...base,
+        PUBLIC_KAKAO_CHAT_URL: value,
+      }), value).toThrow(/PUBLIC_KAKAO_CHAT_URL/u);
     }
   });
 

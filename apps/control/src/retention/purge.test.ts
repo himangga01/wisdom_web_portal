@@ -5,6 +5,8 @@ import { issueFormToken } from "../abuse/form-token.js";
 import {
   activateConsentBundle,
   createDatabaseConsentAuthorityResolver,
+  getActivePublishedConsentBundle,
+  getConsentBundleDigest,
   getPublicConsentDocuments,
   seedConsentDocuments,
 } from "../consent/service.js";
@@ -18,9 +20,13 @@ afterEach(() => database?.close());
 
 function createIntake(marketingAccepted: boolean, index: number, nowMs: number): void {
   const documents = getPublicConsentDocuments(database!.db, "en")!;
+  const bundle = getActivePublishedConsentBundle(database!.db)!;
   const issuedAtMs = nowMs - 2_000;
   const token = issueFormToken(provider, {
     locale: "en",
+    releaseId: `database:${bundle.bundleId}`,
+    bundleId: bundle.bundleId,
+    manifestSha256: getConsentBundleDigest(database!.db, bundle.bundleId),
     privacyVersion: documents.documents.privacy.version,
     marketingVersion: documents.documents.marketing.version,
   }, issuedAtMs, `nonce-${index}`);

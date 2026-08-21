@@ -56,5 +56,8 @@ describe("typed public surface registry", () => {
       expect("lastModified" in surface ? surface.lastModified : undefined)
         .toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     }
+    expect(getBaseSurface("/insights", {
+      insightsLastModified: "2026-07-25T00:00:00.000Z",
+    }).lastModified).toBe("2026-07-25T00:00:00.000Z");
   });
 });

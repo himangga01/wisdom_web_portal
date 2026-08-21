@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
-import { mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+} from "node:fs";
 
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
@@ -896,6 +904,120 @@ BEGIN
 END;
 `;
 
+const SEVENTH_MIGRATION = `
+CREATE TABLE publication_privacy_generation (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  generation INTEGER NOT NULL CHECK (generation >= 0)
+);
+INSERT INTO publication_privacy_generation (singleton, generation) VALUES (1, 0);
+
+CREATE TRIGGER consultations_privacy_generation_insert
+AFTER INSERT ON consultations
+BEGIN
+  UPDATE publication_privacy_generation
+  SET generation = generation + 1
+  WHERE singleton = 1;
+END;
+
+CREATE TRIGGER consultations_privacy_generation_update
+AFTER UPDATE OF
+  pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+  blind_index_key_id, retention_expires_at_ms, purged_at_ms
+ON consultations
+WHEN NEW.pii_envelope IS NOT OLD.pii_envelope
+  OR NEW.pii_key_id IS NOT OLD.pii_key_id
+  OR NEW.phone_blind_index IS NOT OLD.phone_blind_index
+  OR NEW.email_blind_index IS NOT OLD.email_blind_index
+  OR NEW.blind_index_key_id IS NOT OLD.blind_index_key_id
+  OR NEW.retention_expires_at_ms IS NOT OLD.retention_expires_at_ms
+  OR NEW.purged_at_ms IS NOT OLD.purged_at_ms
+BEGIN
+  UPDATE publication_privacy_generation
+  SET generation = generation + 1
+  WHERE singleton = 1;
+END;
+`;
+
+const EIGHTH_MIGRATION = `
+CREATE TABLE sites_release_handoffs (
+  release_id TEXT PRIMARY KEY,
+  bundle_id TEXT NOT NULL,
+  manifest_sha256 BLOB NOT NULL CHECK (length(manifest_sha256) = 32),
+  sites_source_commit TEXT NOT NULL,
+  saved_version_id TEXT,
+  deployment_id TEXT,
+  environment_revision TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','default','retiring')),
+  accept_until_ms INTEGER,
+  prepared_at_ms INTEGER NOT NULL,
+  deployment_recorded_at_ms INTEGER,
+  activated_at_ms INTEGER,
+  updated_at_ms INTEGER NOT NULL,
+  CHECK (length(release_id) BETWEEN 1 AND 128),
+  CHECK (length(bundle_id) BETWEEN 1 AND 128),
+  CHECK (length(sites_source_commit) BETWEEN 7 AND 128),
+  CHECK (length(environment_revision) BETWEEN 1 AND 256),
+  CHECK (
+    (saved_version_id IS NULL AND deployment_id IS NULL AND deployment_recorded_at_ms IS NULL)
+    OR
+    (saved_version_id IS NOT NULL AND deployment_id IS NOT NULL AND deployment_recorded_at_ms IS NOT NULL)
+  ),
+  CHECK (
+    (state = 'pending' AND accept_until_ms IS NULL AND activated_at_ms IS NULL)
+    OR
+    (state = 'default' AND accept_until_ms IS NULL AND activated_at_ms IS NOT NULL
+      AND saved_version_id IS NOT NULL AND deployment_id IS NOT NULL)
+    OR
+    (state = 'retiring' AND accept_until_ms IS NOT NULL AND activated_at_ms IS NOT NULL
+      AND saved_version_id IS NOT NULL AND deployment_id IS NOT NULL)
+  ),
+  CHECK (deployment_recorded_at_ms IS NULL OR deployment_recorded_at_ms >= prepared_at_ms),
+  CHECK (activated_at_ms IS NULL OR activated_at_ms >= prepared_at_ms),
+  CHECK (accept_until_ms IS NULL OR accept_until_ms > activated_at_ms),
+  FOREIGN KEY (release_id, manifest_sha256)
+    REFERENCES releases(id, manifest_sha256) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX sites_release_handoffs_one_pending_uidx
+  ON sites_release_handoffs((1)) WHERE state = 'pending';
+CREATE UNIQUE INDEX sites_release_handoffs_one_default_uidx
+  ON sites_release_handoffs((1)) WHERE state = 'default';
+CREATE INDEX sites_release_handoffs_state_accept_idx
+  ON sites_release_handoffs(state, accept_until_ms);
+
+CREATE TRIGGER sites_release_handoffs_identity_immutable
+BEFORE UPDATE ON sites_release_handoffs
+WHEN NEW.release_id IS NOT OLD.release_id
+  OR NEW.bundle_id IS NOT OLD.bundle_id
+  OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+  OR NEW.sites_source_commit IS NOT OLD.sites_source_commit
+  OR NEW.environment_revision IS NOT OLD.environment_revision
+  OR NEW.prepared_at_ms IS NOT OLD.prepared_at_ms
+BEGIN
+  SELECT RAISE(ABORT, 'Sites release handoff identity is immutable');
+END;
+
+CREATE TRIGGER sites_release_handoffs_state_transition
+BEFORE UPDATE ON sites_release_handoffs
+WHEN NOT (
+  NEW.state = OLD.state
+  OR (OLD.state = 'pending' AND NEW.state = 'default')
+  OR (OLD.state = 'default' AND NEW.state = 'retiring')
+  OR (OLD.state = 'retiring' AND NEW.state = 'default')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid Sites release handoff state transition');
+END;
+
+CREATE TRIGGER sites_release_control_metadata_immutable
+BEFORE UPDATE OF metadata_json ON releases
+WHEN OLD.state IN ('active','retired')
+  AND NEW.state IN ('active','retired')
+  AND NEW.metadata_json IS NOT OLD.metadata_json
+BEGIN
+  SELECT RAISE(ABORT, 'published release metadata is immutable');
+END;
+`;
+
 const MIGRATIONS = [
   { version: 1, name: "initial-control-schema", sql: INITIAL_MIGRATION },
   { version: 2, name: "admin-notification-withdrawal", sql: SECOND_MIGRATION },
@@ -903,6 +1025,8 @@ const MIGRATIONS = [
   { version: 4, name: "immutable-consent-bundles", sql: FOURTH_MIGRATION },
   { version: 5, name: "append-only-consent-events", sql: FIFTH_MIGRATION },
   { version: 6, name: "consent-event-replace-guard", sql: SIXTH_MIGRATION },
+  { version: 7, name: "publication-privacy-generation", sql: SEVENTH_MIGRATION },
+  { version: 8, name: "sites-release-handoff", sql: EIGHTH_MIGRATION },
 ] as const;
 
 export const MIGRATION_FINGERPRINTS = MIGRATIONS.map((migration) => ({
@@ -1195,6 +1319,140 @@ const REQUIRED_SCHEMA_DEFINITIONS = [
         SELECT RAISE(ABORT, 'only retired releases may be deleted');
       END`,
   },
+  {
+    type: "table",
+    name: "publication_privacy_generation",
+    sql: `CREATE TABLE publication_privacy_generation (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      generation INTEGER NOT NULL CHECK (generation >= 0)
+    )`,
+  },
+  {
+    type: "trigger",
+    name: "consultations_privacy_generation_insert",
+    sql: `CREATE TRIGGER consultations_privacy_generation_insert
+      AFTER INSERT ON consultations
+      BEGIN
+        UPDATE publication_privacy_generation
+        SET generation = generation + 1
+        WHERE singleton = 1;
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "consultations_privacy_generation_update",
+    sql: `CREATE TRIGGER consultations_privacy_generation_update
+      AFTER UPDATE OF
+        pii_envelope, pii_key_id, phone_blind_index, email_blind_index,
+        blind_index_key_id, retention_expires_at_ms, purged_at_ms
+      ON consultations
+      WHEN NEW.pii_envelope IS NOT OLD.pii_envelope
+        OR NEW.pii_key_id IS NOT OLD.pii_key_id
+        OR NEW.phone_blind_index IS NOT OLD.phone_blind_index
+        OR NEW.email_blind_index IS NOT OLD.email_blind_index
+        OR NEW.blind_index_key_id IS NOT OLD.blind_index_key_id
+        OR NEW.retention_expires_at_ms IS NOT OLD.retention_expires_at_ms
+        OR NEW.purged_at_ms IS NOT OLD.purged_at_ms
+      BEGIN
+        UPDATE publication_privacy_generation
+        SET generation = generation + 1
+        WHERE singleton = 1;
+      END`,
+  },
+  {
+    type: "table",
+    name: "sites_release_handoffs",
+    sql: `CREATE TABLE sites_release_handoffs (
+      release_id TEXT PRIMARY KEY,
+      bundle_id TEXT NOT NULL,
+      manifest_sha256 BLOB NOT NULL CHECK (length(manifest_sha256) = 32),
+      sites_source_commit TEXT NOT NULL,
+      saved_version_id TEXT,
+      deployment_id TEXT,
+      environment_revision TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('pending','default','retiring')),
+      accept_until_ms INTEGER,
+      prepared_at_ms INTEGER NOT NULL,
+      deployment_recorded_at_ms INTEGER,
+      activated_at_ms INTEGER,
+      updated_at_ms INTEGER NOT NULL,
+      CHECK (length(release_id) BETWEEN 1 AND 128),
+      CHECK (length(bundle_id) BETWEEN 1 AND 128),
+      CHECK (length(sites_source_commit) BETWEEN 7 AND 128),
+      CHECK (length(environment_revision) BETWEEN 1 AND 256),
+      CHECK (
+        (saved_version_id IS NULL AND deployment_id IS NULL AND deployment_recorded_at_ms IS NULL)
+        OR
+        (saved_version_id IS NOT NULL AND deployment_id IS NOT NULL AND deployment_recorded_at_ms IS NOT NULL)
+      ),
+      CHECK (
+        (state = 'pending' AND accept_until_ms IS NULL AND activated_at_ms IS NULL)
+        OR
+        (state = 'default' AND accept_until_ms IS NULL AND activated_at_ms IS NOT NULL
+          AND saved_version_id IS NOT NULL AND deployment_id IS NOT NULL)
+        OR
+        (state = 'retiring' AND accept_until_ms IS NOT NULL AND activated_at_ms IS NOT NULL
+          AND saved_version_id IS NOT NULL AND deployment_id IS NOT NULL)
+      ),
+      CHECK (deployment_recorded_at_ms IS NULL OR deployment_recorded_at_ms >= prepared_at_ms),
+      CHECK (activated_at_ms IS NULL OR activated_at_ms >= prepared_at_ms),
+      CHECK (accept_until_ms IS NULL OR accept_until_ms > activated_at_ms),
+      FOREIGN KEY (release_id, manifest_sha256)
+        REFERENCES releases(id, manifest_sha256) ON DELETE RESTRICT
+    )`,
+  },
+  {
+    type: "index",
+    name: "sites_release_handoffs_one_pending_uidx",
+    sql: "CREATE UNIQUE INDEX sites_release_handoffs_one_pending_uidx ON sites_release_handoffs((1)) WHERE state = 'pending'",
+  },
+  {
+    type: "index",
+    name: "sites_release_handoffs_one_default_uidx",
+    sql: "CREATE UNIQUE INDEX sites_release_handoffs_one_default_uidx ON sites_release_handoffs((1)) WHERE state = 'default'",
+  },
+  {
+    type: "trigger",
+    name: "sites_release_handoffs_identity_immutable",
+    sql: `CREATE TRIGGER sites_release_handoffs_identity_immutable
+      BEFORE UPDATE ON sites_release_handoffs
+      WHEN NEW.release_id IS NOT OLD.release_id
+        OR NEW.bundle_id IS NOT OLD.bundle_id
+        OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+        OR NEW.sites_source_commit IS NOT OLD.sites_source_commit
+        OR NEW.environment_revision IS NOT OLD.environment_revision
+        OR NEW.prepared_at_ms IS NOT OLD.prepared_at_ms
+      BEGIN
+        SELECT RAISE(ABORT, 'Sites release handoff identity is immutable');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "sites_release_handoffs_state_transition",
+    sql: `CREATE TRIGGER sites_release_handoffs_state_transition
+      BEFORE UPDATE ON sites_release_handoffs
+      WHEN NOT (
+        NEW.state = OLD.state
+        OR (OLD.state = 'pending' AND NEW.state = 'default')
+        OR (OLD.state = 'default' AND NEW.state = 'retiring')
+        OR (OLD.state = 'retiring' AND NEW.state = 'default')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid Sites release handoff state transition');
+      END`,
+  },
+  {
+    type: "trigger",
+    name: "sites_release_control_metadata_immutable",
+    sql: `CREATE TRIGGER sites_release_control_metadata_immutable
+      BEFORE UPDATE OF metadata_json ON releases
+      WHEN OLD.state IN ('active','retired')
+        AND NEW.state IN ('active','retired')
+        AND NEW.metadata_json IS NOT OLD.metadata_json
+      BEGIN
+        SELECT RAISE(ABORT, 'published release metadata is immutable');
+      END`,
+  },
 ] as const;
 
 const REQUIRED_SCHEMA_FINGERPRINTS = REQUIRED_SCHEMA_DEFINITIONS.map((definition) => ({
@@ -1212,11 +1470,74 @@ function applyPragmas(sqlite: Database.Database): void {
   sqlite.pragma("secure_delete = ON");
 }
 
-export function openDatabase(path: string): ControlDatabase {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const sqlite = new Database(path);
-  applyPragmas(sqlite);
-  return { sqlite, orm: drizzle(sqlite, { schema: drizzleSchema }) };
+function permissionBits(path: string): number {
+  return lstatSync(path).mode & 0o777;
+}
+
+function assertOwnerOnlyDirectory(path: string): void {
+  const metadata = lstatSync(path);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (process.platform !== "win32" && permissionBits(path) !== 0o700)
+  ) {
+    throw new Error("Database directory must be a real owner-only directory");
+  }
+}
+
+function assertOwnerOnlyFile(path: string): void {
+  const metadata = lstatSync(path);
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    (process.platform !== "win32" && permissionBits(path) !== 0o600)
+  ) {
+    throw new Error("Database files must be regular owner-only files");
+  }
+}
+
+function prepareDatabasePath(databasePath: string): void {
+  const parent = dirname(databasePath);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertOwnerOnlyDirectory(parent);
+
+  if (!existsSync(databasePath)) {
+    const descriptor = openSync(
+      databasePath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
+      0o600,
+    );
+    closeSync(descriptor);
+  }
+  assertOwnerOnlyFile(databasePath);
+  for (const sidecar of [`${databasePath}-wal`, `${databasePath}-shm`]) {
+    if (existsSync(sidecar)) assertOwnerOnlyFile(sidecar);
+  }
+}
+
+function finalizeDatabaseFileModes(databasePath: string): void {
+  for (const candidate of [
+    databasePath,
+    `${databasePath}-wal`,
+    `${databasePath}-shm`,
+  ]) {
+    if (!existsSync(candidate)) continue;
+    chmodSync(candidate, 0o600);
+    assertOwnerOnlyFile(candidate);
+  }
+}
+
+export function openDatabase(databasePath: string): ControlDatabase {
+  if (databasePath !== ":memory:") prepareDatabasePath(databasePath);
+  const sqlite = new Database(databasePath);
+  try {
+    applyPragmas(sqlite);
+    if (databasePath !== ":memory:") finalizeDatabaseFileModes(databasePath);
+    return { sqlite, orm: drizzle(sqlite, { schema: drizzleSchema }) };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
 }
 
 type MigrationHistoryRow = { version: number; name: string };
@@ -1426,6 +1747,10 @@ export function isDatabaseReady(db: ControlDatabase): boolean {
         "translation_metadata_json", "initial_review_state", "created_by_type", "created_by_id",
       ],
       releases: ["verified_at_ms", "verification_sha256", "activation_generation"],
+      sites_release_handoffs: [
+        "bundle_id", "manifest_sha256", "sites_source_commit", "saved_version_id",
+        "deployment_id", "environment_revision", "state", "accept_until_ms",
+      ],
     } as const;
     return Object.entries(requiredColumns).every(([table, names]) => {
       const columns = db.sqlite.pragma(`table_info(${table})`) as Array<{ name: string }>;
@@ -1435,4 +1760,12 @@ export function isDatabaseReady(db: ControlDatabase): boolean {
   } catch {
     return false;
   }
+}
+
+export function assertDatabaseSchemaCurrent(db: ControlDatabase): void {
+  if (isDatabaseReady(db)) return;
+  throw Object.assign(
+    new Error("DATABASE_MIGRATION_REQUIRED"),
+    { code: "DATABASE_MIGRATION_REQUIRED" },
+  );
 }

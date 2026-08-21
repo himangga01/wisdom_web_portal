@@ -28,6 +28,7 @@ const RUNTIME_KEYS = new Set([
   "NPM_BINARY",
   "PII_ACTIVE_KEY_ID",
   "PUBLIC_CURRENT_LINK",
+  "PUBLIC_KAKAO_CHAT_URL",
   "PUBLIC_ORIGIN",
   "PUBLIC_RELEASE_ROOT",
   "PUBLICATION_BUILD_TIMEOUT_MS",
@@ -36,6 +37,7 @@ const RUNTIME_KEYS = new Set([
   "SSL_CERT_FILE",
 ]);
 const HOST_ENVIRONMENT_KEYS = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"];
+const EXECUTABLE_ENVIRONMENT_KEYS = ["PATH", "TMPDIR", "LANG", "LC_ALL", "TZ"];
 
 function fail(code, message) {
   const error = new Error(message);
@@ -79,8 +81,29 @@ export async function loadRuntimeConfigFile(configPath) {
   return parseRuntimeConfig(await readFile(configPath, "utf8"));
 }
 
+export async function readyUrlFromRuntimeConfig(configPath) {
+  const runtimeConfig = await loadRuntimeConfigFile(configPath);
+  const port = Number(runtimeConfig.CONTROL_PORT);
+  if (
+    runtimeConfig.CONTROL_HOST !== "127.0.0.1" ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    String(port) !== runtimeConfig.CONTROL_PORT
+  ) {
+    fail("RUNTIME_CONFIG_CONTROL_INVALID", "Runtime config has an invalid Control endpoint");
+  }
+  return `http://127.0.0.1:${port}/health/ready`;
+}
+
 function allowedHostEnvironment(source) {
   return Object.fromEntries(HOST_ENVIRONMENT_KEYS.flatMap((key) => (
+    typeof source[key] === "string" && source[key].length > 0 ? [[key, source[key]]] : []
+  )));
+}
+
+export function minimalExecutableEnvironment(source = process.env) {
+  return Object.fromEntries(EXECUTABLE_ENVIRONMENT_KEYS.flatMap((key) => (
     typeof source[key] === "string" && source[key].length > 0 ? [[key, source[key]]] : []
   )));
 }

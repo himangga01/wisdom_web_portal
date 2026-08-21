@@ -30,6 +30,14 @@ function protectedMode(metadata) {
   return process.platform === "win32" || (metadata.mode & 0o022n) === 0n;
 }
 
+function ownerOnlyFileMode(metadata) {
+  return process.platform === "win32" || (metadata.mode & 0o777n) === 0o600n;
+}
+
+function ownerOnlyDirectoryMode(metadata) {
+  return process.platform === "win32" || (metadata.mode & 0o777n) === 0o700n;
+}
+
 function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
 }
@@ -108,6 +116,7 @@ async function canonicalPath(candidate, code) {
 async function withSecureRegularFile(candidate, {
   code,
   maxBytes,
+  requireOwnerOnly = false,
   requirePrivate = false,
   requireProtected = false,
 }, operation) {
@@ -128,6 +137,7 @@ async function withSecureRegularFile(candidate, {
       fail(code, "Regular file identity is invalid");
     }
     if (before.size > BigInt(maxBytes)) fail(code, "Regular file exceeds its size bound");
+    if (requireOwnerOnly && !ownerOnlyFileMode(before)) fail(code, "Regular file permissions are not owner-only");
     if (requirePrivate && !privateMode(before)) fail(code, "Regular file permissions are not private");
     if (requireProtected && !protectedMode(before)) fail(code, "Regular file permissions are not protected");
 
@@ -174,19 +184,26 @@ async function readBounded(handle, maximumBytes, signal, code) {
 
 export async function assertSecureRealDirectory(candidate, {
   code = "MONITOR_DIRECTORY_INVALID",
+  requireOwnerOnly = false,
   requireProtected = false,
 } = {}) {
-  return withSecureRealDirectory(candidate, { code, requireProtected }, async ({ canonicalPath }) => canonicalPath);
+  return withSecureRealDirectory(candidate, {
+    code,
+    requireOwnerOnly,
+    requireProtected,
+  }, async ({ canonicalPath }) => canonicalPath);
 }
 
 export async function withSecureRealDirectory(candidate, {
   code = "MONITOR_DIRECTORY_INVALID",
+  requireOwnerOnly = false,
   requireProtected = false,
 } = {}, operation) {
   if (typeof operation !== "function") fail(code, "Directory operation is required");
   const initialWalk = await walkNoLinks(candidate, code);
   const metadata = initialWalk.finalMetadata;
   if (!metadata?.isDirectory()) fail(code, "Expected a real directory");
+  if (requireOwnerOnly && !ownerOnlyDirectoryMode(metadata)) fail(code, "Directory permissions are not owner-only");
   if (requireProtected && !protectedMode(metadata)) fail(code, "Directory permissions are not protected");
   const canonical = await canonicalPath(candidate, code);
   let handle;
@@ -222,12 +239,14 @@ export async function withSecureRealDirectory(candidate, {
 export async function assertSecureRegularFile(candidate, {
   code = "MONITOR_FILE_INVALID",
   maxBytes = Number.MAX_SAFE_INTEGER,
+  requireOwnerOnly = false,
   requirePrivate = false,
   requireProtected = false,
 } = {}) {
   return withSecureRegularFile(candidate, {
     code,
     maxBytes,
+    requireOwnerOnly,
     requirePrivate,
     requireProtected,
   }, async (_handle, metadata, canonical) => ({
@@ -240,12 +259,14 @@ export async function readSecureRegularFile(candidate, {
   code = "MONITOR_FILE_INVALID",
   maxBytes,
   signal,
+  requireOwnerOnly = false,
   requirePrivate = false,
   requireProtected = false,
 } = {}) {
   return withSecureRegularFile(candidate, {
     code,
     maxBytes,
+    requireOwnerOnly,
     requirePrivate,
     requireProtected,
   }, async (handle) => readBounded(handle, maxBytes, signal, code));
@@ -255,12 +276,14 @@ export async function hashSecureRegularFile(candidate, {
   code = "MONITOR_FILE_INVALID",
   maxBytes,
   signal,
+  requireOwnerOnly = false,
   requirePrivate = false,
   requireProtected = false,
 } = {}) {
   return withSecureRegularFile(candidate, {
     code,
     maxBytes,
+    requireOwnerOnly,
     requirePrivate,
     requireProtected,
   }, async (handle) => {

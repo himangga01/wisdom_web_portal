@@ -21,6 +21,18 @@ function isNonProductionHostname(hostname: string): boolean {
     || /(?:^|\.)(?:staging|stage|preview|dev|development)(?:\.|$)/.test(normalized);
 }
 
+function isAddressLiteral(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/gu, "");
+  return normalized.includes(":") || /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/u.test(normalized);
+}
+
+function isPublicDnsHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return !isAddressLiteral(normalized)
+    && normalized.includes(".")
+    && !normalized.endsWith(".local");
+}
+
 export function parsePublicOrigin(
   value: string | undefined,
   options: PublicOriginOptions,
@@ -40,7 +52,13 @@ export function parsePublicOrigin(
       || url.hash
       || url.port
       || url.origin !== value
-      || (options.production && isNonProductionHostname(url.hostname))
+      || (
+        options.production &&
+        (
+          isNonProductionHostname(url.hostname) ||
+          !isPublicDnsHostname(url.hostname)
+        )
+      )
     ) {
       throw new Error("PUBLIC_ORIGIN_INVALID");
     }

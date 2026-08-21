@@ -19,12 +19,14 @@ const MANIFEST_FILE = ".ops-release.json";
 const REQUIRED_FILES = [
   "package.json",
   "package-lock.json",
+  "apps/admin/package.json",
   "apps/control/package.json",
   "apps/site/package.json",
   "packages/shared/package.json",
 ];
 const ROOT_RUNTIME_FILES = ["package.json", "package-lock.json"];
 const RUNTIME_DIRECTORIES = [
+  "apps/admin",
   "apps/control",
   "apps/site",
   "packages/shared",
@@ -45,17 +47,22 @@ const REQUIRED_ARTIFACTS = [
   "apps/control/dist/cli/migrate.js",
   "apps/control/dist/cli/consent-seed.js",
   "apps/control/dist/cli/consent-activate.js",
+  "apps/control/dist/cli/publication-first.js",
   "apps/control/dist/cli/purge.js",
+  "apps/admin/dist/admin/index.html",
+  "apps/admin/dist/admin/manifest.json",
   "apps/site/dist/index.html",
   "ops/lib/monitor-files.mjs",
   "ops/lib/monitoring.mjs",
   "ops/scripts/backup.mjs",
   "ops/scripts/deploy.mjs",
+  "ops/scripts/first-publication.mjs",
   "ops/scripts/keychain-exec.mjs",
   "ops/scripts/monitor-db-check.mjs",
   "ops/scripts/monitor.mjs",
   "ops/scripts/preflight.mjs",
   "ops/scripts/recover-lock.mjs",
+  "ops/scripts/retention.mjs",
   "ops/scripts/restore.mjs",
   "ops/scripts/rollback.mjs",
   "ops/scripts/secret-import.mjs",
@@ -214,6 +221,77 @@ function exactObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
 }
 
+function htmlAttributes(source) {
+  const result = new Map();
+  for (const match of source.matchAll(
+    /([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gu,
+  )) {
+    result.set(match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? "");
+  }
+  return result;
+}
+
+function administratorShellMatchesManifest(html, entry) {
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/giu)];
+  if (scripts.length !== 1 || (html.match(/<script\b/giu) ?? []).length !== 1) return false;
+  const script = htmlAttributes(scripts[0][1]);
+  if (scripts[0][2].trim() || script.get("type") !== "module" ||
+      script.get("src") !== `/admin/${entry.file}`) return false;
+  const styles = [...html.matchAll(/<link\b([^>]*)>/giu)]
+    .map((match) => htmlAttributes(match[1]))
+    .filter((record) => (record.get("rel") ?? "").split(/\s+/u).includes("stylesheet"))
+    .map((record) => record.get("href"));
+  const expected = entry.css.map((asset) => `/admin/${asset}`).toSorted();
+  return styles.length === expected.length &&
+    styles.every((value) => typeof value === "string") &&
+    styles.toSorted().every((value, index) => value === expected[index]);
+}
+
+async function assertAdministratorBuild(releaseReal, files) {
+  const root = "apps/admin/dist/admin";
+  let manifest;
+  let html;
+  try {
+    manifest = JSON.parse(await readFile(path.join(releaseReal, root, "manifest.json"), "utf8"));
+    html = await readFile(path.join(releaseReal, root, "index.html"), "utf8");
+  } catch {
+    fail("RELEASE_MANIFEST_INVALID", "Administrator build manifest is unreadable");
+  }
+  if (!exactObject(manifest) || !exactObject(manifest["index.html"])) {
+    fail("RELEASE_MANIFEST_INVALID", "Administrator build entry is missing");
+  }
+  const entry = manifest["index.html"];
+  if (entry.isEntry !== true || typeof entry.file !== "string" || !Array.isArray(entry.css) || entry.css.length < 1) {
+    fail("RELEASE_MANIFEST_INVALID", "Administrator build entry contract is invalid");
+  }
+  const referenced = new Set();
+  for (const record of Object.values(manifest)) {
+    if (!exactObject(record) || typeof record.file !== "string" ||
+        (record.css !== undefined && !Array.isArray(record.css)) ||
+        (record.assets !== undefined && !Array.isArray(record.assets))) {
+      fail("RELEASE_MANIFEST_INVALID", "Administrator build manifest entry is invalid");
+    }
+    for (const relative of [record.file, ...(record.css ?? []), ...(record.assets ?? [])]) {
+      if (typeof relative !== "string" || !/^assets\/[A-Za-z0-9._-]+-[A-Za-z0-9_-]{12}\.(?:css|js|png|svg|woff2)$/u.test(relative)) {
+        fail("RELEASE_MANIFEST_INVALID", "Administrator build references an unsafe asset");
+      }
+      referenced.add(relative);
+    }
+  }
+  if (![...referenced].some((relative) => relative.endsWith(".js")) ||
+      ![...referenced].some((relative) => relative.endsWith(".css"))) {
+    fail("RELEASE_MANIFEST_INVALID", "Administrator build requires JavaScript and CSS assets");
+  }
+  for (const relative of referenced) {
+    if (!Object.hasOwn(files, `${root}/${relative}`)) {
+      fail("RELEASE_MANIFEST_INVALID", `Missing administrator build asset ${relative}`);
+    }
+  }
+  if (!administratorShellMatchesManifest(html, entry)) {
+    fail("RELEASE_MANIFEST_INVALID", "Administrator index and manifest differ");
+  }
+}
+
 async function collectRuntimeInventory(destination) {
   const releaseReal = await realDirectory(destination, "release destination");
   const allowedRoots = RUNTIME_DIRECTORIES.map((relative) => path.resolve(releaseReal, ...relative.split("/")));
@@ -291,6 +369,7 @@ async function collectRuntimeInventory(destination) {
   for (const required of REQUIRED_FILES) {
     if (!Object.hasOwn(files, required)) fail("RELEASE_MANIFEST_INVALID", `Missing required runtime file ${required}`);
   }
+  await assertAdministratorBuild(releaseReal, files);
   return { files, symlinks };
 }
 

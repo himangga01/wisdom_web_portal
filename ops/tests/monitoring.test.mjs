@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import {
   createSystemMonitoringAdapters,
@@ -14,6 +13,11 @@ import {
   runLocalMonitor,
 } from "../lib/monitoring.mjs";
 import { queryDatabaseAggregates } from "../scripts/monitor-db-check.mjs";
+
+const secureTemporaryRoot = await realpath(await mkdtemp(
+  path.join(process.cwd(), ".wisdom-monitor-tests-"),
+));
+after(async () => rm(secureTemporaryRoot, { force: true, recursive: true }));
 
 function absoluteFixture(name) {
   return path.join(path.parse(process.cwd()).root, "wisdom-monitor-fixture", name);
@@ -120,7 +124,7 @@ test("monitor config strictly separates external uptime from bounded private che
 });
 
 test("monitor config file must be an absolute regular non-symlink file", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-config-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-config-")));
   const configPath = path.join(root, "monitoring.json");
   await writeFile(configPath, JSON.stringify(configValue()), { mode: 0o600 });
   assert.equal((await loadMonitoringConfigFile(configPath)).local.thresholds.backupFreshnessMinutes, 90);
@@ -353,7 +357,7 @@ test("incident fingerprint suppresses unchanged alerts, changes re-alert, failed
 });
 
 test("protected incident state survives independent monitor runs and is removed without a resolution alert", async (t) => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-incident-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-incident-")));
   t.after(async () => rm(root, { force: true, recursive: true }));
   const statePath = path.join(root, "monitor-incident-state.json");
   const parsed = parseMonitoringConfig(JSON.stringify(configValue({
@@ -424,7 +428,7 @@ test("system launchd inspection uses an absolute executable, no shell, and bound
 });
 
 test("backup and disk checks reject directory replacement after validation", async (t) => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-dir-swap-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-dir-swap-")));
   t.after(async () => rm(root, { force: true, recursive: true }));
 
   const backupRoot = path.join(root, "backups");
@@ -452,7 +456,7 @@ test("backup and disk checks reject directory replacement after validation", asy
 });
 
 test("system backlog reader opens only aggregate operational tables", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-db-")));
   const databasePath = path.join(root, "portal.sqlite");
   const { default: Database } = await import("better-sqlite3");
   const database = new Database(databasePath);
@@ -469,6 +473,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
     CREATE TABLE consultations (retention_expires_at_ms INTEGER NOT NULL, purged_at_ms INTEGER);
     CREATE TABLE release_activations (state TEXT NOT NULL);
     CREATE TABLE releases (state TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+    CREATE TABLE audit_events (action TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
     INSERT INTO notification_outbox VALUES
       ('failed', 0, NULL), ('sent', 0, NULL), ('pending', 89999, NULL), ('processing', 99999, 99999);
     INSERT INTO publication_outbox VALUES
@@ -479,8 +484,11 @@ test("system backlog reader opens only aggregate operational tables", async () =
     INSERT INTO consultations VALUES (100000, NULL), (100000, 99999), (100001, NULL);
     INSERT INTO release_activations VALUES ('prepared'), ('committed');
     INSERT INTO releases VALUES ('active', 100), ('failed', 90), ('failed', 110);
+    INSERT INTO audit_events VALUES
+      ('article.release.build_failed', 120), ('article.release.published', 130);
   `);
   database.close();
+  await chmod(databasePath, 0o600);
 
   const result = await createSystemMonitoringAdapters().readBacklogs(databasePath, {
     timeoutMs: 1_000,
@@ -490,7 +498,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
   assert.deepEqual(result, {
     notificationFailures: 1,
     translationFailures: 1,
-    publicationFailures: 2,
+    publicationFailures: 3,
     indexNowFailures: 1,
     notificationStalled: 2,
     translationStalled: 2,
@@ -500,7 +508,7 @@ test("system backlog reader opens only aggregate operational tables", async () =
 });
 
 test("hung database helper is hard-killed within the bound and Hermes receives only DB_TIMEOUT", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-timeout-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-db-timeout-")));
   const databasePath = path.join(root, "portal.sqlite");
   const helperPath = path.join(root, "hang-helper.mjs");
   await writeFile(databasePath, "not customer records", { mode: 0o600 });
@@ -536,7 +544,7 @@ test("hung database helper is hard-killed within the bound and Hermes receives o
 });
 
 test("database path replacement uses a fixed sanitized DB_PATH_CHANGED handoff code", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-path-change-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-db-path-change-")));
   const databasePath = path.join(root, "portal.sqlite");
   const helperPath = path.join(root, "path-change-helper.mjs");
   await writeFile(databasePath, "bounded fixture", { mode: 0o600 });
@@ -564,7 +572,7 @@ test("database path replacement uses a fixed sanitized DB_PATH_CHANGED handoff c
 });
 
 test("corrupt database errors are sanitized and bounded by the child protocol", async () => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-corrupt-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-db-corrupt-")));
   const databasePath = path.join(root, "portal.sqlite");
   await writeFile(databasePath, "customer@example.test private record", { mode: 0o600 });
   const started = performance.now();
@@ -582,7 +590,7 @@ test("corrupt database errors are sanitized and bounded by the child protocol", 
 test("database helper rejects a final file swap after SQLite opens the verified path", {
   skip: process.platform === "win32" ? "Windows does not permit this open-file rename fixture" : false,
 }, async (t) => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wisdom-monitor-db-swap-")));
+  const root = await realpath(await mkdtemp(path.join(secureTemporaryRoot, "wisdom-monitor-db-swap-")));
   t.after(async () => rm(root, { force: true, recursive: true }));
   const databasePath = path.join(root, "portal.sqlite");
   const replacementPath = path.join(root, "replacement.sqlite");
@@ -603,7 +611,7 @@ test("database helper rejects a final file swap after SQLite opens the verified 
       await rename(databasePath, movedPath);
       await rename(replacementPath, databasePath);
     },
-  }), { code: "MONITOR_DATABASE_QUERY_FAILED" });
+  }), { code: "DB_PATH_CHANGED" });
 });
 
 test("Hermes handoff retries are bounded and discard private response bodies", async () => {

@@ -4,6 +4,7 @@ import { createTestDatabase, type TestDatabase } from "../../test/helpers.js";
 import { closeDatabase, openDatabase, runMigrations } from "../db/client.js";
 import { purgeExpiredConsultations } from "../retention/purge.js";
 import * as controlModule from "../index.js";
+import { WITHDRAWAL_STYLES, WITHDRAWAL_STYLES_PATH } from "./styles.js";
 
 const control = controlModule as unknown as Record<string, unknown>;
 const withdrawalSecret = Buffer.alloc(32, 83);
@@ -70,6 +71,18 @@ function seedMarketingConsultation(
       'marketing', ?, 1, 'marketing-v1', ?, 'visitor', 'request-intake', 0)
   `).run(marketingAccepted ? "accepted" : "declined", Buffer.alloc(32, 2));
 }
+
+describe("withdrawal presentation assets", () => {
+  it("uses a fixed public stylesheet with readable and keyboard-visible controls", () => {
+    expect(WITHDRAWAL_STYLES_PATH).toBe("/marketing/withdraw/styles.css");
+    expect(WITHDRAWAL_STYLES).toContain("width: min(100%, 42rem)");
+    expect(WITHDRAWAL_STYLES).toContain("button:focus-visible");
+    expect(WITHDRAWAL_STYLES).toContain(".withdrawal-card--success h1");
+    expect(WITHDRAWAL_STYLES).toContain(".withdrawal-card--error h1");
+    expect(WITHDRAWAL_STYLES).not.toContain("/admin/");
+    expect(WITHDRAWAL_STYLES).not.toContain("<script");
+  });
+});
 
 interface MintResult {
   token: string;

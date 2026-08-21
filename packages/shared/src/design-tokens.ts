@@ -1,6 +1,7 @@
 export const designTokens = {
   color: {
     bronze: "#a78d6c",
+    bronzeText: "#745b3f",
     sand: "#d8cabb",
     ivory: "#fffdfa",
     brown: "#5d4936",

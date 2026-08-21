@@ -43,7 +43,7 @@ npm run verify
 
 루트 명령은 `packages/*`를 `apps/*`보다 먼저 처리하며, 아직 같은 이름의 스크립트가 없는 워크스페이스는 건너뜁니다. `typecheck`, `test`, `test:e2e`는 소비 앱을 실행하기 전에 `@wisdom/shared`를 빌드하므로 `packages/shared/dist`가 없는 새 checkout에서도 동작합니다. `verify`는 타입 검사, 단위 테스트, 빌드, E2E 테스트 순서로 전체 운영 워크스페이스를 확인합니다.
 
-2026-07-16 clean install 최종 검증에서는 root 11/11, shared 70/70, control 415/415, site 98/98, Ops 203 통과·Windows 전용 6 skip·0 fail, 68페이지 빌드, Chromium·Firefox·WebKit 108/108이 통과했습니다. 정확한 명령·브라우저 수동 점검·감사 결과는 [릴리스 후보 점검표](docs/operations/release-candidate.md)의 검증 증거를 따릅니다.
+2026-07-25 base commit `62c11ce5646dc71e063c8610f798a3d3964d3bca` 위의 현재 작업 트리에서 전체 검증이 통과했습니다. 수정본은 아직 커밋되지 않았으며, 실제 실행 수치와 과거 기준 기록은 [릴리스 후보 점검표](docs/operations/release-candidate.md)를 따릅니다.
 
 ## 환경 설정
 
@@ -83,7 +83,6 @@ npm run verify
 - `HERMES_ENDPOINT`: literal loopback Hermes URL, 기본값 `http://127.0.0.1:8788/notify`
 - `PII_ACTIVE_KEY_ID`: 현재 PII 암호화 키 버전 ID
 - `PII_PREVIOUS_KEYS_JSON`: 이전 PII 키 ID와 값의 JSON 객체
-- `PUBLIC_ORIGINS`: 쉼표로 구분한 HTTPS 원본 허용 목록
 - `CONTROL_HOST=127.0.0.1`, `CONTROL_PORT=8787`
 
 `CONTROL_HMAC_SECRET`을 교체하면 기존 폼 토큰, 멱등성 키, 요청 지문 및 블라인드 인덱스가 함께 바뀝니다. HMAC 루트 회전은 Task 7 운영 절차에서 점검·배치 재색인과 함께 수행하며 임의로 즉시 교체하지 않습니다.

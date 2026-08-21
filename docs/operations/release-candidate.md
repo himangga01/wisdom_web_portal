@@ -10,9 +10,33 @@
 - 최종 clean install 검증 수치와 검증 기준 code commit은 아래 실제 실행 증거를 사용한다. 과거 중간 수치나 예상값으로 대체하지 않는다.
 - 검색·AI 발견성 구현은 크롤러가 이해할 수 있는 기술 기반을 제공할 뿐, Google·Naver 순위나 ChatGPT·Gemini 인용을 보장하지 않는다.
 
-## 2026-07-16 최종 검증 증거
+## 현재 검증 상태
 
-- 검증 기준 code commit: `ebbeb22` (`fix: stabilize consultation retry readiness`). 이후 이 문서·README·작업 로그만 갱신하며 런타임 코드는 변경하지 않았다.
+- 2026-07-25 20:26~20:27 KST 현재 작업 트리에서 `npm run verify`가 exit 0으로 통과했다.
+- typecheck: shared·admin·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
+- 테스트: root orchestration 13/13, shared 72/72, admin 4/4, control 470/470, site 105/105, Ops 257/257.
+- 정적 빌드: fixture publication snapshot으로 4개 언어 68페이지 생성.
+- 브라우저 E2E: 관리자 mock server 15/15, 실제 Hono Control 연동 1/1, Site Chromium·Firefox·WebKit 123/123 통과.
+- 검증 기준 base code commit: `62c11ce5646dc71e063c8610f798a3d3964d3bca`. 검증 대상은 이 commit 위의 커밋되지 않은 현재 작업 트리이므로 아직 릴리스 commit 근거가 아니다.
+- 외부 Sites project/version/deployment와 release handoff는 생성하거나 실행하지 않았다.
+
+## 승인 대기 운영 drill
+
+다음 항목은 이번 자동 검증에서 실행하지 않았으며 실제 환경 증거가 생길 때까지 pending이다.
+
+- [ ] prune된 release에서 publication build
+- [ ] bootstrap → first publication → Tunnel start
+- [ ] after-switch fault recovery
+- [ ] retention schedule과 restore 상호배제
+- [ ] non-default `CONTROL_PORT` deploy readiness
+- [ ] offsite artifact로 새 장비 restore
+- [ ] Sites old/new/rollback release handoff
+
+## 2026-07-16 과거 검증 기록
+
+아래 결과는 `ebbeb22` (`fix: stabilize consultation retry readiness`) 기준의 과거 기록이며 현재 수정본의 릴리스 근거가 아니다.
+
+- 검증 기준 code commit: `ebbeb22`.
 - clean install: `npm.cmd ci` 성공, lockfile 기준 447개 패키지 설치.
 - 전체 관문: `npm.cmd run verify` exit 0, 총 322.9초.
 - typecheck: shared·control TypeScript 통과, Astro 60개 파일 0 error·0 warning·0 hint.
@@ -33,7 +57,7 @@
 | 4개 언어 공개 사이트 | `apps/site`, locale별 정적 경로와 실제 언어 전환 | Site unit/type/build, 3-browser E2E | 구현 완료 |
 | bronze/sand/ivory 디자인과 C1 모션 | 공용 토큰, 18개·500ms·64px·60ms, reduced-motion/no-JS 폴백 | 320/390/768/1440 overflow와 모션 브라우저 검사 | 구현 완료 |
 | 상담 접수와 동의 | 로컬 SQLite, 필수 개인정보 동의, 선택 마케팅 동의, 계정 없는 1회 링크 철회 | API·트랜잭션·멱등성·보존기간·정책 snapshot parity 테스트 | 구현 완료 |
-| 관리자 포털 | 별도 호스트, Argon2id, TOTP/복구 코드, CSRF, 감사 이벤트 | 인증·세션·상태전이·host routing 테스트 | 구현 완료 |
+| 관리자 포털 | 별도 호스트의 React+Tailwind UI, Hono JSON API, Argon2id, TOTP/복구 코드, CSRF, 감사 이벤트 | 관리자 타입체크·프로덕션 빌드, 인증·세션·상태전이·host routing 테스트 | 구현 완료 |
 | Telegram·이메일 알림 | Hermes metadata-only, SMTP `receipt-only` 기본, 관리자 선택 | lease/fencing/backoff와 PII 비노출 테스트 | 구현 완료 |
 | Hermes 글 작성과 Codex 번역 | HMAC draft intake, 명시적 번역, shell tool 비활성 Codex CLI 3회 검수, locale별 승인 | 스키마·stdin 입력·no-shell 실행·PII guard·작업 복구 테스트 | 구현 완료 |
 | 정적 발행과 롤백 | 승인 글과 활성 8개 동의 문서를 함께 봉인한 snapshot/build, 원자 pointer 전환, active+retired 2개 보존 | 정책 body/hash/보존기간 parity·장애 주입·reconcile·rollback·retention 테스트 | 구현 완료 |
@@ -75,6 +99,8 @@
 5. 실제 도메인에서 `/robots.txt`, `/sitemap.xml`, `/rss.xml`, `/indexnow-key.txt`의 status·MIME·cache·noindex 정책을 확인한다.
 
 실제 Samsung Internet·Safari·Kakao/Naver 앱 점검은 Windows CI로 대체할 수 없으므로 공개 전 수동 게이트로 유지한다.
+
+관리자 호스트에서는 `/admin` 로그인, MFA, 대시보드, 상담 상세·상태 변경, 콘텐츠 검토, 게시 미리보기, 릴리스, 알림, 동의 문서, 실패 작업, 상태 화면을 확인한다. `/admin`과 `/admin/api/*`는 `no-store`, `/admin/assets/*`만 immutable인지 확인하고 공개 호스트에서 `/admin*`가 404인지 다시 확인한다.
 
 ## 운영 전환 순서
 

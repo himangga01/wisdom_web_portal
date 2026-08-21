@@ -8,6 +8,7 @@ const DEPLOY_STEPS = Object.freeze([
   "build",
   "migrate",
   "prune-to-production-runtime",
+  "post-prune-publication-build",
   "start-loopback-canary",
   "check-live-and-ready",
   "verify-release",
@@ -121,6 +122,7 @@ async function deployReleaseLocked(input, adapter, plan) {
     await adapter.build(plan.destination);
     await adapter.migrate(plan.destination);
     await adapter.prepareRuntime(plan.destination);
+    await adapter.verifyPublicationBuilder(plan.destination);
     await adapter.writeManifest(plan.destination, { releaseId: input.releaseId });
     await adapter.verify(plan.destination, { releaseId: input.releaseId });
     canary = await adapter.startCanary(plan.destination, input.canaryPort);

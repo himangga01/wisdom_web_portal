@@ -1,5 +1,6 @@
 import {
   computePublishedArticleContentSha256,
+  normalizeValidateAndRenderArticleMarkdown,
   type Locale,
   type PublishedArticleDocument,
 } from "@wisdom/shared";
@@ -153,6 +154,7 @@ export function assertServicePublicationQuality(value: ServicePublication): void
 
 export function assertArticlePublicationQuality(article: PublishedArticleDocument): void {
   let contentHashMatches = false;
+  let markdownMatches = false;
   try {
     contentHashMatches = computePublishedArticleContentSha256({
       title: article.title,
@@ -161,13 +163,16 @@ export function assertArticlePublicationQuality(article: PublishedArticleDocumen
       sources: article.sources,
       locale: article.locale,
     }) === article.contentSha256;
+    const rendered = normalizeValidateAndRenderArticleMarkdown(article.bodyMarkdown);
+    markdownMatches = rendered.bodyMarkdown === article.bodyMarkdown
+      && rendered.bodyHtml === article.bodyHtml;
   } catch {
     contentHashMatches = false;
+    markdownMatches = false;
   }
   const valid = article.title.trim().length > 0
     && article.summary.trim().length > 0
-    && /^##\s+\S+/m.test(article.bodyMarkdown)
-    && /<h2(?:\s[^>]*)?>[^<]+<\/h2>/.test(article.bodyHtml)
+    && markdownMatches
     && article.reviewer.name.trim().length > 0
     && article.reviewer.role.trim().length > 0
     && validDate(article.revisionCreatedAt)

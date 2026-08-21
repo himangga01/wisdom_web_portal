@@ -5,6 +5,7 @@ import {
   type KeyProvider,
 } from "../crypto/index.js";
 import type { ControlDatabase } from "../db/client.js";
+import type { SealedPublicationRelease } from "./publication-build.js";
 
 const MAX_CONTACT_CANDIDATES = 64;
 const MIN_MESSAGE_FRAGMENT_CHARACTERS = 16;
@@ -150,4 +151,23 @@ export function checkArticleForRetainedConsultationPii(
     }
   }
   return matchesEncryptedRetainedConsultation(db, provider, segments);
+}
+
+export function collectReleasePiiSegments(
+  release: SealedPublicationRelease,
+): string[] {
+  return [
+    ...release.publicTextSegments,
+    ...release.consentBundle.documents.flatMap(
+      (document) => [document.title, document.bodyMarkdown],
+    ),
+    ...release.documents.flatMap((document) => [
+      document.title,
+      document.summary,
+      document.bodyMarkdown,
+      document.slug,
+      document.route,
+      ...document.sources.flatMap((source) => [source.id, source.url]),
+    ]),
+  ];
 }

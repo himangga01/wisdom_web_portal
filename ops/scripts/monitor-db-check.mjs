@@ -21,6 +21,14 @@ function protectedMode(metadata) {
   return process.platform === "win32" || (metadata.mode & 0o022n) === 0n;
 }
 
+function ownerOnlyFileMode(metadata) {
+  return process.platform === "win32" || (metadata.mode & 0o777n) === 0o600n;
+}
+
+function ownerOnlyDirectoryMode(metadata) {
+  return process.platform === "win32" || (metadata.mode & 0o777n) === 0o700n;
+}
+
 function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
 }
@@ -29,13 +37,34 @@ async function walkIndependentSecurePath(databasePath) {
   const parsed = path.parse(databasePath);
   let current = parsed.root;
   const components = [];
-  for (const segment of databasePath.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+  const segments = databasePath.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
     current = path.join(current, segment);
     const metadata = await lstat(current, { bigint: true });
     if (metadata.isSymbolicLink() || !protectedMode(metadata)) pathChanged();
+    if (index === segments.length - 2 && !ownerOnlyDirectoryMode(metadata)) pathChanged();
+    if (index === segments.length - 1 && !ownerOnlyFileMode(metadata)) pathChanged();
     components.push({ path: current, metadata });
   }
   return components;
+}
+
+async function assertDatabaseSidecarsOwnerOnly(databasePath) {
+  for (const sidecar of [`${databasePath}-wal`, `${databasePath}-shm`]) {
+    let metadata;
+    try {
+      metadata = await lstat(sidecar, { bigint: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      pathChanged();
+    }
+    if (
+      metadata.isSymbolicLink() ||
+      !metadata.isFile() ||
+      !ownerOnlyFileMode(metadata)
+    ) pathChanged();
+  }
 }
 
 function assertSameWalk(expected, actual) {
@@ -55,6 +84,7 @@ async function openIndependentSecureDatabase(databasePath) {
   try {
     components = await walkIndependentSecurePath(databasePath);
     if (await realpath(databasePath) !== databasePath) pathChanged();
+    await assertDatabaseSidecarsOwnerOnly(databasePath);
     handle = await open(databasePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const metadata = await handle.stat({ bigint: true });
     const walkedFile = components.at(-1)?.metadata;
@@ -72,6 +102,7 @@ async function assertDatabasePathUnchanged(guard) {
     const components = await walkIndependentSecurePath(guard.databasePath);
     assertSameWalk(guard.components, components);
     if (await realpath(guard.databasePath) !== guard.databasePath) pathChanged();
+    await assertDatabaseSidecarsOwnerOnly(guard.databasePath);
     const current = await open(guard.databasePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const currentMetadata = await current.stat({ bigint: true });
@@ -129,6 +160,11 @@ export async function queryDatabaseAggregates(databasePath, {
           (SELECT count(*) FROM release_activations WHERE state IN ('prepared','switched')) +
           (SELECT count(*) FROM releases
             WHERE state = 'failed'
+              AND created_at_ms >= COALESCE(
+                (SELECT max(created_at_ms) FROM releases WHERE state = 'active'), 0
+              )) +
+          (SELECT count(*) FROM audit_events
+            WHERE action = 'article.release.build_failed'
               AND created_at_ms >= COALESCE(
                 (SELECT max(created_at_ms) FROM releases WHERE state = 'active'), 0
               )) AS count

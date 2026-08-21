@@ -13,10 +13,12 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   parsePublicOrigin,
   parseSearchVerificationConfig,
+  publishedArticleDocumentSchema,
   publishedConsentBundleSchema,
   publishedManifestSchema,
   type Locale,
   type PublishedConsentBundle,
+  type PublishedArticleDocument,
 } from "@wisdom/shared";
 
 import {
@@ -35,6 +37,20 @@ const MAX_RELEASE_MANIFEST_BYTES = 2 * 1_048_576;
 const MAX_RELEASE_FILE_BYTES = 16 * 1_048_576;
 const MAX_RELEASE_BYTES = 256 * 1_048_576;
 const LAUNCH_LOCALES = new Set<Locale>(["ko", "en", "zh-Hans", "zh-Hant"]);
+
+class PublicationBuildFailure extends Error {
+  readonly exitCode: number;
+  readonly diagnosticCode: "BUILD_SHELL_UNAVAILABLE" | "BUILD_PROCESS_FAILED";
+
+  constructor(exitCode: number, stderr: string) {
+    super("PUBLICATION_BUILD_FAILED");
+    this.name = "PublicationBuildFailure";
+    this.exitCode = exitCode;
+    this.diagnosticCode = /(?:spawn sh ENOENT|syscall spawn sh)/u.test(stderr)
+      ? "BUILD_SHELL_UNAVAILABLE"
+      : "BUILD_PROCESS_FAILED";
+  }
+}
 
 export interface PublicationProcessRequest {
   command: string;
@@ -70,6 +86,8 @@ export interface SealedPublicationRelease {
   manifest: PublicationReleaseManifest;
   manifestSha256: string;
   consentBundle: PublishedConsentBundle;
+  documents: PublishedArticleDocument[];
+  publicTextSegments: string[];
   sitemapUrls: string[];
   urlSetSha256: string;
 }
@@ -164,6 +182,7 @@ export async function runPublicationBuild(
     nodeBinary: string;
     timeoutMs: number;
     publicOrigin: string;
+    kakaoChatUrl?: string;
     naverSiteVerificationMeta?: string;
     naverSiteVerificationFile?: string;
   },
@@ -213,6 +232,7 @@ export async function runPublicationBuild(
       CI: "1",
       HOME: buildHome,
       NODE_ENV: "production",
+      ...(input.kakaoChatUrl ? { PUBLIC_KAKAO_CHAT_URL: input.kakaoChatUrl } : {}),
       ...(verification.naverMetaToken
         ? { NAVER_SITE_VERIFICATION_META: verification.naverMetaToken }
         : {}),
@@ -220,7 +240,9 @@ export async function runPublicationBuild(
         ? { NAVER_SITE_VERIFICATION_FILE: verification.naverFile.filename }
         : {}),
       NO_COLOR: "1",
-      PATH: dirname(input.nodeBinary),
+      PATH: process.platform === "win32"
+        ? dirname(input.nodeBinary)
+        : `${dirname(input.nodeBinary)}:/usr/bin:/bin`,
       PUBLIC_ORIGIN: publicOrigin,
       WISDOM_PUBLISHED_CONTENT_DIR: snapshotDirectory,
     },
@@ -228,7 +250,7 @@ export async function runPublicationBuild(
     stdoutLimit: 65_536,
     stderrLimit: 65_536,
   });
-  if (result.exitCode !== 0) throw new Error("PUBLICATION_BUILD_FAILED");
+  if (result.exitCode !== 0) throw new PublicationBuildFailure(result.exitCode, result.stderr);
 }
 
 interface InventoryFile {
@@ -685,11 +707,27 @@ export function verifySealedPublicationRelease(
   if (consentBundle.bundleId !== manifest.consentBundle.bundleId) {
     throw new Error("PUBLICATION_RELEASE_CONSENT_METADATA_MISMATCH");
   }
+  const documents = actualFiles
+    .filter(({ path }) => /^articles\/[^/]+\.json$/u.test(path))
+    .map(({ bytes }) => {
+      try {
+        const parsed = JSON.parse(bytes.toString("utf8"));
+        if (bytes.toString("utf8") !== canonicalJson(parsed)) throw new Error("non-canonical");
+        return publishedArticleDocumentSchema.parse(parsed);
+      } catch {
+        throw new Error("PUBLICATION_RELEASE_ARTICLE_INVALID");
+      }
+    });
   const sitemapPayload = publicationSitemapPayload(actualFiles, expectedOrigin);
+  const publicTextSegments = actualFiles
+    .filter(({ path }) => /\.(?:html|json|txt|xml)$/u.test(path))
+    .map(({ bytes }) => bytes.toString("utf8"));
   return {
     manifest,
     manifestSha256: sha256Hex(manifestFile.bytes),
     consentBundle,
+    documents,
+    publicTextSegments,
     sitemapUrls: sitemapPayload.urls,
     urlSetSha256: sitemapPayload.urlSetSha256,
   };

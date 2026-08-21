@@ -1,6 +1,9 @@
+import { isXml10SafeText } from "@wisdom/shared";
+
 import type { SearchDocument, SearchIndex } from "./types.js";
 
 function xml(value: string): string {
+  if (!isXml10SafeText(value)) throw new Error("XML_1_0_INVALID_CHARACTER");
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -72,7 +75,6 @@ export function renderRss(index: SearchIndex): string {
     "    <title>JIHYE Administrative Attorney Insights</title>",
     `    <link>${xml(`${index.origin}/insights`)}</link>`,
     "    <description>Reviewed administrative practice guidance</description>",
-    "    <language>ko</language>",
     `    <atom:link href="${xml(`${index.origin}/rss.xml`)}" rel="self" type="application/rss+xml" />`,
     ...items,
     "  </channel>",

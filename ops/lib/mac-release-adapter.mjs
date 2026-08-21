@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { createMacServiceAdapter } from "./mac-services.mjs";
 import { acquireReleaseOperationLock } from "./release-operation-lock.mjs";
+import { readyUrlFromRuntimeConfig } from "./runtime-config.mjs";
 import {
   atomicSwitchRelease,
   copyReleaseSource,
@@ -157,6 +158,23 @@ export function buildMacRuntimePruneArguments() {
   ];
 }
 
+export function buildMacPostPruneFixtureArguments(outputDirectory) {
+  if (!path.isAbsolute(outputDirectory)) {
+    throw Object.assign(new Error("Fixture output path must be absolute"), {
+      code: "RELEASE_PATH_UNSAFE",
+    });
+  }
+  return [
+    "run",
+    "build:fixture",
+    "--workspace",
+    "@wisdom/site",
+    "--",
+    "--outDir",
+    outputDirectory,
+  ];
+}
+
 export async function stopCanaryProcess(child, { graceMs = 5_000, killWaitMs = 2_000 } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   if (!Number.isInteger(graceMs) || graceMs < 1 || !Number.isInteger(killWaitMs) || killWaitMs < 1) {
@@ -215,7 +233,12 @@ async function checkUrl(url, expectedText) {
 }
 
 export function createMacReleaseAdapter(options) {
-  const serviceAdapter = createMacServiceAdapter();
+  let serviceAdapterPromise;
+  const runtimeServiceAdapter = () => {
+    serviceAdapterPromise ??= readyUrlFromRuntimeConfig(options.runtimeConfig)
+      .then((readyUrl) => createMacServiceAdapter({ readyUrl }));
+    return serviceAdapterPromise;
+  };
   const opsRoot = options.opsRoot ?? DEFAULT_OPS_ROOT;
   if (!path.isAbsolute(opsRoot)) throw Object.assign(new Error("opsRoot must be absolute"), { code: "RELEASE_PATH_UNSAFE" });
   return {
@@ -237,6 +260,18 @@ export function createMacReleaseAdapter(options) {
       { cwd: destination },
     ),
     prepareRuntime: (destination) => run(options.npmBinary, buildMacRuntimePruneArguments(), { cwd: destination }),
+    verifyPublicationBuilder: async (destination) => {
+      const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "wisdom-post-prune-build-"));
+      try {
+        await run(
+          options.npmBinary,
+          buildMacPostPruneFixtureArguments(path.join(tempDirectory, "dist")),
+          { cwd: destination },
+        );
+      } finally {
+        await rm(tempDirectory, { recursive: true, force: true });
+      }
+    },
     writeManifest: (destination, { releaseId }) => createReleaseManifest(destination, releaseId),
     verify: (destination, { releaseId }) => verifyReleaseManifest(destination, releaseId),
     startCanary: async (destination, port) => {
@@ -270,9 +305,9 @@ export function createMacReleaseAdapter(options) {
       await verifyReleaseManifest(destination, path.basename(destination));
       await atomicSwitchRelease(destination, currentLink);
     },
-    restartServices: serviceAdapter.start,
+    restartServices: async () => (await runtimeServiceAdapter()).start(),
     checkActiveHealth: async () => {
-      await serviceAdapter.checkReady();
+      await (await runtimeServiceAdapter()).checkReady();
       await checkUrl(options.publicLiveUrl, '"status":"ok"');
     },
     restoreCurrent: async (previous, currentLink) => {

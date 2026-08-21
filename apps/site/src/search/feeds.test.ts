@@ -42,9 +42,32 @@ describe("sitemap and RSS discovery artifacts", () => {
     expect(values(rss, "guid").sort()).toEqual(articleUrls);
     expect((rss.match(/<item>/g) ?? [])).toHaveLength(content.articles.length);
     expect(rss).toContain("<dc:language>zh-Hant</dc:language>");
+    expect(rss).not.toContain("<language>ko</language>");
     expect(rss).toContain("<pubDate>Fri, 03 Jul 2026 00:00:00 GMT</pubDate>");
     expect(rss).toContain("&lt;h2&gt;What to confirm first&lt;/h2&gt;");
     expect(rss).not.toMatch(/<script|javascript:|MARKDOWN_ONLY|draft|private canary/i);
     expect(rss).not.toMatch(/\/(?:admin|api|consultation|marketing\/withdraw|verification)(?:\/|<)|naver[^<]*\.html/i);
+  });
+
+  it("rejects XML 1.0 forbidden characters at the final feed boundary", () => {
+    const index = buildSearchIndex(origin, loadPublishedContent(fixtureDirectory));
+    const article = index.indexable.find(({ kind }) => kind === "article")!;
+    const invalidRss = {
+      ...index,
+      indexable: index.indexable.map((document) => (
+        document === article ? { ...document, h1: "Unsafe\u0001title" } : document
+      )),
+    };
+    expect(() => renderRss(invalidRss)).toThrow("XML_1_0_INVALID_CHARACTER");
+
+    const invalidSitemap = {
+      ...index,
+      indexable: index.indexable.map((document) => (
+        document === article
+          ? { ...document, canonicalUrl: `${document.canonicalUrl}\u0001` }
+          : document
+      )),
+    };
+    expect(() => renderSitemap(invalidSitemap)).toThrow("XML_1_0_INVALID_CHARACTER");
   });
 });

@@ -133,6 +133,7 @@ interface LocaleText {
     openMenu: string;
     languageSelection: string;
     additionalContactOptions: string;
+    newWindow: string;
   };
   buttons: {
     consultation: string;
@@ -199,6 +200,8 @@ interface LocaleText {
           consentReady: string;
           consentUpdated: string;
           invalid: string;
+          rateLimited: string;
+          rateLimitedWithoutDelay: string;
         };
         submit: string;
         retryConsent: string;
@@ -260,6 +263,7 @@ const localizedText = {
       openMenu: "메뉴 열기",
       languageSelection: "언어 선택",
       additionalContactOptions: "추가 연락 방법",
+      newWindow: "새 창에서 열림",
     },
     buttons: {
       consultation: "상담 신청",
@@ -349,6 +353,8 @@ const localizedText = {
           consentReady: "최신 동의 문서를 불러왔습니다. 내용을 확인하고 동의해 주세요.",
           consentUpdated: "동의 문서가 변경되었습니다. 최신 내용을 확인한 뒤 다시 동의해 주세요.",
           invalid: "입력 내용을 다시 확인해 주세요.",
+          rateLimited: "요청이 많습니다. {seconds}초 후 다시 시도해 주세요.",
+          rateLimitedWithoutDelay: "요청이 많습니다. 잠시 후 다시 시도해 주세요.",
         },
         submit: "상담 요청 보내기",
         retryConsent: "동의 문서 다시 불러오기",
@@ -469,6 +475,7 @@ const localizedText = {
       openMenu: "Open menu",
       languageSelection: "Language selection",
       additionalContactOptions: "Additional contact options",
+      newWindow: "opens in a new window",
     },
     buttons: {
       consultation: "Request a consultation",
@@ -558,6 +565,8 @@ const localizedText = {
           consentReady: "The current consent documents are ready. Review them before giving consent.",
           consentUpdated: "The consent documents changed. Review the current text and consent again.",
           invalid: "Review the form fields and try again.",
+          rateLimited: "Too many requests. Try again in {seconds} seconds.",
+          rateLimitedWithoutDelay: "Too many requests. Please try again later.",
         },
         submit: "Send consultation request",
         retryConsent: "Retry loading consent documents",
@@ -689,6 +698,7 @@ const localizedText = {
       openMenu: "打开菜单",
       languageSelection: "选择语言",
       additionalContactOptions: "其他联系方式",
+      newWindow: "在新窗口中打开",
     },
     buttons: {
       consultation: "申请咨询",
@@ -778,6 +788,8 @@ const localizedText = {
           consentReady: "当前同意文件已载入，请查看内容后再表示同意。",
           consentUpdated: "同意文件已更新。请查看最新内容并重新同意。",
           invalid: "请检查输入内容后重试。",
+          rateLimited: "请求过多，请在{seconds}秒后重试。",
+          rateLimitedWithoutDelay: "请求过多，请稍后重试。",
         },
         submit: "提交咨询申请",
         retryConsent: "重新加载同意文件",
@@ -898,6 +910,7 @@ const localizedText = {
       openMenu: "開啟選單",
       languageSelection: "選擇語言",
       additionalContactOptions: "其他聯絡方式",
+      newWindow: "在新視窗中開啟",
     },
     buttons: {
       consultation: "申請諮詢",
@@ -987,6 +1000,8 @@ const localizedText = {
           consentReady: "目前同意文件已載入，請查看內容後再表示同意。",
           consentUpdated: "同意文件已更新。請查看最新內容並重新同意。",
           invalid: "請檢查輸入內容後重試。",
+          rateLimited: "請求過多，請在{seconds}秒後重試。",
+          rateLimitedWithoutDelay: "請求過多，請稍後重試。",
         },
         submit: "提交諮詢申請",
         retryConsent: "重新載入同意文件",

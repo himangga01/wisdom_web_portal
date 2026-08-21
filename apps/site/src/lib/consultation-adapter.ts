@@ -42,9 +42,26 @@ export interface ConsultationSubmission {
   };
 }
 
+interface ValidationIssue {
+  path?: unknown;
+}
+
+const CONSULTATION_FIELD_NAMES = new Set([
+  "locale",
+  "category",
+  "name",
+  "phone",
+  "email",
+  "company",
+  "preferredContact",
+  "message",
+  "privacyConsent",
+  "marketingConsent",
+]);
+
 export type ConsultationPostResult =
   | { ok: true; receipt: ConsultationReceipt }
-  | { ok: false; status: number; error?: ApiError };
+  | { ok: false; status: number; error?: ApiError; retryAfterSeconds?: number };
 
 export function createConsultationIdempotencyKeyCache(
   createKey: () => string = () => globalThis.crypto.randomUUID(),
@@ -180,6 +197,22 @@ export function buildConsultationSubmission(
   };
 }
 
+export function consultationSubmissionFieldErrors(
+  error: unknown,
+): Record<string, string[]> | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const issues = (error as { issues?: unknown }).issues;
+  if (!Array.isArray(issues)) return undefined;
+  const fieldErrors: Record<string, string[]> = {};
+  for (const issue of issues as ValidationIssue[]) {
+    if (!Array.isArray(issue.path) || typeof issue.path[0] !== "string") continue;
+    const field = issue.path[0];
+    if (!CONSULTATION_FIELD_NAMES.has(field)) continue;
+    (fieldErrors[field] ??= []).push("invalid");
+  }
+  return Object.keys(fieldErrors).length > 0 ? fieldErrors : undefined;
+}
+
 export async function postConsultation(
   submission: ConsultationSubmission,
   options: {
@@ -208,7 +241,21 @@ export async function postConsultation(
   }
 
   const error = apiErrorSchema.safeParse(body);
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterSeconds = retryAfter && /^\d{1,5}$/u.test(retryAfter)
+    ? Number(retryAfter)
+    : undefined;
+  const boundedRetryAfter = retryAfterSeconds !== undefined
+    && retryAfterSeconds >= 1
+    && retryAfterSeconds <= 86_400
+    ? retryAfterSeconds
+    : undefined;
   return error.success
-    ? { ok: false, status: response.status, error: error.data }
+    ? {
+      ok: false,
+      status: response.status,
+      error: error.data,
+      ...(boundedRetryAfter === undefined ? {} : { retryAfterSeconds: boundedRetryAfter }),
+    }
     : { ok: false, status: response.status };
 }

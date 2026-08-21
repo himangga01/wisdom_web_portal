@@ -2,6 +2,7 @@ import { LOCALES, type Locale } from "@wisdom/shared";
 
 import {
   buildConsultationSubmission,
+  consultationSubmissionFieldErrors,
   createConsultationIdempotencyKeyCache,
   loadConsentConfiguration,
   postConsultation,
@@ -10,6 +11,7 @@ import {
 } from "./consultation-adapter.js";
 
 const FORM_SELECTOR = "[data-consultation-form]";
+type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 function supportedLocale(value: unknown): Locale | undefined {
   if (typeof value !== "string") return undefined;
@@ -17,7 +19,19 @@ function supportedLocale(value: unknown): Locale | undefined {
   return LOCALES.includes(locale) ? locale : undefined;
 }
 
-function validationMessage(control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): string {
+function isFormControl(control: Element): control is FormControl {
+  return control instanceof HTMLInputElement
+    || control instanceof HTMLSelectElement
+    || control instanceof HTMLTextAreaElement;
+}
+
+function controlsForField(form: HTMLFormElement, name: string): FormControl[] {
+  return Array.from(form.elements).filter(
+    (control): control is FormControl => isFormControl(control) && control.name === name,
+  );
+}
+
+function validationMessage(control: FormControl): string {
   if (control.validity.valueMissing) return control.dataset.errorRequired ?? "";
   if (control.validity.patternMismatch) return control.dataset.errorPattern ?? "";
   if (control.validity.typeMismatch) return control.dataset.errorType ?? "";
@@ -50,8 +64,14 @@ export function initializeConsultationForms(documentRef: Document = document): v
     let activeConsent: ConsentConfiguration | undefined;
     let consentLoadGeneration = 0;
     let submitting = false;
+    let receiptStatusVisible = false;
 
-    const showStatus = (state: "submitting" | "success" | "error", message: string): void => {
+    const showStatus = (
+      state: "submitting" | "success" | "error",
+      message: string,
+      receipt = false,
+    ): void => {
+      receiptStatusVisible = receipt;
       if (!status) return;
       status.hidden = false;
       status.dataset.state = state;
@@ -60,11 +80,34 @@ export function initializeConsultationForms(documentRef: Document = document): v
     };
 
     const hideStatus = (): void => {
+      receiptStatusVisible = false;
       if (!status) return;
       status.hidden = true;
       status.dataset.state = "";
       status.setAttribute("role", "status");
       status.textContent = "";
+    };
+
+    const applyServerFieldErrors = (errors: Record<string, string[]> | undefined): boolean => {
+      if (!errors) return false;
+      let first: FormControl | undefined;
+      for (const name of Object.keys(errors)) {
+        const controls = controlsForField(form, name);
+        if (controls.length === 0) continue;
+        const localizedMessage = controls[0]?.dataset.errorSchema
+          ?? form.dataset.errorServer
+          ?? form.dataset.statusInvalid
+          ?? "";
+        controls[0]?.setCustomValidity(localizedMessage);
+        for (const control of controls) {
+          control.setAttribute("aria-invalid", "true");
+          control.dataset.serverError = "true";
+        }
+        first ??= controls[0];
+      }
+      first?.focus();
+      first?.reportValidity();
+      return first !== undefined;
     };
 
     const setConsentRetryAvailable = (available: boolean): void => {
@@ -166,23 +209,29 @@ export function initializeConsultationForms(documentRef: Document = document): v
         || control instanceof HTMLSelectElement
         || control instanceof HTMLTextAreaElement
       ) {
+        if (control.dataset.serverError === "true") return;
         control.setCustomValidity("");
         control.setCustomValidity(validationMessage(control));
       }
     }, true);
 
     form.addEventListener("input", (event) => {
+      if (receiptStatusVisible) hideStatus();
       const control = event.target;
-      if (
-        control instanceof HTMLInputElement
-        || control instanceof HTMLSelectElement
-        || control instanceof HTMLTextAreaElement
-      ) {
-        control.setCustomValidity("");
+      if (control instanceof Element && isFormControl(control)) {
+        const relatedControls = control.name === ""
+          ? [control]
+          : controlsForField(form, control.name);
+        for (const relatedControl of relatedControls) {
+          relatedControl.setCustomValidity("");
+          relatedControl.removeAttribute("aria-invalid");
+          delete relatedControl.dataset.serverError;
+        }
       }
       updateEmailConstraint();
     });
     form.addEventListener("change", (event) => {
+      if (receiptStatusVisible) hideStatus();
       updateEmailConstraint();
       if (event.target === localeControl) void refreshConsent();
     });
@@ -206,7 +255,11 @@ export function initializeConsultationForms(documentRef: Document = document): v
 
       void (async () => {
         const originalSubmitLabel = submit?.textContent ?? "";
-        let terminalStatus: { state: "success" | "error"; message: string } | undefined;
+        let terminalStatus: {
+          state: "success" | "error";
+          message: string;
+          receipt?: boolean;
+        } | undefined;
         submitting = true;
         form.setAttribute("aria-busy", "true");
         if (submit) {
@@ -219,7 +272,8 @@ export function initializeConsultationForms(documentRef: Document = document): v
           let submission;
           try {
             submission = buildConsultationSubmission(submissionData, consentAtSubmit);
-          } catch {
+          } catch (error) {
+            applyServerFieldErrors(consultationSubmissionFieldErrors(error));
             terminalStatus = { state: "error", message: form.dataset.statusInvalid ?? "" };
             return;
           }
@@ -231,12 +285,28 @@ export function initializeConsultationForms(documentRef: Document = document): v
             });
             if (!result.ok) {
               if (result.status === 409 && result.error?.code === "CONSENT_VERSION_STALE") {
-                if (selectedLocale() === submissionLocale) {
-                  await refreshConsent(submissionLocale);
-                }
+                const refreshed = selectedLocale() === submissionLocale
+                  ? await refreshConsent(submissionLocale)
+                  : undefined;
+                terminalStatus = refreshed
+                  ? {
+                      state: "error",
+                      message: form.dataset.statusConsentUpdated ?? "",
+                    }
+                  : undefined;
+                return;
+              }
+              if (result.status === 422 && applyServerFieldErrors(result.error?.fieldErrors)) {
+                terminalStatus = { state: "error", message: form.dataset.statusInvalid ?? "" };
+                return;
+              }
+              if (result.status === 429) {
                 terminalStatus = {
                   state: "error",
-                  message: form.dataset.statusConsentUpdated ?? "",
+                  message: result.retryAfterSeconds === undefined
+                    ? form.dataset.statusRateLimitedGeneric ?? form.dataset.statusFailure ?? ""
+                    : (form.dataset.statusRateLimited ?? form.dataset.statusFailure ?? "")
+                      .replace("{seconds}", String(result.retryAfterSeconds)),
                 };
                 return;
               }
@@ -247,7 +317,7 @@ export function initializeConsultationForms(documentRef: Document = document): v
               "{receiptId}",
               result.receipt.receiptId,
             );
-            terminalStatus = { state: "success", message };
+            terminalStatus = { state: "success", message, receipt: true };
           } catch {
             terminalStatus = { state: "error", message: form.dataset.statusFailure ?? "" };
           }
@@ -259,7 +329,11 @@ export function initializeConsultationForms(documentRef: Document = document): v
           }
           syncSubmitAvailability();
           if (terminalStatus) {
-            showStatus(terminalStatus.state, terminalStatus.message);
+            showStatus(
+              terminalStatus.state,
+              terminalStatus.message,
+              terminalStatus.receipt === true,
+            );
           }
         }
       })();

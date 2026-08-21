@@ -134,7 +134,7 @@ test("public dynamic and static routes are mutually exclusive in literal policy 
   assert.ok(publicBlock.indexOf("handle {") < publicBlock.indexOf("try_files"));
 });
 
-test("admin host blocks non-admin control surfaces before its catch-all proxy", async () => {
+test("admin host isolates control surfaces and preserves Control's response-aware cache policy", async () => {
   const caddy = await render("caddy/Caddyfile.template");
   const adminStart = caddy.indexOf("http://admin.example.test:8080");
   const unknownStart = caddy.indexOf("http://:8080", adminStart);
@@ -146,6 +146,14 @@ test("admin host blocks non-admin control surfaces before its catch-all proxy", 
   );
   assert.ok(admin.indexOf("respond @admin_forbidden 404") < admin.indexOf("reverse_proxy 127.0.0.1:8787"));
   assert.doesNotMatch(admin, /@admin_forbidden[^\n]*\/admin\/health/);
+  assert.doesNotMatch(admin, /@admin_assets|Cache-Control/);
+  assert.equal((admin.match(/reverse_proxy 127\.0\.0\.1:8787/g) ?? []).length, 1);
+  const positions = [
+    admin.indexOf("handle @admin_forbidden"),
+    admin.lastIndexOf("handle {"),
+  ];
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, positions.toSorted((left, right) => left - right));
 });
 
 test("static misses retain an actual 404 and every Astro build asset is immutable", async () => {
@@ -298,6 +306,7 @@ test("control processes receive only the common runtime contract and independent
     assert.match(plist, /\/Users\/wisdom\/portal\/current\/ops\/scripts\/keychain-exec\.mjs/);
     assert.doesNotMatch(plist, /\/Users\/wisdom\/portal\/ops\/scripts/);
     assert.doesNotMatch(plist, /(?:SMTP_PASSWORD|DATA_ENCRYPTION_KEY)/);
+    assert.match(plist, /<key>Umask<\/key><integer>63<\/integer>/);
   }
 });
 
@@ -336,6 +345,8 @@ test("retention enforcement runs on a fixed bounded cadence in apply mode", asyn
   const retention = await render("launchd/com.jihye.portal.retention.plist.template");
 
   assert.match(retention, /<key>StartInterval<\/key><integer>3600<\/integer>/);
+  assert.match(retention, /ops\/scripts\/retention\.mjs/);
+  assert.match(retention, /<string>--database<\/string><string>\/Users\/wisdom\/Library\/Application Support\/WisdomPortal\/portal\.sqlite<\/string>/);
   assert.match(retention, /apps\/control\/dist\/cli\/purge\.js/);
   assert.match(retention, /<string>--apply<\/string>/);
   assert.match(retention, /<string>--batch-size<\/string><string>1000<\/string>/);
