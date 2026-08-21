@@ -20,6 +20,14 @@
 | 백업·복구 훈련 | [`ops/runbooks/recovery.md`](../ops/runbooks/recovery.md) | SQLite online backup, age 암호화, 24 hourly/14 daily, guarded restore, RPO/RTO 측정 |
 | 장애 대응 | [`ops/runbooks/incidents.md`](../ops/runbooks/incidents.md) | disk/tunnel/DNS/DB/key/queue/monitor 장애, 안전한 진단 정보, rollback |
 
+## 품질 검토 기록
+
+| 문서 | 핵심 내용 |
+|---|---|
+| [`docs/reviews/README.md`](reviews/README.md) | 코드 리뷰·UX 점검·적대적 검토의 이력 색인, 심각도 기준, 미해소로 남긴 항목과 그 근거 |
+
+각 리뷰 문서는 발견 사항을 원문 기준으로 보존하고 해소 커밋을 함께 기록합니다. 구현 이력은 `work-log.md`, 지적과 처리 이력은 이 폴더를 봅니다.
+
 ## 코드 영역
 
 | 영역 | 위치 | 책임 |
